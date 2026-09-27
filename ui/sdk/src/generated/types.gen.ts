@@ -1950,7 +1950,7 @@ export type CreateSourceRequest_unstable = {
 /**
  * The type of source entity.
  */
-export type SourceType = 'skill' | 'builtinSkill' | 'recipe' | 'subrecipe' | 'agent' | 'project';
+export type SourceType = 'skill' | 'builtinSkill' | 'recipe' | 'subrecipe' | 'agent' | 'project' | 'rule';
 
 /**
  * Target scope for creating or importing sources.

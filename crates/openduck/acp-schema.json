@@ -4978,7 +4978,8 @@
         "recipe",
         "subrecipe",
         "agent",
-        "project"
+        "project",
+        "rule"
       ],
       "description": "The type of source entity."
     },
