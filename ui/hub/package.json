@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Personal agent project dashboard for goose serve",
+  "description": "Enterprise agent project dashboard for openduck serve",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

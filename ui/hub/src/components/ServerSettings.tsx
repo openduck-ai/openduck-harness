@@ -225,7 +225,7 @@ export function ServerSettings({
             <h3>About OpenDuck Hub</h3>
             <div className="about-details">
               <p className="muted text-sm">
-                OpenDuck Hub is a project-first personal agent management interface for Goose. It
+                OpenDuck Hub is a project-first enterprise agent management interface for Goose. It
                 enables managing projects, monitoring scheduled automation recipes, executing shell
                 commands, and coordinating parallel agent sessions.
               </p>

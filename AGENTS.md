@@ -1,6 +1,6 @@
 # AGENTS Instructions
 
-OpenDuck is an AI Agent Harness and Personal Agent System in Rust with CLI, Web Hub dashboard, Electron desktop, and Mobile PWA interfaces.
+OpenDuck is an AI Agent Harness and Enterprise Agent System in Rust with CLI, Web Hub dashboard, Electron desktop, and Mobile PWA interfaces.
 The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Workspace crates use the `openduck-*` prefix.
 
 ## Contribution Workflow

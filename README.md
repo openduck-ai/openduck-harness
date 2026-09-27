@@ -2,7 +2,7 @@
 
 # OpenDuck 🦆
 
-**The Open-Source AI Agent Harness & Personal Agent System**
+**The Open-Source AI Agent Harness & Enterprise Agent System**
 
 _Sandboxed execution, benchmark evaluation, deterministic replay, multi-project workspaces, and extensible agent protocols across CLI, Web Hub, Desktop, Mobile, and SDKs._
 
@@ -16,9 +16,9 @@ _Sandboxed execution, benchmark evaluation, deterministic replay, multi-project 
 
 ## 🌟 What is OpenDuck?
 
-**OpenDuck** is an open-source AI **Agent Harness** and **Personal Agent System** built in Rust for high performance, portability, and safety. 
+**OpenDuck** is an open-source AI **Agent Harness** and **Enterprise Agent System** built in Rust for high performance, portability, and safety. 
 
-OpenDuck transcends traditional single-loop AI assistants by providing a modular, sandboxed execution runtime and an unified control plane. Whether you are running interactive development sessions, executing deterministic benchmarks, managing multi-project workspaces with visual Git graphs, or scheduling unattended background tasks with email alerts, OpenDuck provides the full infrastructure needed to run, test, and steer autonomous agents.
+OpenDuck transcends traditional single-loop AI assistants by providing a modular, sandboxed execution runtime and an unified control plane. Whether you are running interactive development sessions, executing deterministic benchmarks, managing multi-project workspaces with visual Git graphs, or scheduling unattended background tasks with email alerts, OpenDuck provides the full infrastructure needed to run, test, and steer autonomous agents at scale.
 
 The CLI binary is `openduck` (with legacy `duck` aliase). Workspace crates use the `openduck-*` prefix. Configuration and environment variables prefer `OPENDUCK_*`.
 
@@ -33,7 +33,7 @@ The CLI binary is `openduck` (with legacy `duck` aliase). Workspace crates use t
 - **Deterministic Record & Replay (`openduck harness replay`)**: Record agent LLM completions and MCP tool interactions into VCR-style cassettes for zero-cost, reproducible regression testing and offline debugging.
 - **Automated Verifiers**: Built-in `CommandVerifier` (test runner output) and `DiffVerifier` (git patch diff against expected golden state).
 
-### 🚀 2. Personal Agent System & Multi-Project Workspace
+### 🚀 2. Enterprise Agent System & Multi-Project Workspace
 - **Project Dashboard**: Register and manage multiple software projects with automatic directory binding, metadata tags, and insight summaries.
 - **Visual Git Management**: Built-in Git control module with an interactive commit graph, branch & tag ref tooltips, file diff viewer, status inspection, and automated commit message generation.
 - **Project-Level Task Harness**: Define repeatable task specs in `.openduck/tasks/` configured via `.openduck/harness.yaml`.
@@ -227,7 +227,7 @@ openduck schedule run-now --id <JOB_ID>
 ## 🌐 OpenDuck Web Hub & Frontends
 
 ### OpenDuck Web Hub (`ui/hub`)
-The Web Hub is a personal agent management dashboard that connects to `openduck serve`:
+The Web Hub is an enterprise agent management dashboard that connects to `openduck serve`:
 - **Project Workspaces**: Easily switch between registered repositories.
 - **Git Graph & Visualizer**: Interactive commit log, branch heads, tags, and file diff views.
 - **Harness Task Runner**: Run and monitor harness tasks, benchmark evaluations, and replay cassettes with live logs.

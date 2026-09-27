@@ -1,6 +1,6 @@
 # OpenDuck Web Hub (`ui/hub`)
 
-**OpenDuck Web Hub** is a personal agent management dashboard and web interface for OpenDuck. It connects directly to an authenticated background `openduck serve` instance over REST and the Agent Client Protocol (ACP).
+**OpenDuck Web Hub** is an enterprise agent management dashboard and web interface for OpenDuck. It connects directly to an authenticated background `openduck serve` instance over REST and the Agent Client Protocol (ACP).
 
 ---
 
