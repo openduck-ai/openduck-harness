@@ -1,0 +1,73 @@
+[
+  {
+    "id": "developer",
+    "name": "Developer",
+    "description": "General development tools useful for software engineering.",
+    "enabled": true,
+    "type": "builtin",
+    "env_keys": [],
+    "timeout": 300
+  },
+  {
+    "id": "computercontroller",
+    "name": "Computer Controller",
+    "description": "General computer control tools that don't require you to be a developer or engineer.",
+    "enabled": false,
+    "type": "builtin",
+    "env_keys": [],
+    "timeout": 300
+  },
+  {
+    "id": "agy",
+    "name": "Antigravity CLI",
+    "description": "Call the Antigravity CLI (agy) to run prompts and inspect conversations.",
+    "enabled": false,
+    "type": "builtin",
+    "env_keys": [],
+    "timeout": 600
+  },
+  {
+    "id": "autovisualiser",
+    "name": "Auto Visualiser",
+    "description": "Automatically see your data with this UI generation extension.",
+    "enabled": false,
+    "type": "builtin",
+    "env_keys": [],
+    "timeout": 300
+  },
+  {
+    "id": "grok",
+    "name": "Grok Build",
+    "description": "Call the Grok Build CLI to run prompts and inspect Grok sessions.",
+    "enabled": false,
+    "type": "builtin",
+    "env_keys": [],
+    "timeout": 600
+  },
+  {
+    "id": "memory",
+    "name": "Memory",
+    "description": "Teach goose your preferences as you go.",
+    "enabled": false,
+    "type": "builtin",
+    "env_keys": [],
+    "timeout": 300
+  },
+  {
+    "id": "polymarket",
+    "name": "Polymarket",
+    "description": "Discover Polymarket markets via API and browser; analysis context and paper/live order intents.",
+    "enabled": false,
+    "type": "builtin",
+    "env_keys": [],
+    "timeout": 300
+  },
+  {
+    "id": "tutorial",
+    "name": "Tutorial",
+    "description": "Access interactive tutorials and guides",
+    "enabled": false,
+    "type": "builtin",
+    "env_keys": []
+  }
+]

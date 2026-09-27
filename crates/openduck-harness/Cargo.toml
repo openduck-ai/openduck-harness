@@ -1,0 +1,33 @@
+[package]
+name = "openduck-harness"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OpenDuck agent harness runtime, evaluation engine, sandboxing, and deterministic replay"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono = { workspace = true, features = ["clock"] }
+futures.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+tokio = { workspace = true, features = ["process", "io-util", "fs", "sync", "time", "rt", "macros"] }
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

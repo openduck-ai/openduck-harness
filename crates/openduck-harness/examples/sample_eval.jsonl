@@ -1,0 +1,2 @@
+{"instance_id":"sample-1","dataset":"demo-suite","problem_statement":"Generate a test file hello.txt","test_command":"echo test-pass","expected_stdout":"test-pass"}
+{"instance_id":"sample-2","dataset":"demo-suite","problem_statement":"Validate environment","test_command":"true"}

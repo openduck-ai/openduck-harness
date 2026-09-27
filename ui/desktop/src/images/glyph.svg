@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <mask id="eye">
+      <rect width="256" height="256" fill="#ffffff"/>
+      <circle cx="168" cy="78" r="14" fill="#000000"/>
+    </mask>
+  </defs>
+  <g mask="url(#eye)">
+    <ellipse cx="104" cy="168" rx="90" ry="68" fill="#000000"/>
+    <circle cx="154" cy="92" r="58" fill="#000000"/>
+    <path fill="#000000" d="M198 84 C228 84 250 92 250 102 C250 112 228 120 198 120 Q206 102 198 84Z"/>
+    <ellipse cx="32" cy="172" rx="26" ry="20" fill="#000000"/>
+  </g>
+</svg>

@@ -1,0 +1,18 @@
+id: polymarket-real-fetch
+name: Fetch Polymarket Live Markets
+dataset: web3-live
+prompt: |
+  请在当前工作区使用 `python3` 脚本请求 Polymarket Gamma API (https://gamma-api.polymarket.com/markets?limit=50&active=true&closed=false)，
+  获取当前排名前 5 的活跃预测市场（按 volume/volumeNum 降序排序），并完成以下任务：
+  1. 在当前目录下创建 `markets.json` 文件（内容为前 5 个市场信息的 JSON 数组，包含 title, volume, highest_probability_option, highest_probability）。
+  2. 生成文件后，在最终回复中总结这 5 个市场的名称、交易量与最高概率选项。
+  注意：直接使用 `python3` 并在当前目录操作，避免在终端打印大量全量原始 API 数据。
+
+environment:
+  setup_commands:
+    - "echo 'Initializing workspace...'"
+
+verifier:
+  command: "python3 -c \"import json; data=json.load(open('markets.json')); assert isinstance(data, list) and len(data) >= 5, 'markets.json must contain at least 5 items'; print('FETCH_SUCCESS')\""
+  expected_stdout: "FETCH_SUCCESS"
+

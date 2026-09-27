@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=OpenDuck
+Exec=/usr/lib/openduck/OpenDuck %U
+Icon=/usr/share/pixmaps/openduck.png
+Terminal=false
+Type=Application
+Categories=Development;
+MimeType=x-scheme-handler/openduck;x-scheme-handler/goose;

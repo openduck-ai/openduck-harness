@@ -1,0 +1,59 @@
+use std::str::FromStr;
+
+use anyhow::Result;
+use rmcp::{transport::stdio, ServiceExt};
+
+#[derive(Clone, Debug)]
+pub enum McpCommand {
+    Agy,
+    AutoVisualiser,
+    ComputerController,
+    Grok,
+    Memory,
+    Polymarket,
+    Tutorial,
+}
+
+impl FromStr for McpCommand {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().replace(' ', "").as_str() {
+            "agy" => Ok(McpCommand::Agy),
+            "autovisualiser" => Ok(McpCommand::AutoVisualiser),
+            "computercontroller" => Ok(McpCommand::ComputerController),
+            "grok" => Ok(McpCommand::Grok),
+            "memory" => Ok(McpCommand::Memory),
+            "polymarket" => Ok(McpCommand::Polymarket),
+            "tutorial" => Ok(McpCommand::Tutorial),
+            _ => Err(format!("Invalid command: {}", s)),
+        }
+    }
+}
+
+impl McpCommand {
+    pub fn name(&self) -> &str {
+        match self {
+            McpCommand::Agy => "agy",
+            McpCommand::AutoVisualiser => "autovisualiser",
+            McpCommand::ComputerController => "computercontroller",
+            McpCommand::Grok => "grok",
+            McpCommand::Memory => "memory",
+            McpCommand::Polymarket => "polymarket",
+            McpCommand::Tutorial => "tutorial",
+        }
+    }
+}
+
+pub async fn serve<S>(server: S) -> Result<()>
+where
+    S: rmcp::ServerHandler,
+{
+    let service = server.serve(stdio()).await.inspect_err(|e| {
+        tracing::error!("serving error: {:?}", e);
+    })?;
+
+    service.waiting().await?;
+
+    Ok(())
+}

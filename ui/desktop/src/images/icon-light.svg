@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="512" y1="0" x2="512" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F7FBFC"/>
+      <stop offset="1" stop-color="#D5E4E5"/>
+    </linearGradient>
+    <linearGradient id="duck" x1="360" y1="180" x2="680" y2="880" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFE58A"/>
+      <stop offset="0.42" stop-color="#F5C63A"/>
+      <stop offset="1" stop-color="#DFA01C"/>
+    </linearGradient>
+    <linearGradient id="beak" x1="512" y1="560" x2="512" y2="700" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFB34D"/>
+      <stop offset="0.55" stop-color="#F08A24"/>
+      <stop offset="1" stop-color="#C45E12"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" ry="228" fill="url(#bg)"/>
+
+  <g transform="translate(512 520)">
+    <path fill="url(#duck)" stroke="#163D3C" stroke-width="22" stroke-linejoin="round"
+          d="M-52,-330 C-92,-360 -40,-418 4,-368 C28,-424 98,-396 62,-334 C176,-312 300,-176 300,-8 C300,200 152,348 0,348 C-152,348 -300,200 -300,-8 C-300,-172 -176,-306 -52,-330 Z"/>
+
+    <ellipse cx="-84" cy="-96" rx="42" ry="52" fill="#163D3C"/>
+    <ellipse cx="84" cy="-96" rx="42" ry="52" fill="#163D3C"/>
+    <circle cx="-70" cy="-114" r="15" fill="#FFFFFF"/>
+    <circle cx="98" cy="-114" r="15" fill="#FFFFFF"/>
+
+    <path fill="url(#beak)" stroke="#163D3C" stroke-width="16" stroke-linejoin="round"
+          d="M-136,40 C-128,8 -48,-8 0,-8 C48,-8 128,8 136,40 C138,62 48,78 0,78 C-48,78 -138,62 -136,40 Z"/>
+    <path d="M-92,40 Q0,62 92,40" fill="none" stroke="#163D3C" stroke-width="12" stroke-linecap="round"/>
+  </g>
+</svg>
