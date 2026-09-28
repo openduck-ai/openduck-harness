@@ -190,6 +190,36 @@ pub struct ProjectHarnessOverviewDto {
     pub cassettes: Vec<HarnessCassetteSummaryDto>,
     pub active_jobs: Vec<HarnessActiveJobDto>,
     pub history: Vec<HarnessHistorySummaryDto>,
+    #[serde(default = "default_max_turns_limit")]
+    pub max_turns_limit: usize,
+}
+
+fn default_max_turns_limit() -> usize {
+    openduck_harness::DEFAULT_MAX_TURNS_LIMIT
+}
+
+fn project_max_turns_limit(root: &std::path::Path, config: &ProjectHarnessConfig) -> usize {
+    let global = openduck_harness::types::discover_global_harness_settings(Some(root));
+    openduck_harness::effective_max_turns_limit(global.max_turns, config.execution.max_turns)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectHarnessConfigResponse {
+    #[serde(flatten)]
+    pub config: ProjectHarnessConfig,
+    pub max_turns_limit: usize,
+}
+
+fn config_response(
+    root: &std::path::Path,
+    config: ProjectHarnessConfig,
+) -> ProjectHarnessConfigResponse {
+    let max_turns_limit = project_max_turns_limit(root, &config);
+    ProjectHarnessConfigResponse {
+        config,
+        max_turns_limit,
+    }
 }
 
 fn prepare_task_schedule(
@@ -308,6 +338,7 @@ pub async fn get_project_harness_overview(
         .collect();
     let history = apply_history_task_names(history, &names);
 
+    let max_turns_limit = project_max_turns_limit(&root, &config);
     Ok(Json(ProjectHarnessOverviewDto {
         config,
         tasks,
@@ -315,12 +346,13 @@ pub async fn get_project_harness_overview(
         cassettes,
         active_jobs,
         history,
+        max_turns_limit,
     }))
 }
 
 pub async fn get_project_harness_config(
     AxumPath(slug): AxumPath<String>,
-) -> Result<Json<ProjectHarnessConfig>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<ProjectHarnessConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
     let (_entry, root) = resolve_project_root(&slug).map_err(not_found)?;
     let config = tokio::time::timeout(
         std::time::Duration::from_secs(3),
@@ -328,16 +360,17 @@ pub async fn get_project_harness_config(
     )
     .await
     .map_err(|_| bad("Timed out loading harness config"))?;
-    Ok(Json(config))
+    Ok(Json(config_response(&root, config)))
 }
 
 pub async fn update_project_harness_config(
     AxumPath(slug): AxumPath<String>,
     Json(config): Json<ProjectHarnessConfig>,
-) -> Result<Json<ProjectHarnessConfig>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<ProjectHarnessConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
     let (_entry, root) = resolve_project_root(&slug).map_err(not_found)?;
     config.save_to_file(&root).await.map_err(bad)?;
-    Ok(Json(config))
+    let loaded = ProjectHarnessConfig::load_or_default(&root).await;
+    Ok(Json(config_response(&root, loaded)))
 }
 
 pub async fn list_project_tasks(
@@ -1426,14 +1459,26 @@ pub async fn stream_harness_job_live(
     )
 }
 
+fn clamp_suggested_turns(turns: usize, limit: usize, floor: usize) -> usize {
+    let limit = limit.max(1);
+    let floor = floor.min(limit);
+    turns.clamp(floor, limit)
+}
+
 pub fn heuristic_estimate(prompt: &str) -> ProjectTaskEstimateResponse {
-    heuristic_estimate_with_feedback(prompt, None, None)
+    heuristic_estimate_with_feedback(
+        prompt,
+        None,
+        None,
+        openduck_harness::DEFAULT_MAX_TURNS_LIMIT,
+    )
 }
 
 pub fn heuristic_estimate_with_feedback(
     prompt: &str,
     feedback: Option<&str>,
     previous_estimate: Option<&ProjectTaskEstimateResponse>,
+    max_turns_limit: usize,
 ) -> ProjectTaskEstimateResponse {
     let trimmed = prompt.trim();
     let mut base = if trimmed.is_empty() {
@@ -1566,7 +1611,7 @@ pub fn heuristic_estimate_with_feedback(
         let mut explicit_turns: Option<usize> = None;
         for part in fb_lower.split(|c: char| !c.is_alphanumeric()) {
             if let Ok(n) = part.parse::<usize>() {
-                if (1..=500).contains(&n) {
+                if (1..=max_turns_limit.max(1)).contains(&n) {
                     explicit_turns = Some(n);
                 }
             }
@@ -1617,7 +1662,7 @@ pub fn heuristic_estimate_with_feedback(
         let has_increase = increase_keywords.iter().any(|k| fb_lower.contains(k));
 
         if let Some(turns) = explicit_turns {
-            base.suggested_max_turns = turns.clamp(10, 500);
+            base.suggested_max_turns = clamp_suggested_turns(turns, max_turns_limit, 10);
             base.suggested_timeout_seconds =
                 ((base.suggested_max_turns as u64) * 20 + 120).clamp(120, 7200);
             if base.suggested_max_turns <= 30 {
@@ -1631,8 +1676,11 @@ pub fn heuristic_estimate_with_feedback(
             }
             modified = true;
         } else if has_reduce && !has_increase {
-            base.suggested_max_turns =
-                ((base.suggested_max_turns as f64 * 0.55).round() as usize).clamp(15, 500);
+            base.suggested_max_turns = clamp_suggested_turns(
+                (base.suggested_max_turns as f64 * 0.55).round() as usize,
+                max_turns_limit,
+                15,
+            );
             base.suggested_timeout_seconds =
                 ((base.suggested_timeout_seconds as f64 * 0.6).round() as u64).clamp(180, 7200);
             if base.complexity == "deep" {
@@ -1644,8 +1692,11 @@ pub fn heuristic_estimate_with_feedback(
             }
             modified = true;
         } else if has_increase && !has_reduce {
-            base.suggested_max_turns =
-                ((base.suggested_max_turns as f64 * 1.6).round() as usize).clamp(10, 500);
+            base.suggested_max_turns = clamp_suggested_turns(
+                (base.suggested_max_turns as f64 * 1.6).round() as usize,
+                max_turns_limit,
+                10,
+            );
             base.suggested_timeout_seconds =
                 ((base.suggested_timeout_seconds as f64 * 1.5).round() as u64).clamp(120, 7200);
             if base.complexity == "simple" {
@@ -1670,6 +1721,7 @@ pub fn heuristic_estimate_with_feedback(
         }
     }
 
+    base.suggested_max_turns = clamp_suggested_turns(base.suggested_max_turns, max_turns_limit, 10);
     base
 }
 
@@ -1734,6 +1786,7 @@ async fn estimate_with_model(
     history: &[HarnessHistorySummaryDto],
     feedback: Option<&str>,
     previous_estimate: Option<&ProjectTaskEstimateResponse>,
+    max_turns_limit: usize,
 ) -> Result<ProjectTaskEstimateResponse> {
     use crate::config::Config;
     use crate::conversation::message::{Message, MessageContent};
@@ -1758,6 +1811,8 @@ async fn estimate_with_model(
     let provider = crate::providers::create(&provider_name, vec![]).await?;
 
     let history_text = format_history_feedback(history);
+    let turn_limit = max_turns_limit.max(1);
+    let deep_lo = 200.min(turn_limit);
 
     let system = format!(
         r#"You are an expert AI task planner and execution cost estimator for autonomous software engineering agents.
@@ -1778,14 +1833,14 @@ Autonomous coding agents do not follow a simple 1-to-1 linear path. Realistic ta
    - `simple` (10-30 turns, 180-600s): Localized typo/docs/small bugfix/single file inspect.
    - `medium` (30-80 turns, 600-1800s): Standard feature, API endpoint, bugfix with test verification.
    - `complex` (80-200 turns, 1800-3600s): Multi-module refactor, database/state migration, subsystem integration.
-   - `deep` (200-500 turns, 3600-7200s): Full repository migration, E2E overhaul, large-scale autonomous dev.
+   - `deep` ({deep_lo}-{turn_limit} turns, 3600-7200s): Full repository migration, E2E overhaul, large-scale autonomous dev.
 4. User Feedback & Calibration:
    - If the user provides a comment or feedback on a previous estimate, prioritize the user's domain knowledge (e.g. fewer turns if isolated, more turns if test suite is slow or complex).
    - In `reasoning`, directly explain how the estimate was adjusted to accommodate the user's feedback.
 {history_text}
 Output ONLY a valid JSON object matching this schema:
 {{
-  "suggestedMaxTurns": <integer between 10 and 500>,
+  "suggestedMaxTurns": <integer between 10 and {turn_limit}>,
   "suggestedTimeoutSeconds": <integer between 120 and 7200>,
   "complexity": "<simple|medium|complex|deep>",
   "reasoning": "<concise 1-2 sentence explanation of nominal steps, uncertainty factor, and how user feedback was incorporated>"
@@ -1838,7 +1893,8 @@ Output ONLY a valid JSON object matching this schema:
     }
 
     let parsed: ModelResponse = serde_json::from_str(&clean)?;
-    let suggested_max_turns = parsed.suggested_max_turns.unwrap_or(45).clamp(10, 500);
+    let suggested_max_turns =
+        clamp_suggested_turns(parsed.suggested_max_turns.unwrap_or(45), turn_limit, 10);
     let suggested_timeout_seconds = parsed
         .suggested_timeout_seconds
         .unwrap_or(((suggested_max_turns as u64) * 20 + 120).clamp(180, 7200))
@@ -1874,12 +1930,14 @@ pub async fn estimate_project_task(
     let prompt = req.prompt.trim();
     let feedback = req.feedback.as_deref();
     let previous_estimate = req.previous_estimate.as_ref();
+    let max_turns_limit = project_max_turns_limit(&root, &config);
 
     if prompt.is_empty() {
         return Ok(Json(heuristic_estimate_with_feedback(
             "",
             feedback,
             previous_estimate,
+            max_turns_limit,
         )));
     }
 
@@ -1889,6 +1947,7 @@ pub async fn estimate_project_task(
         &recent_history,
         feedback,
         previous_estimate,
+        max_turns_limit,
     )
     .await
     {
@@ -1899,6 +1958,7 @@ pub async fn estimate_project_task(
                 prompt,
                 feedback,
                 previous_estimate,
+                max_turns_limit,
             )))
         }
     }
@@ -2014,6 +2074,7 @@ mod tests {
             prompt,
             Some("This is already mostly done, only 1 file changed, reduce turns"),
             Some(&initial),
+            openduck_harness::DEFAULT_MAX_TURNS_LIMIT,
         );
         assert!(reduced.suggested_max_turns < initial.suggested_max_turns);
         assert!(reduced.suggested_timeout_seconds < initial.suggested_timeout_seconds);
@@ -2030,10 +2091,35 @@ mod tests {
             prompt,
             Some("Please allocate 85 turns due to slow test suite"),
             Some(&initial),
+            openduck_harness::DEFAULT_MAX_TURNS_LIMIT,
         );
         assert_eq!(refined.suggested_max_turns, 85);
         assert_eq!(refined.complexity, "complex");
         assert!(refined.reasoning.contains("Adjusted turn budget"));
+    }
+
+    #[test]
+    fn test_heuristic_estimate_respects_configured_turn_limit() {
+        let prompt = "Full migration of whole project from scratch to distributed architecture";
+        let capped = heuristic_estimate_with_feedback(prompt, None, None, 80);
+        assert_eq!(capped.suggested_max_turns, 80);
+
+        let initial = heuristic_estimate(prompt);
+        let raised = heuristic_estimate_with_feedback(
+            prompt,
+            Some("allocate 600 turns for the migration"),
+            Some(&initial),
+            800,
+        );
+        assert_eq!(raised.suggested_max_turns, 600);
+
+        let ignored = heuristic_estimate_with_feedback(
+            prompt,
+            Some("allocate 600 turns for the migration"),
+            Some(&initial),
+            openduck_harness::DEFAULT_MAX_TURNS_LIMIT,
+        );
+        assert_eq!(ignored.suggested_max_turns, initial.suggested_max_turns);
     }
 
     #[test]
@@ -2045,6 +2131,7 @@ mod tests {
             cassettes: vec![],
             active_jobs: vec![],
             history: vec![],
+            max_turns_limit: openduck_harness::DEFAULT_MAX_TURNS_LIMIT,
         };
         let json = serde_json::to_string(&overview).unwrap();
         assert!(json.contains("\"config\":"));

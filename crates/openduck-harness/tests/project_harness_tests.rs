@@ -11,8 +11,12 @@ async fn test_project_harness_config_lifecycle() {
 
     // 1. Default config when no file exists
     let default_cfg = ProjectHarnessConfig::load_or_default(root).await;
+    let global_turns = openduck_harness::types::discover_global_harness_settings(Some(root))
+        .max_turns
+        .filter(|turns| *turns >= 1)
+        .unwrap_or(25);
     assert_eq!(default_cfg.version, "1.0");
-    assert_eq!(default_cfg.execution.max_turns, 25);
+    assert_eq!(default_cfg.execution.max_turns, global_turns);
     assert_eq!(default_cfg.paths.tasks_dir, ".goose/tasks");
 
     // 2. Custom config save

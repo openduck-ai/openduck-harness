@@ -182,6 +182,7 @@ function normalizeHarnessConfig(raw: Partial<ProjectHarnessConfig> | any): Proje
       timeoutSeconds: raw?.execution?.timeoutSeconds ?? raw?.execution?.timeout_seconds ?? 300,
       concurrency: raw?.execution?.concurrency ?? 4,
     },
+    maxTurnsLimit: raw?.maxTurnsLimit ?? raw?.max_turns_limit ?? 500,
     paths: {
       tasksDir: raw?.paths?.tasksDir || raw?.paths?.tasks_dir || '.goose/tasks',
       resultsDir: raw?.paths?.resultsDir || raw?.paths?.results_dir || '.goose/harness_results',
@@ -205,6 +206,7 @@ export function ProjectHarnessTab({
 
   // Project data
   const [config, setConfig] = useState<ProjectHarnessConfig | null>(null)
+  const maxTurnsLimit = Math.max(1, config?.maxTurnsLimit || 500)
   const [tasks, setTasks] = useState<ProjectTaskSummary[]>([])
   const [reports, setReports] = useState<HarnessReportSummary[]>([])
   const [cassettes, setCassettes] = useState<HarnessCassetteSummary[]>([])
@@ -1130,7 +1132,7 @@ export function ProjectHarnessTab({
 
   const handleAdjustBudgetMultiplier = (multiplier: number) => {
     const currentTurns = taskForm.maxTurns || 25
-    const newTurns = Math.max(1, Math.min(500, Math.round(currentTurns * multiplier)))
+    const newTurns = Math.max(1, Math.min(maxTurnsLimit, Math.round(currentTurns * multiplier)))
     const currentTimeout = taskForm.timeoutSeconds || 300
     const newTimeout = Math.max(
       10,
@@ -1453,7 +1455,7 @@ export function ProjectHarnessTab({
     setSuccessMsg('')
     try {
       const saved = await api.updateProjectHarnessConfig(selectedProjectSlug, config)
-      setConfig(saved)
+      setConfig(normalizeHarnessConfig(saved))
       setSuccessMsg('Project harness configuration saved to .goose/harness.yaml')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save harness configuration')
@@ -2072,11 +2074,11 @@ export function ProjectHarnessTab({
                     <input
                       type="number"
                       min={1}
-                      max={500}
+                      max={maxTurnsLimit}
                       className="form-input"
                       value={taskForm.maxTurns || 25}
                       onChange={e => {
-                        const maxTurns = Number(e.target.value) || 25
+                        const maxTurns = Math.max(1, Math.min(maxTurnsLimit, Number(e.target.value) || 25))
                         setTaskForm({
                           ...taskForm,
                           maxTurns,
@@ -2171,13 +2173,19 @@ export function ProjectHarnessTab({
                           <input
                             type="number"
                             min={1}
-                            max={500}
+                            max={maxTurnsLimit}
                             className="form-input"
                             value={subtask.maxTurns || 8}
                             onChange={e => {
                               const next = (taskForm.subtasks || []).map((item, i) =>
                                 i === index
-                                  ? { ...item, maxTurns: Math.max(1, Number(e.target.value) || 1) }
+                                  ? {
+                                      ...item,
+                                      maxTurns: Math.max(
+                                        1,
+                                        Math.min(maxTurnsLimit, Number(e.target.value) || 1),
+                                      ),
+                                    }
                                   : item,
                               )
                               setTaskForm({ ...taskForm, subtasks: next })
@@ -2219,12 +2227,15 @@ export function ProjectHarnessTab({
                           <input
                             type="number"
                             min={1}
-                            max={500}
+                            max={maxTurnsLimit}
                             className="form-input"
                             value={phaseTurnsFromTask(taskForm)[index]}
                             onChange={e => {
                               const next = [...phaseTurnsFromTask(taskForm)]
-                              next[index] = Math.max(1, Number(e.target.value) || 1)
+                              next[index] = Math.max(
+                                1,
+                                Math.min(maxTurnsLimit, Number(e.target.value) || 1),
+                              )
                               setTaskForm({ ...taskForm, phaseMaxTurns: next })
                             }}
                           />
@@ -2835,7 +2846,7 @@ export function ProjectHarnessTab({
                 <input
                   type="number"
                   min={1}
-                  max={500}
+                  max={maxTurnsLimit}
                   className="form-input"
                   value={config.execution?.maxTurns ?? 25}
                   onChange={e =>
@@ -2843,11 +2854,14 @@ export function ProjectHarnessTab({
                       ...config,
                       execution: {
                         ...(config.execution || { timeoutSeconds: 300, concurrency: 4 }),
-                        maxTurns: Number(e.target.value) || 25,
+                        maxTurns: Math.max(1, Math.min(maxTurnsLimit, Number(e.target.value) || 25)),
                       },
                     })
                   }
                 />
+                <span className="form-hint">
+                  Uses the global max turns setting when this file does not set one. Cap {maxTurnsLimit}.
+                </span>
               </div>
               <div className="form-group">
                 <label className="form-label">Timeout (Seconds)</label>
@@ -3235,6 +3249,7 @@ export function ProjectHarnessTab({
             run={activeTrajectoryView}
             api={api}
             projectSlug={selectedProjectSlug}
+            maxTurnsLimit={maxTurnsLimit}
             onNavigateToFiles={onNavigateToFiles}
             liveInspect={liveInspect}
             inspectingJobId={inspectingJobId}

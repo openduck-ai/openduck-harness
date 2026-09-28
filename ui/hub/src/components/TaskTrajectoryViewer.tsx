@@ -83,6 +83,7 @@ interface TaskTrajectoryViewerProps {
   onStopJob?: (job: HarnessActiveJob) => Promise<void>
   onBackToTasks: () => void
   onContinueTask?: (taskId: string, extraTurns: number) => Promise<void>
+  maxTurnsLimit?: number
   onOpenContinueModal?: (
     taskId: string,
     previousSteps: number,
@@ -111,6 +112,7 @@ export function TaskTrajectoryViewer({
   onBackToTasks,
   onContinueTask,
   onOpenContinueModal,
+  maxTurnsLimit = 500,
 }: TaskTrajectoryViewerProps) {
   const effectiveProjectSlug = projectSlug || run.projectSlug || undefined
   const finalAnswerRef = useRef<HTMLDivElement>(null)
@@ -572,11 +574,13 @@ export function TaskTrajectoryViewer({
                 id="banner-extra-turns-nav"
                 type="number"
                 min={1}
-                max={500}
+                max={maxTurnsLimit}
                 className="banner-turns-input"
                 value={bannerCustomTurns}
                 onChange={e =>
-                  setBannerCustomTurns(Math.max(1, parseInt(e.target.value, 10) || 1))
+                  setBannerCustomTurns(
+                    Math.max(1, Math.min(maxTurnsLimit, parseInt(e.target.value, 10) || 1)),
+                  )
                 }
               />
               <button

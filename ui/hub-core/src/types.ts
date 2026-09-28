@@ -574,6 +574,7 @@ export interface ProjectHarnessOverview {
   cassettes: HarnessCassetteSummary[]
   activeJobs: HarnessActiveJob[]
   history: HarnessHistorySummary[]
+  maxTurnsLimit?: number
 }
 
 export interface ProjectHarnessConfig {
@@ -594,6 +595,8 @@ export interface ProjectHarnessConfig {
     timeoutSeconds: number
     concurrency: number
   }
+  /** Upper bound for turn budgets. Comes from the global max-turns config. */
+  maxTurnsLimit?: number
   paths: {
     tasksDir: string
     resultsDir: string

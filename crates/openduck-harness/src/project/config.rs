@@ -274,6 +274,26 @@ impl Default for ProjectHarnessConfig {
     }
 }
 
+fn execution_specifies_max_turns(raw: &serde_yaml::Value) -> bool {
+    raw.get("execution")
+        .and_then(|exec| exec.get("maxTurns").or_else(|| exec.get("max_turns")))
+        .is_some()
+}
+
+fn apply_global_max_turns(
+    mut cfg: ProjectHarnessConfig,
+    raw: Option<&serde_yaml::Value>,
+    global_max_turns: Option<usize>,
+) -> ProjectHarnessConfig {
+    let explicit = raw.is_some_and(execution_specifies_max_turns);
+    if !explicit {
+        if let Some(turns) = global_max_turns.filter(|turns| *turns >= 1) {
+            cfg.execution.max_turns = turns;
+        }
+    }
+    cfg
+}
+
 impl ProjectHarnessConfig {
     pub const CONFIG_FILE_REL_PATH: &'static str = ".goose/harness.yaml";
 
@@ -287,21 +307,22 @@ impl ProjectHarnessConfig {
         match fs::read_to_string(&path).await {
             Ok(content) => {
                 let mut cfg: Self = serde_yaml::from_str(&content).unwrap_or_default();
-                if let Ok(raw_val) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                let raw_val = serde_yaml::from_str::<serde_yaml::Value>(&content).ok();
+                if let Some(raw_val) = raw_val.as_ref() {
                     if raw_val.get("judge").is_none() {
-                        if let Some(global_judge) = global.judge {
+                        if let Some(global_judge) = global.judge.clone() {
                             cfg.judge = global_judge;
                         }
                     }
                 }
-                cfg
+                apply_global_max_turns(cfg, raw_val.as_ref(), global.max_turns)
             }
             Err(_) => {
                 let mut cfg = Self::default();
                 if let Some(global_judge) = global.judge {
                     cfg.judge = global_judge;
                 }
-                cfg
+                apply_global_max_turns(cfg, None, global.max_turns)
             }
         }
     }
@@ -336,7 +357,8 @@ impl ProjectHarnessConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::JudgeConfig;
+    use super::{apply_global_max_turns, JudgeConfig, ProjectHarnessConfig};
+    use serde_yaml::Value;
 
     #[test]
     fn judge_is_enabled_when_any_point_is_shadow_or_active() {
@@ -359,5 +381,29 @@ mod tests {
             config.points_summary(),
             "context.forget=off, tool.risk=off, turn.completion=off, turn.drift=off"
         );
+    }
+
+    #[test]
+    fn global_max_turns_fills_execution_when_the_project_file_omits_it() {
+        let cfg = apply_global_max_turns(ProjectHarnessConfig::default(), None, Some(800));
+        assert_eq!(cfg.execution.max_turns, 800);
+    }
+
+    #[test]
+    fn project_execution_max_turns_overrides_the_global_value() {
+        let raw: Value = serde_yaml::from_str("execution:\n  maxTurns: 40\n").unwrap();
+        let mut cfg = ProjectHarnessConfig::default();
+        cfg.execution.max_turns = 40;
+        let merged = apply_global_max_turns(cfg, Some(&raw), Some(800));
+        assert_eq!(merged.execution.max_turns, 40);
+    }
+
+    #[test]
+    fn snake_case_execution_max_turns_overrides_the_global_value() {
+        let raw: Value = serde_yaml::from_str("execution:\n  max_turns: 12\n").unwrap();
+        let mut cfg = ProjectHarnessConfig::default();
+        cfg.execution.max_turns = 12;
+        let merged = apply_global_max_turns(cfg, Some(&raw), Some(800));
+        assert_eq!(merged.execution.max_turns, 12);
     }
 }

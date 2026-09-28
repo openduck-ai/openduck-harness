@@ -40,7 +40,8 @@ pub use runtime::{
 };
 pub use telemetry::{TrajectoryLogger, TrajectoryRecord, TrajectoryStep};
 pub use types::{
-    discover_advisor_configs, load_advisor_configs_file, parse_advisor_configs_str,
-    standard_advisor_config_paths, AdvisorProxyConfig, ExecOptions, ExecOutput, RunStatus,
-    SnapshotId, ToolCallRequest, ToolCallResponse, ToolDefinition,
+    discover_advisor_configs, effective_max_turns_limit, load_advisor_configs_file,
+    parse_advisor_configs_str, standard_advisor_config_paths, AdvisorProxyConfig, ExecOptions,
+    ExecOutput, RunStatus, SnapshotId, ToolCallRequest, ToolCallResponse, ToolDefinition,
+    DEFAULT_MAX_TURNS_LIMIT,
 };

@@ -271,6 +271,58 @@ pub struct HarnessGlobalSettings {
     pub judge: Option<crate::project::JudgeConfig>,
 }
 
+/// Built-in ceiling used when no global max-turns setting is present.
+pub const DEFAULT_MAX_TURNS_LIMIT: usize = 500;
+
+const GLOBAL_MAX_TURNS_KEYS: &[&str] = &[
+    "max_turns",
+    "maxTurns",
+    "GOOSE_MAX_TURNS",
+    "OPENDUCK_MAX_TURNS",
+    "HARNESS_MAX_TURNS",
+];
+
+fn yaml_positive_usize(value: &serde_yaml::Value) -> Option<usize> {
+    let parsed = if let Some(n) = value.as_u64() {
+        usize::try_from(n).ok()
+    } else if let Some(n) = value.as_i64() {
+        usize::try_from(n).ok()
+    } else {
+        value.as_str().and_then(|text| text.trim().parse().ok())
+    };
+    parsed.filter(|n| *n >= 1)
+}
+
+fn configured_max_turns_from_yaml(val: &serde_yaml::Value) -> Option<usize> {
+    let from_mapping = |mapping: &serde_yaml::Value| {
+        GLOBAL_MAX_TURNS_KEYS
+            .iter()
+            .find_map(|key| mapping.get(*key).and_then(yaml_positive_usize))
+    };
+    val.get("harness")
+        .and_then(from_mapping)
+        .or_else(|| from_mapping(val))
+}
+
+/// Upper bound for Hub inputs and budget estimates.
+///
+/// The built-in ceiling is 500. A higher global max-turns setting, or a higher
+/// project `execution.maxTurns`, raises that ceiling. A lower global value does
+/// not shrink it; that value is only the default budget when a project omits
+/// `execution.maxTurns`.
+pub fn effective_max_turns_limit(
+    global_max_turns: Option<usize>,
+    project_max_turns: usize,
+) -> usize {
+    let configured = global_max_turns
+        .filter(|turns| *turns >= 1)
+        .unwrap_or(DEFAULT_MAX_TURNS_LIMIT);
+    configured
+        .max(DEFAULT_MAX_TURNS_LIMIT)
+        .max(project_max_turns)
+        .max(1)
+}
+
 pub fn parse_harness_global_settings_str(content: &str) -> HarnessGlobalSettings {
     let mut settings = HarnessGlobalSettings::default();
     if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(content) {
@@ -315,6 +367,9 @@ pub fn parse_harness_global_settings_str(content: &str) -> HarnessGlobalSettings
             for (k, v) in top_parsed.advisors {
                 settings.advisors.entry(k.to_lowercase()).or_insert(v);
             }
+        }
+        if settings.max_turns.is_none() {
+            settings.max_turns = configured_max_turns_from_yaml(&val);
         }
     }
     settings
@@ -401,6 +456,17 @@ pub fn discover_global_harness_settings(
     {
         if let Ok(i) = val.trim().parse::<usize>() {
             result.periodic_review_interval = Some(i);
+        }
+    }
+
+    for key in ["OPENDUCK_MAX_TURNS", "HARNESS_MAX_TURNS", "GOOSE_MAX_TURNS"] {
+        if let Ok(val) = std::env::var(key) {
+            if let Ok(turns) = val.trim().parse::<usize>() {
+                if turns >= 1 {
+                    result.max_turns = Some(turns);
+                    break;
+                }
+            }
         }
     }
 

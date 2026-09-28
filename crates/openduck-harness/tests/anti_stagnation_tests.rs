@@ -1077,6 +1077,37 @@ judge:
         j.points.get("turn.completion").map(|s| s.as_str()),
         Some("active")
     );
+
+    let goose_key = r#"
+GOOSE_MAX_TURNS: "1200"
+"#;
+    let s3 = parse_harness_global_settings_str(goose_key);
+    assert_eq!(s3.max_turns, Some(1200));
+
+    let harness_wins = r#"
+harness:
+  maxTurns: 80
+GOOSE_MAX_TURNS: 1200
+"#;
+    let s4 = parse_harness_global_settings_str(harness_wins);
+    assert_eq!(s4.max_turns, Some(80));
+
+    assert_eq!(
+        openduck_harness::effective_max_turns_limit(None, 25),
+        openduck_harness::DEFAULT_MAX_TURNS_LIMIT
+    );
+    assert_eq!(
+        openduck_harness::effective_max_turns_limit(Some(2000), 25),
+        2000
+    );
+    assert_eq!(
+        openduck_harness::effective_max_turns_limit(Some(100), 25),
+        500
+    );
+    assert_eq!(
+        openduck_harness::effective_max_turns_limit(Some(100), 800),
+        800
+    );
 }
 
 #[test]
