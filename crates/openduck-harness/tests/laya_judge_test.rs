@@ -110,6 +110,7 @@ async fn test_harness_integration_captures_judgments() {
                 id: "call_1".to_string(),
                 name: "list_dir".to_string(),
                 arguments: serde_json::json!({"path": "."}),
+                error: None,
             }]),
             AgentAction::FinalAnswer("Completed all requested tasks".to_string()),
         ],

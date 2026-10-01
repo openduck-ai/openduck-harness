@@ -1545,27 +1545,39 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
 
                     let mut responses = Vec::new();
                     for call in calls {
-                        let is_mod = is_modifying_call(call);
-                        if is_mod {
-                            if let Some(target) = extract_read_target_with_root(
-                                call,
-                                Some(self.sandbox.workspace_root()),
-                            ) {
-                                if !is_scratch_or_note_path(&target) {
-                                    modified_files.insert(target);
+                        let res = if let Some(err) = &call.error {
+                            ToolCallResponse {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                                output: format!(
+                                    "The tool call could not be parsed: {err}. Correct the arguments and try again."
+                                ),
+                                is_error: true,
+                            }
+                        } else {
+                            let is_mod = is_modifying_call(call);
+                            if is_mod {
+                                if let Some(target) = extract_read_target_with_root(
+                                    call,
+                                    Some(self.sandbox.workspace_root()),
+                                ) {
+                                    if !is_scratch_or_note_path(&target) {
+                                        modified_files.insert(target);
+                                    }
                                 }
                             }
-                        }
-                        let mut res = self.execute_tool_call(call).await;
+                            let mut res = self.execute_tool_call(call).await;
 
-                        let (snipped_output, was_snipped) = snip_tool_output(
-                            &res.output,
-                            self.max_tool_output_lines,
-                            self.max_tool_output_bytes,
-                        );
-                        if was_snipped {
-                            res.output = snipped_output;
-                        }
+                            let (snipped_output, was_snipped) = snip_tool_output(
+                                &res.output,
+                                self.max_tool_output_lines,
+                                self.max_tool_output_bytes,
+                            );
+                            if was_snipped {
+                                res.output = snipped_output;
+                            }
+                            res
+                        };
 
                         responses.push(res);
                     }
@@ -2313,6 +2325,9 @@ pub fn strip_stream_redirections(cmd: &str) -> String {
 }
 
 pub fn is_modifying_call(call: &ToolCallRequest) -> bool {
+    if call.error.is_some() {
+        return false;
+    }
     match call.name.as_str() {
         "write_file" => {
             let path = call

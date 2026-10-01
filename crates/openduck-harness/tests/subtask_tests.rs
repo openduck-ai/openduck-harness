@@ -161,6 +161,7 @@ impl AgentPolicy for SequentialSubtaskPolicy {
                         "path": "src/dto.rs",
                         "content": "pub struct GpsPayload { pub lat: f64, pub lon: f64 }\n"
                     }),
+                    error: None,
                 }]));
             } else {
                 return Ok(AgentAction::FinalAnswer("DTO defined in src/dto.rs".into()));
@@ -174,6 +175,7 @@ impl AgentPolicy for SequentialSubtaskPolicy {
                     id: "call-2".into(),
                     name: "read_file".into(),
                     arguments: serde_json::json!({"path": "src/dto.rs"}),
+                    error: None,
                 }]));
             } else if current_step == 3 {
                 return Ok(AgentAction::CallTools(vec![ToolCallRequest {
@@ -183,6 +185,7 @@ impl AgentPolicy for SequentialSubtaskPolicy {
                         "path": "src/service.rs",
                         "content": "use crate::dto::GpsPayload;\npub fn notify(_p: GpsPayload) -> bool { true }\n"
                     }),
+                    error: None,
                 }]));
             } else {
                 return Ok(AgentAction::FinalAnswer(

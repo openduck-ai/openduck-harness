@@ -385,11 +385,20 @@ impl AgentPolicy for GooseAgentPolicy {
                     }
                     if let Some(calls) = &h_msg.tool_calls {
                         for call in calls {
-                            let mut params = CallToolRequestParams::new(call.name.clone());
-                            if let Some(args) = call.arguments.as_object() {
-                                params = params.with_arguments(args.clone());
-                            }
-                            msg = msg.with_tool_request(call.id.clone(), Ok(params));
+                            let tool_call = if let Some(err) = &call.error {
+                                Err(rmcp::model::ErrorData::new(
+                                    rmcp::model::ErrorCode::INVALID_PARAMS,
+                                    err.clone(),
+                                    None,
+                                ))
+                            } else {
+                                let mut params = CallToolRequestParams::new(call.name.clone());
+                                if let Some(args) = call.arguments.as_object() {
+                                    params = params.with_arguments(args.clone());
+                                }
+                                Ok(params)
+                            };
+                            msg = msg.with_tool_request(call.id.clone(), tool_call);
                         }
                     }
                     messages.push(msg);
@@ -600,13 +609,16 @@ fn action_from_provider_reply(reply: impl std::borrow::Borrow<Message>) -> Resul
                         id: req.id.clone(),
                         name: params.name.to_string(),
                         arguments,
+                        error: None,
                     });
                 }
                 Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "Model attempted tool call '{}' but arguments were malformed: {e:?}",
-                        req.id
-                    ));
+                    tool_calls.push(ToolCallRequest {
+                        id: req.id.clone(),
+                        name: "unparseable_tool_call".to_string(),
+                        arguments: serde_json::json!({}),
+                        error: Some(e.message.to_string()),
+                    });
                 }
             },
             MessageContent::Text(raw) => {
@@ -3346,7 +3358,7 @@ mod tests {
     }
 
     #[test]
-    fn action_from_malformed_tool_request_returns_error() {
+    fn action_from_malformed_tool_request_records_errored_call() {
         let mut reply = Message::assistant();
         reply.content.push(MessageContent::ToolRequest(
             crate::conversation::message::ToolRequest {
@@ -3360,8 +3372,17 @@ mod tests {
                 tool_meta: None,
             },
         ));
-        let err = action_from_provider_reply(reply).unwrap_err();
-        assert!(err.to_string().contains("arguments were malformed"));
+        let action =
+            action_from_provider_reply(reply).expect("should preserve malformed tool call");
+        match action {
+            AgentAction::CallTools(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].id, "call_123");
+                assert_eq!(calls[0].name, "unparseable_tool_call");
+                assert_eq!(calls[0].error.as_deref(), Some("Invalid JSON parameters"));
+            }
+            _ => panic!("expected CallTools"),
+        }
     }
 
     #[tokio::test]

@@ -133,6 +133,7 @@ async fn test_policy_step_failure_after_success_keeps_prior_steps() {
                         "path": "notes.txt",
                         "content": "partial progress"
                     }),
+                    error: None,
                 }]));
             }
             Err(anyhow!("Goose provider complete failed: Network error"))
@@ -173,6 +174,7 @@ async fn test_agent_harness_task_execution() {
                 "path": "output.txt",
                 "content": "42"
             }),
+            error: None,
         }]),
         AgentAction::FinalAnswer("Task completed successfully".into()),
     ];
@@ -209,6 +211,7 @@ async fn test_step_observer_is_notified_after_each_step() {
                 "path": "output.txt",
                 "content": "42"
             }),
+            error: None,
         }]),
         AgentAction::FinalAnswer("done".into()),
     ];
@@ -241,6 +244,7 @@ async fn test_deterministic_replay_cassette() {
                 "path": "res.txt",
                 "content": "recorded"
             }),
+            error: None,
         }]),
         AgentAction::FinalAnswer("Done".into()),
     ];
@@ -299,6 +303,7 @@ async fn test_eval_runner_suite() {
                             "path": "foo.txt",
                             "content": "bar"
                         }),
+                        error: None,
                     }]),
                     AgentAction::FinalAnswer("All done".into()),
                 ],
@@ -310,4 +315,66 @@ async fn test_eval_runner_suite() {
     assert_eq!(report.metrics.total_tasks, 2);
     assert_eq!(report.metrics.passed_tasks, 2);
     assert_eq!(report.metrics.failed_tasks, 0);
+}
+
+#[tokio::test]
+async fn test_malformed_tool_call_executes_sibling_and_records_error() {
+    let policy = MockPolicy::new(
+        "mock",
+        vec![
+            AgentAction::CallTools(vec![
+                ToolCallRequest {
+                    id: "call-valid".into(),
+                    name: "write_file".into(),
+                    arguments: serde_json::json!({
+                        "path": "valid.txt",
+                        "content": "worked"
+                    }),
+                    error: None,
+                },
+                ToolCallRequest::with_error(
+                    "call-malformed",
+                    "unparseable_tool_call",
+                    "The model's response was truncated — it hit the output token limit",
+                ),
+            ]),
+            AgentAction::FinalAnswer("Recovered".into()),
+        ],
+    );
+
+    let sandbox = LocalSandbox::ephemeral().unwrap();
+    let mut harness = AgentHarness::new(policy, sandbox);
+    let task = TaskSpec::new(
+        "test-malformed-tool",
+        "test-suite",
+        "Test malformed tool recovery",
+    );
+
+    let result = harness.run_task(&task).await.expect("run_task failed");
+    assert_eq!(result.status, RunStatus::Success);
+    assert_eq!(result.step_count, 2);
+
+    let content = harness
+        .sandbox()
+        .read_file(&PathBuf::from("valid.txt"))
+        .await
+        .expect("read valid.txt failed");
+    assert_eq!(content, b"worked");
+
+    let steps = result.trajectory.steps;
+    assert_eq!(steps.len(), 2);
+    let step1_results = steps[0]
+        .tool_results
+        .as_ref()
+        .expect("missing tool results");
+    assert_eq!(step1_results.len(), 2);
+    assert_eq!(step1_results[0].id, "call-valid");
+    assert!(!step1_results[0].is_error);
+
+    assert_eq!(step1_results[1].id, "call-malformed");
+    assert!(step1_results[1].is_error);
+    assert!(step1_results[1].output.contains("could not be parsed"));
+    assert!(step1_results[1]
+        .output
+        .contains("hit the output token limit"));
 }

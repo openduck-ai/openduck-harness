@@ -431,11 +431,11 @@ mod tests {
         TrajectoryStep {
             step_number: index,
             timestamp: Utc::now(),
-            action: AgentAction::CallTools(vec![ToolCallRequest {
-                id: format!("c{index}"),
-                name: name.to_string(),
-                arguments: args,
-            }]),
+            action: AgentAction::CallTools(vec![ToolCallRequest::new(
+                format!("c{index}"),
+                name.to_string(),
+                args,
+            )]),
             tool_results: Some(vec![ToolCallResponse {
                 id: format!("c{index}"),
                 name: name.to_string(),
