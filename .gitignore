@@ -95,8 +95,13 @@ gooseselftest/
 /crates/openduck-sdk/examples/uniffi/kotlin/.gradle/
 /crates/openduck-sdk/examples/uniffi/kotlin/.kotlin/
 /crates/openduck-sdk/examples/uniffi/kotlin/build/
+
 /ui/hub/dist/
+
 .antigravitycli/
 ui/text/dist/
+
 export_genimi_provider.sh
 start_openduck.sh
+
+docker/
