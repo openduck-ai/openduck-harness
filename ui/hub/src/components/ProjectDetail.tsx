@@ -91,6 +91,8 @@ interface ProjectDetailProps {
   onReload: () => void
   selectedSessionId?: string | null
   isLoadingDetail?: boolean
+  initialTab?: ProjectSubTab
+  onTabChange?: (tab: ProjectSubTab) => void
 }
 
 export function ProjectDetail({
@@ -104,16 +106,30 @@ export function ProjectDetail({
   onReload,
   selectedSessionId,
   isLoadingDetail = false,
+  initialTab,
+  onTabChange,
 }: ProjectDetailProps) {
   const [activeTab, setActiveTab] = useState<ProjectSubTab>(
-    selectedSessionId ? 'chat' : 'harness',
+    initialTab ?? (selectedSessionId ? 'chat' : 'harness'),
   )
+
+  useEffect(() => {
+    if (initialTab && initialTab !== activeTab) {
+      setActiveTab(initialTab)
+    }
+  }, [initialTab])
 
   useEffect(() => {
     if (selectedSessionId) {
       setActiveTab('chat')
+      onTabChange?.('chat')
     }
-  }, [selectedSessionId])
+  }, [selectedSessionId, onTabChange])
+
+  const handleSelectTab = (tab: ProjectSubTab) => {
+    setActiveTab(tab)
+    onTabChange?.(tab)
+  }
 
   return (
     <section className="project-detail-section">
@@ -164,7 +180,7 @@ export function ProjectDetail({
         <button
           type="button"
           className={`subtab ${activeTab === 'harness' ? 'active' : ''}`}
-          onClick={() => setActiveTab('harness')}
+          onClick={() => handleSelectTab('harness')}
           onMouseEnter={() => preloadTab('harness')}
           onFocus={() => preloadTab('harness')}
         >
@@ -174,7 +190,7 @@ export function ProjectDetail({
         <button
           type="button"
           className={`subtab ${activeTab === 'chat' ? 'active' : ''}`}
-          onClick={() => setActiveTab('chat')}
+          onClick={() => handleSelectTab('chat')}
           onMouseEnter={() => preloadTab('chat')}
           onFocus={() => preloadTab('chat')}
         >
@@ -184,7 +200,7 @@ export function ProjectDetail({
         <button
           type="button"
           className={`subtab ${activeTab === 'git' ? 'active' : ''}`}
-          onClick={() => setActiveTab('git')}
+          onClick={() => handleSelectTab('git')}
           onMouseEnter={() => preloadTab('git')}
           onFocus={() => preloadTab('git')}
         >
@@ -194,7 +210,7 @@ export function ProjectDetail({
         <button
           type="button"
           className={`subtab ${activeTab === 'files' ? 'active' : ''}`}
-          onClick={() => setActiveTab('files')}
+          onClick={() => handleSelectTab('files')}
           onMouseEnter={() => preloadTab('files')}
           onFocus={() => preloadTab('files')}
         >
@@ -204,7 +220,7 @@ export function ProjectDetail({
         <button
           type="button"
           className={`subtab ${activeTab === 'rules' ? 'active' : ''}`}
-          onClick={() => setActiveTab('rules')}
+          onClick={() => handleSelectTab('rules')}
           onMouseEnter={() => preloadTab('rules')}
           onFocus={() => preloadTab('rules')}
         >
@@ -214,7 +230,7 @@ export function ProjectDetail({
         <button
           type="button"
           className={`subtab ${activeTab === 'terminal' ? 'active' : ''}`}
-          onClick={() => setActiveTab('terminal')}
+          onClick={() => handleSelectTab('terminal')}
           onMouseEnter={() => preloadTab('terminal')}
           onFocus={() => preloadTab('terminal')}
         >
@@ -224,7 +240,7 @@ export function ProjectDetail({
         <button
           type="button"
           className={`subtab ${activeTab === 'insights' ? 'active' : ''}`}
-          onClick={() => setActiveTab('insights')}
+          onClick={() => handleSelectTab('insights')}
           onMouseEnter={() => preloadTab('insights')}
           onFocus={() => preloadTab('insights')}
         >
@@ -234,7 +250,7 @@ export function ProjectDetail({
         <button
           type="button"
           className={`subtab ${activeTab === 'settings' ? 'active' : ''}`}
-          onClick={() => setActiveTab('settings')}
+          onClick={() => handleSelectTab('settings')}
           onMouseEnter={() => preloadTab('settings')}
           onFocus={() => preloadTab('settings')}
         >
