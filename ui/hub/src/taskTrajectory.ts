@@ -1,6 +1,13 @@
-import type { HarnessJudgmentRecord, HarnessRunResponse, HarnessTrajectoryStep } from '@aaif/goose-hub-core'
+import type {
+  HarnessJudgmentRecord,
+  HarnessRunResponse,
+  HarnessTrajectoryStep,
+  ProviderCallRecord,
+  ProviderCallStats,
+  TaskProviderStats,
+} from '@aaif/goose-hub-core'
 
-export type { HarnessJudgmentRecord }
+export type { HarnessJudgmentRecord, ProviderCallRecord, ProviderCallStats, TaskProviderStats }
 
 export interface ParsedToolCall {
   id?: string
@@ -660,6 +667,7 @@ export interface ParsedLlmTelemetry {
   durationMs: number
   rawRequest?: unknown
   rawResponse?: unknown
+  providerCalls?: ProviderCallRecord[]
 }
 
 export interface TrajectoryMetrics {
@@ -673,6 +681,7 @@ export interface TrajectoryMetrics {
   hasFinalAnswer: boolean
   finalAnswer?: string | null
   status: string
+  providerStats?: TaskProviderStats | null
 }
 
 /**
@@ -682,8 +691,9 @@ export function extractLlmTelemetry(step: HarnessTrajectoryStep): ParsedLlmTelem
   const req = (step.llmRequest ?? null) as Record<string, unknown> | null
   const res = (step.llmResponse ?? null) as Record<string, unknown> | null
   const usage = step.tokenUsage ?? null
+  const providerCalls = step.providerCalls && step.providerCalls.length > 0 ? step.providerCalls : undefined
 
-  if (!req && !res && !usage) {
+  if (!req && !res && !usage && !providerCalls) {
     return null
   }
 
@@ -796,6 +806,7 @@ export function extractLlmTelemetry(step: HarnessTrajectoryStep): ParsedLlmTelem
     durationMs: step.durationMs,
     rawRequest: req,
     rawResponse: res,
+    providerCalls,
   }
 }
 
@@ -912,6 +923,193 @@ export function filterTrajectorySteps(
 }
 
 /**
+ * Computes or retrieves TaskProviderStats from a run response.
+ */
+export function computeTaskProviderStats(
+  run: HarnessRunResponse | null | undefined,
+): TaskProviderStats {
+  if (run?.providerStats) {
+    return run.providerStats
+  }
+  if (run?.trajectory?.providerStats) {
+    return run.trajectory.providerStats
+  }
+
+  const steps = run?.trajectory?.steps ?? []
+  let totalCalls = 0
+  let successfulCalls = 0
+  let failedCalls = 0
+  let totalRetries = 0
+  let totalDurationMs = 0
+  let inputTokens = 0
+  let outputTokens = 0
+  let totalTokens = 0
+  let totalCost: number | undefined = undefined
+  const byProvider: Record<string, ProviderCallStats> = {}
+  const byModel: Record<string, ProviderCallStats> = {}
+
+  let foundExplicitCalls = false
+
+  for (const step of steps) {
+    if (step.providerCalls && step.providerCalls.length > 0) {
+      foundExplicitCalls = true
+      for (const call of step.providerCalls) {
+        totalCalls++
+        if (call.success) {
+          successfulCalls++
+        } else {
+          failedCalls++
+        }
+        if ((call.retryAttempt !== undefined && call.retryAttempt !== null) || call.retryReason) {
+          totalRetries++
+        }
+        totalDurationMs += call.latencyMs || 0
+        const inp = call.tokenUsage?.inputTokens ?? 0
+        const out = call.tokenUsage?.outputTokens ?? 0
+        const tot = call.tokenUsage?.totalTokens ?? inp + out
+        inputTokens += inp
+        outputTokens += out
+        totalTokens += tot
+        if (call.cost !== undefined && call.cost !== null) {
+          totalCost = (totalCost ?? 0) + call.cost
+        }
+
+        const pName = call.provider || 'unknown'
+        if (!byProvider[pName]) {
+          byProvider[pName] = {
+            provider: pName,
+            totalCalls: 0,
+            successfulCalls: 0,
+            failedCalls: 0,
+            totalDurationMs: 0,
+            avgDurationMs: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            retries: 0,
+            errors: [],
+          }
+        }
+        const pStat = byProvider[pName]
+        pStat.totalCalls++
+        if (call.success) {
+          pStat.successfulCalls++
+        } else {
+          pStat.failedCalls++
+          if (call.error && !pStat.errors.includes(call.error)) {
+            pStat.errors.push(call.error)
+          }
+        }
+        if ((call.retryAttempt !== undefined && call.retryAttempt !== null) || call.retryReason) {
+          pStat.retries++
+        }
+        pStat.totalDurationMs += call.latencyMs || 0
+        pStat.avgDurationMs = pStat.totalCalls > 0 ? pStat.totalDurationMs / pStat.totalCalls : 0
+        pStat.inputTokens += inp
+        pStat.outputTokens += out
+        pStat.totalTokens += tot
+        if (call.cost !== undefined && call.cost !== null) {
+          pStat.totalCost = (pStat.totalCost ?? 0) + call.cost
+        }
+
+        const mKey = `${call.provider}:${call.model}`
+        if (!byModel[mKey]) {
+          byModel[mKey] = {
+            provider: call.provider,
+            model: call.model,
+            totalCalls: 0,
+            successfulCalls: 0,
+            failedCalls: 0,
+            totalDurationMs: 0,
+            avgDurationMs: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            retries: 0,
+            errors: [],
+          }
+        }
+        const mStat = byModel[mKey]
+        mStat.totalCalls++
+        if (call.success) {
+          mStat.successfulCalls++
+        } else {
+          mStat.failedCalls++
+          if (call.error && !mStat.errors.includes(call.error)) {
+            mStat.errors.push(call.error)
+          }
+        }
+        if ((call.retryAttempt !== undefined && call.retryAttempt !== null) || call.retryReason) {
+          mStat.retries++
+        }
+        mStat.totalDurationMs += call.latencyMs || 0
+        mStat.avgDurationMs = mStat.totalCalls > 0 ? mStat.totalDurationMs / mStat.totalCalls : 0
+        mStat.inputTokens += inp
+        mStat.outputTokens += out
+        mStat.totalTokens += tot
+        if (call.cost !== undefined && call.cost !== null) {
+          mStat.totalCost = (mStat.totalCost ?? 0) + call.cost
+        }
+      }
+    }
+  }
+
+  if (!foundExplicitCalls && steps.length > 0) {
+    const policyName = run?.trajectory?.policyName || 'unknown'
+    const [pName, mName] = policyName.includes(':') ? policyName.split(':', 2) : [policyName, 'default']
+    const pStat: ProviderCallStats = {
+      provider: pName,
+      model: mName,
+      totalCalls: steps.length,
+      successfulCalls: steps.length,
+      failedCalls: 0,
+      totalDurationMs: run?.durationMs || 0,
+      avgDurationMs: steps.length > 0 ? (run?.durationMs || 0) / steps.length : 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      retries: 0,
+      errors: [],
+    }
+    for (const step of steps) {
+      if (step.tokenUsage) {
+        const inp = step.tokenUsage.inputTokens ?? 0
+        const out = step.tokenUsage.outputTokens ?? 0
+        const tot = step.tokenUsage.totalTokens ?? inp + out
+        pStat.inputTokens += inp
+        pStat.outputTokens += out
+        pStat.totalTokens += tot
+      }
+    }
+    byProvider[pName] = pStat
+    byModel[`${pName}:${mName}`] = { ...pStat }
+    totalCalls = pStat.totalCalls
+    successfulCalls = pStat.successfulCalls
+    totalDurationMs = pStat.totalDurationMs
+    inputTokens = pStat.inputTokens
+    outputTokens = pStat.outputTokens
+    totalTokens = pStat.totalTokens
+  }
+
+  const avgDurationMs = totalCalls > 0 ? totalDurationMs / totalCalls : 0
+
+  return {
+    totalCalls,
+    successfulCalls,
+    failedCalls,
+    totalRetries,
+    totalDurationMs,
+    avgDurationMs,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    totalCost: totalCost ?? null,
+    byProvider,
+    byModel,
+  }
+}
+
+/**
  * Calculates aggregate trajectory metrics across all steps.
  */
 export function calculateTrajectoryMetrics(
@@ -943,18 +1141,20 @@ export function calculateTrajectoryMetrics(
   }
 
   const finalAnswer = extractFinalAnswer(run)
+  const providerStats = computeTaskProviderStats(run)
 
   return {
     totalSteps: run?.stepCount ?? steps.length,
     toolCallsCount: run?.toolCallsCount ?? Object.values(toolUsageFrequencies).reduce((a, b) => a + b, 0),
     durationMs: run?.durationMs ?? 0,
-    inputTokens,
-    outputTokens,
-    totalTokens,
+    inputTokens: inputTokens || providerStats.inputTokens,
+    outputTokens: outputTokens || providerStats.outputTokens,
+    totalTokens: totalTokens || providerStats.totalTokens,
     toolUsageFrequencies,
     hasFinalAnswer: Boolean(finalAnswer),
     finalAnswer,
     status: String(run?.status || 'Unknown'),
+    providerStats,
   }
 }
 

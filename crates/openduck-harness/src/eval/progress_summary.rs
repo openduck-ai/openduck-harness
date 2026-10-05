@@ -447,6 +447,7 @@ mod tests {
             llm_request: None,
             llm_response: None,
             judgments: None,
+            provider_calls: None,
         }
     }
 

@@ -81,6 +81,7 @@ impl EvalRunner {
                             duration_ms: 0,
                             verification: None,
                             error: Some(format!("Sandbox initialization error: {}", e)),
+                            provider_stats: None,
                         };
                     }
                 };
@@ -125,6 +126,7 @@ impl EvalRunner {
                             duration_ms: exec.duration_ms,
                             verification: ver_opt,
                             error: final_error,
+                            provider_stats: exec.provider_stats,
                         }
                     }
                     Err(e) => TaskResult {
@@ -138,6 +140,7 @@ impl EvalRunner {
                         duration_ms: start_time.elapsed().as_millis(),
                         verification: None,
                         error: Some(format!("Execution failed: {e:#}")),
+                        provider_stats: None,
                     },
                 };
 

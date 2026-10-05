@@ -262,35 +262,84 @@ async fn complete_provider_with_retry(
     messages: &[Message],
     tools: &[Tool],
     policy_name: &str,
+    is_secondary: bool,
+    recorded_calls: &mut Vec<openduck_harness::telemetry::ProviderCallRecord>,
 ) -> Result<ProviderStepResult> {
     let mut working_messages = messages.to_vec();
-    let mut empty_retries = 0;
-    let mut transient_retries = 0;
+    let mut empty_retries: u32 = 0;
+    let mut transient_retries: u32 = 0;
+    let provider_name = provider.get_name().to_string();
+    let model_name = model_config.model_name.clone();
 
     loop {
+        let call_start = std::time::Instant::now();
         let res = provider
             .complete(model_config, system_prompt, &working_messages, tools)
             .await;
+        let latency_ms = call_start.elapsed().as_millis() as u64;
 
         let (reply, usage) = match res {
             Ok(res) => res,
             Err(openduck_providers::errors::ProviderError::ContextLengthExceeded(ref err_msg)) => {
+                recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
+                    provider: provider_name.clone(),
+                    model: model_name.clone(),
+                    latency_ms,
+                    success: false,
+                    error: Some(err_msg.clone()),
+                    token_usage: None,
+                    cost: None,
+                    retry_attempt: Some((empty_retries + transient_retries) as usize),
+                    retry_reason: Some("context_length_exceeded".to_string()),
+                    is_secondary: if is_secondary { Some(true) } else { None },
+                });
                 tracing::warn!(
                     policy = %policy_name,
                     error = %err_msg,
                     "Context length exceeded, falling back to emergency context pruning"
                 );
                 let pruned = prune_messages_fallback(&working_messages);
-                provider
+                let fallback_start = std::time::Instant::now();
+                let fallback_res = provider
                     .complete(model_config, system_prompt, &pruned, tools)
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))?
+                    .await;
+                let fallback_latency = fallback_start.elapsed().as_millis() as u64;
+                match fallback_res {
+                    Ok(fb_res) => fb_res,
+                    Err(fb_err) => {
+                        recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
+                            provider: provider_name.clone(),
+                            model: model_name.clone(),
+                            latency_ms: fallback_latency,
+                            success: false,
+                            error: Some(fb_err.to_string()),
+                            token_usage: None,
+                            cost: None,
+                            retry_attempt: Some((empty_retries + transient_retries + 1) as usize),
+                            retry_reason: Some("context_length_pruned_failed".to_string()),
+                            is_secondary: if is_secondary { Some(true) } else { None },
+                        });
+                        return Err(anyhow::anyhow!(fb_err));
+                    }
+                }
             }
             Err(e)
                 if is_transient_complete_error(&e)
                     && transient_retries < MAX_TRANSIENT_POLICY_RETRIES =>
             {
                 transient_retries += 1;
+                recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
+                    provider: provider_name.clone(),
+                    model: model_name.clone(),
+                    latency_ms,
+                    success: false,
+                    error: Some(e.to_string()),
+                    token_usage: None,
+                    cost: None,
+                    retry_attempt: Some(transient_retries as usize),
+                    retry_reason: Some("transient_error".to_string()),
+                    is_secondary: if is_secondary { Some(true) } else { None },
+                });
                 let delay_ms = transient_retry_delay_ms(transient_retries);
                 tracing::warn!(
                     policy = %policy_name,
@@ -305,11 +354,51 @@ async fn complete_provider_with_retry(
                 }
                 continue;
             }
-            Err(e) => return Err(anyhow::anyhow!(e)),
+            Err(e) => {
+                recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
+                    provider: provider_name.clone(),
+                    model: model_name.clone(),
+                    latency_ms,
+                    success: false,
+                    error: Some(e.to_string()),
+                    token_usage: None,
+                    cost: None,
+                    retry_attempt: if empty_retries > 0 || transient_retries > 0 {
+                        Some((empty_retries + transient_retries) as usize)
+                    } else {
+                        None
+                    },
+                    retry_reason: None,
+                    is_secondary: if is_secondary { Some(true) } else { None },
+                });
+                return Err(anyhow::anyhow!(e));
+            }
         };
+
+        let token_usage_summary = Some(openduck_harness::telemetry::TokenUsageSummary {
+            input_tokens: usage.usage.input_tokens,
+            output_tokens: usage.usage.output_tokens,
+            total_tokens: usage.usage.total_tokens,
+        });
 
         match action_from_provider_reply(&reply) {
             Ok(action) => {
+                recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
+                    provider: provider_name.clone(),
+                    model: model_name.clone(),
+                    latency_ms,
+                    success: true,
+                    error: None,
+                    token_usage: token_usage_summary,
+                    cost: usage.cost,
+                    retry_attempt: if empty_retries > 0 || transient_retries > 0 {
+                        Some((empty_retries + transient_retries) as usize)
+                    } else {
+                        None
+                    },
+                    retry_reason: None,
+                    is_secondary: if is_secondary { Some(true) } else { None },
+                });
                 return Ok(ProviderStepResult {
                     action,
                     reply,
@@ -321,6 +410,18 @@ async fn complete_provider_with_retry(
                 if is_empty_completion_error(&err) && empty_retries < MAX_EMPTY_TURN_RETRIES =>
             {
                 empty_retries += 1;
+                recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
+                    provider: provider_name.clone(),
+                    model: model_name.clone(),
+                    latency_ms,
+                    success: false,
+                    error: Some("Empty completion returned".to_string()),
+                    token_usage: token_usage_summary,
+                    cost: usage.cost,
+                    retry_attempt: Some((empty_retries + transient_retries) as usize),
+                    retry_reason: Some("empty_completion".to_string()),
+                    is_secondary: if is_secondary { Some(true) } else { None },
+                });
                 let delay_ms = empty_turn_retry_delay_ms(empty_retries);
                 tracing::warn!(
                     policy = %policy_name,
@@ -334,7 +435,25 @@ async fn complete_provider_with_retry(
                 }
                 working_messages.push(Message::user().with_text(EMPTY_TURN_NUDGE));
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
+                    provider: provider_name.clone(),
+                    model: model_name.clone(),
+                    latency_ms,
+                    success: false,
+                    error: Some(err.to_string()),
+                    token_usage: token_usage_summary,
+                    cost: usage.cost,
+                    retry_attempt: if empty_retries > 0 || transient_retries > 0 {
+                        Some((empty_retries + transient_retries) as usize)
+                    } else {
+                        None
+                    },
+                    retry_reason: None,
+                    is_secondary: if is_secondary { Some(true) } else { None },
+                });
+                return Err(err);
+            }
         }
     }
 }
@@ -435,6 +554,7 @@ impl AgentPolicy for GooseAgentPolicy {
             .or_insert_with(|| context.session_id.clone());
         model_config.request_headers = Some(headers);
 
+        let mut recorded_calls = Vec::new();
         let primary_res = crate::session_context::with_session_id(
             Some(context.session_id.clone()),
             complete_provider_with_retry(
@@ -444,6 +564,8 @@ impl AgentPolicy for GooseAgentPolicy {
                 &messages,
                 &rmcp_tools,
                 &self.name,
+                false,
+                &mut recorded_calls,
             ),
         )
         .await;
@@ -482,6 +604,8 @@ impl AgentPolicy for GooseAgentPolicy {
                             &messages,
                             &rmcp_tools,
                             &self.name,
+                            true,
+                            &mut recorded_calls,
                         ),
                     )
                     .await;
@@ -584,6 +708,11 @@ impl AgentPolicy for GooseAgentPolicy {
             llm_request: Some(llm_request),
             llm_response: Some(llm_response),
             token_usage,
+            provider_calls: if recorded_calls.is_empty() {
+                None
+            } else {
+                Some(recorded_calls)
+            },
         };
 
         Ok((step_res.action, Some(telemetry)))
@@ -758,6 +887,13 @@ pub struct HarnessRunResponseDto {
     pub continuation: Option<ContinuationCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_slug: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "provider_stats",
+        alias = "providerStats"
+    )]
+    pub provider_stats: Option<openduck_harness::telemetry::TaskProviderStats>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -835,6 +971,13 @@ pub struct HarnessHistorySummaryDto {
     pub continuable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress_summary: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "provider_stats",
+        alias = "providerStats"
+    )]
+    pub provider_stats: Option<openduck_harness::telemetry::TaskProviderStats>,
 }
 
 pub fn apply_history_task_names(
@@ -886,6 +1029,13 @@ struct HarnessRunSummaryPayload {
     recorded_cassette_path: Option<String>,
     #[serde(default)]
     continuation: Option<ContinuationSummaryLite>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "provider_stats",
+        alias = "providerStats"
+    )]
+    provider_stats: Option<openduck_harness::telemetry::TaskProviderStats>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1088,12 +1238,14 @@ fn empty_live_snapshot(task_id: &str) -> HarnessRunResponseDto {
             steps: vec![],
             system_prompt: None,
             active_rules: None,
+            provider_stats: None,
         },
         recorded_cassette_path: None,
         system_prompt: None,
         active_rules: None,
         continuation: None,
         project_slug: None,
+        provider_stats: None,
     }
 }
 
@@ -1126,6 +1278,8 @@ fn live_snapshot_from_steps(
         AgentAction::FinalAnswer(ans) => Some(ans.clone()),
         _ => None,
     });
+    let provider_stats =
+        openduck_harness::telemetry::TaskProviderStats::from_steps(steps, Some(policy_name));
     HarnessRunResponseDto {
         task_id: task_id.to_string(),
         status: RunStatus::Running,
@@ -1143,6 +1297,7 @@ fn live_snapshot_from_steps(
             steps: steps.to_vec(),
             system_prompt: None,
             active_rules: None,
+            provider_stats: Some(provider_stats.clone()),
         },
         recorded_cassette_path: None,
         system_prompt: None,
@@ -1155,6 +1310,7 @@ fn live_snapshot_from_steps(
             steps,
         )),
         project_slug: None,
+        provider_stats: Some(provider_stats),
     }
 }
 
@@ -1195,6 +1351,12 @@ pub fn to_run_dto(
 ) -> HarnessRunResponseDto {
     let system_prompt = res.trajectory.system_prompt.clone();
     let active_rules = res.trajectory.active_rules.clone();
+    let provider_stats = res.provider_stats.clone().or_else(|| {
+        Some(openduck_harness::telemetry::TaskProviderStats::from_steps(
+            &res.trajectory.steps,
+            Some(&res.trajectory.policy_name),
+        ))
+    });
     HarnessRunResponseDto {
         task_id: res.task_id,
         status: res.status,
@@ -1208,6 +1370,7 @@ pub fn to_run_dto(
         recorded_cassette_path,
         continuation: res.continuation,
         project_slug: None,
+        provider_stats,
     }
 }
 
@@ -1418,6 +1581,12 @@ fn history_summary_from_payload(
             .as_ref()
             .map(|c| c.compacted_summary.clone())
             .filter(|s| !s.trim().is_empty()),
+        provider_stats: run.provider_stats.clone().or_else(|| {
+            Some(openduck_harness::telemetry::TaskProviderStats::from_steps(
+                &run.trajectory.steps,
+                Some(&run.trajectory.policy_name),
+            ))
+        }),
     }
 }
 
@@ -1555,12 +1724,14 @@ pub fn failed_run_dto(
                 steps: vec![],
                 system_prompt: None,
                 active_rules: None,
+                provider_stats: None,
             },
             recorded_cassette_path: None,
             system_prompt: None,
             active_rules: None,
             continuation: None,
             project_slug: None,
+            provider_stats: None,
         }
     }
 }
@@ -1583,12 +1754,14 @@ pub fn skipped_run_dto(task_id: &str, reason: &str) -> HarnessRunResponseDto {
             steps: vec![],
             system_prompt: None,
             active_rules: None,
+            provider_stats: None,
         },
         recorded_cassette_path: None,
         system_prompt: None,
         active_rules: None,
         continuation: None,
         project_slug: None,
+        provider_stats: None,
     }
 }
 
@@ -1628,6 +1801,7 @@ pub fn cancelled_run_dto(
                 steps: vec![],
                 system_prompt: None,
                 active_rules: None,
+                provider_stats: None,
             },
             recorded_cassette_path: None,
             system_prompt: None,
@@ -1640,6 +1814,7 @@ pub fn cancelled_run_dto(
                 &[],
             )),
             project_slug: None,
+            provider_stats: None,
         }
     }
 }
@@ -1723,6 +1898,7 @@ fn history_summary_from_file(path: &Path) -> Option<HarnessHistorySummaryDto> {
                 Some(c.compacted_summary)
             }
         }),
+        provider_stats: run.provider_stats,
     })
 }
 
@@ -1973,6 +2149,12 @@ fn load_persisted_run(path: &Path) -> Result<HarnessRunResponseDto> {
     let mut run = p.run_response;
     if run.project_slug.is_none() {
         run.project_slug = p.project_slug;
+    }
+    if run.provider_stats.is_none() {
+        run.provider_stats = Some(openduck_harness::telemetry::TaskProviderStats::from_steps(
+            &run.trajectory.steps,
+            Some(&run.trajectory.policy_name),
+        ));
     }
     Ok(run)
 }
@@ -2859,12 +3041,14 @@ mod tests {
                 steps: vec![],
                 system_prompt: None,
                 active_rules: None,
+                provider_stats: None,
             },
             recorded_cassette_path: None,
             system_prompt: None,
             active_rules: None,
             continuation: None,
             project_slug: None,
+            provider_stats: None,
         }
     }
 
@@ -2915,6 +3099,7 @@ mod tests {
             error: None,
             continuable: false,
             progress_summary: None,
+            provider_stats: None,
         }
     }
 

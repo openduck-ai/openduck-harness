@@ -32,6 +32,8 @@ pub struct StepTelemetry {
     pub llm_response: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<TokenUsageSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "provider_calls", alias = "providerCalls")]
+    pub provider_calls: Option<Vec<crate::telemetry::ProviderCallRecord>>,
 }
 
 #[async_trait]

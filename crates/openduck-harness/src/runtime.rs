@@ -7,7 +7,9 @@ use crate::policy::{
     AgentAction, AgentPolicy, HarnessContextView, HarnessMessage, MessageRole, YieldReason,
 };
 use crate::sandbox::SandboxDriver;
-use crate::telemetry::{TrajectoryLogger, TrajectoryRecord, TrajectoryStep};
+use crate::telemetry::{
+    TaskProviderStats, TrajectoryLogger, TrajectoryRecord, TrajectoryStep,
+};
 use crate::types::{
     AdvisorProxyConfig, ExecOptions, RunStatus, ToolCallRequest, ToolCallResponse, ToolDefinition,
 };
@@ -28,6 +30,7 @@ pub struct TaskExecutionResult {
     pub final_answer: Option<String>,
     pub trajectory: TrajectoryRecord,
     pub continuation: Option<crate::eval::ContinuationCheckpoint>,
+    pub provider_stats: Option<TaskProviderStats>,
 }
 
 pub type StepObserver = Arc<dyn Fn(&[TrajectoryStep]) + Send + Sync>;
@@ -1116,6 +1119,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             .await?;
 
         let duration_ms = start_time.elapsed().as_millis();
+        let provider_stats = TaskProviderStats::from_steps(&steps, Some(self.policy.name()));
         let trajectory = TrajectoryRecord {
             session_id: session_id.to_string(),
             task_id: task.id.clone(),
@@ -1126,6 +1130,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             steps,
             system_prompt: self.system_prompt.clone(),
             active_rules: self.active_rules.clone(),
+            provider_stats: Some(provider_stats.clone()),
         };
 
         if let Some(logger) = &self.trajectory_logger {
@@ -1153,6 +1158,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             final_answer,
             trajectory,
             continuation,
+            provider_stats: Some(provider_stats),
         })
     }
 
@@ -1272,6 +1278,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         }
 
         let duration_ms = start_time.elapsed().as_millis();
+        let provider_stats = TaskProviderStats::from_steps(&cumulative_steps, Some(self.policy.name()));
         let trajectory = TrajectoryRecord {
             session_id: session_id.to_string(),
             task_id: task.id.clone(),
@@ -1282,6 +1289,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             steps: cumulative_steps,
             system_prompt: self.system_prompt.clone(),
             active_rules: self.active_rules.clone(),
+            provider_stats: Some(provider_stats.clone()),
         };
 
         if let Some(logger) = &self.trajectory_logger {
@@ -1315,6 +1323,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             final_answer: final_combined_answer,
             trajectory,
             continuation,
+            provider_stats: Some(provider_stats),
         })
     }
 
@@ -1390,17 +1399,24 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                                 "policyError": err_str,
                             })),
                             judgments: None,
+                            provider_calls: None,
                         });
                         self.notify_step_observer_with_prefix(step_prefix, &steps);
                         break;
                     }
                 };
 
-            let (req_payload, res_payload, token_usage_payload) = if let Some(t) = step_telemetry {
-                (t.llm_request, t.llm_response, t.token_usage)
-            } else {
-                (None, None, None)
-            };
+            let (req_payload, res_payload, token_usage_payload, provider_calls_payload) =
+                if let Some(t) = step_telemetry {
+                    (
+                        t.llm_request,
+                        t.llm_response,
+                        t.token_usage,
+                        t.provider_calls,
+                    )
+                } else {
+                    (None, None, None, None)
+                };
 
             let step_duration = step_start.elapsed().as_millis();
 
@@ -1453,10 +1469,11 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                             action: action.clone(),
                             tool_results: None,
                             duration_ms: step_duration,
-                            token_usage: token_usage_payload,
+                            token_usage: token_usage_payload.clone(),
                             llm_request: Some(llm_request),
                             llm_response: Some(llm_response),
                             judgments,
+                            provider_calls: provider_calls_payload.clone(),
                         });
                         self.notify_step_observer_with_prefix(step_prefix, &steps);
                         continue;
@@ -1476,6 +1493,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                         llm_request: Some(llm_request),
                         llm_response: Some(llm_response),
                         judgments,
+                        provider_calls: provider_calls_payload,
                     });
                     self.notify_step_observer_with_prefix(step_prefix, &steps);
                     break;
@@ -1503,6 +1521,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                         llm_request: Some(llm_request),
                         llm_response: Some(llm_response),
                         judgments: None,
+                        provider_calls: provider_calls_payload,
                     });
                     self.notify_step_observer_with_prefix(step_prefix, &steps);
                     break;
@@ -1533,6 +1552,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                         llm_request: Some(llm_request),
                         llm_response: Some(llm_response),
                         judgments: None,
+                        provider_calls: provider_calls_payload,
                     });
                     self.notify_step_observer_with_prefix(step_prefix, &steps);
                     break;
@@ -1656,6 +1676,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                         } else {
                             Some(step_judgments)
                         },
+                        provider_calls: provider_calls_payload,
                     });
                     self.notify_step_observer_with_prefix(step_prefix, &steps);
                 }

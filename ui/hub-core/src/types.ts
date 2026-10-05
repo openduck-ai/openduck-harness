@@ -406,6 +406,50 @@ export interface TokenUsageSummary {
   totalTokens?: number
 }
 
+export interface ProviderCallRecord {
+  provider: string
+  model: string
+  latencyMs: number
+  success: boolean
+  error?: string | null
+  tokenUsage?: TokenUsageSummary | null
+  cost?: number | null
+  retryAttempt?: number | null
+  retryReason?: string | null
+  isSecondary?: boolean | null
+}
+
+export interface ProviderCallStats {
+  provider: string
+  model?: string | null
+  totalCalls: number
+  successfulCalls: number
+  failedCalls: number
+  totalDurationMs: number
+  avgDurationMs: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  totalCost?: number | null
+  retries: number
+  errors: string[]
+}
+
+export interface TaskProviderStats {
+  totalCalls: number
+  successfulCalls: number
+  failedCalls: number
+  totalRetries: number
+  totalDurationMs: number
+  avgDurationMs: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  totalCost?: number | null
+  byProvider: Record<string, ProviderCallStats>
+  byModel?: Record<string, ProviderCallStats>
+}
+
 export interface HarnessJudgmentRecord {
   point: string
   mode: 'off' | 'shadow' | 'active'
@@ -437,6 +481,7 @@ export interface HarnessTrajectoryStep {
   llmRequest?: Record<string, unknown> | null
   llmResponse?: Record<string, unknown> | null
   judgments?: HarnessJudgmentRecord[]
+  providerCalls?: ProviderCallRecord[] | null
 }
 
 export interface HarnessTrajectoryRecord {
@@ -448,6 +493,7 @@ export interface HarnessTrajectoryRecord {
   finalStatus?: HarnessRunStatus | null
   systemPrompt?: string | null
   activeRules?: ActiveRuleSummary[] | null
+  providerStats?: TaskProviderStats | null
 }
 
 export interface HarnessActiveJob {
@@ -479,6 +525,7 @@ export interface HarnessHistorySummary {
   error?: string | null
   continuable?: boolean
   progressSummary?: string | null
+  providerStats?: TaskProviderStats | null
 }
 
 export interface ContinuationCheckpoint {
@@ -557,6 +604,7 @@ export interface HarnessRunResponse {
   activeRules?: ActiveRuleSummary[] | null
   continuation?: ContinuationCheckpoint | null
   projectSlug?: string | null
+  providerStats?: TaskProviderStats | null
 }
 
 export interface HarnessJobInspect {

@@ -1,4 +1,5 @@
 use crate::eval::task::VerificationResult;
+use crate::telemetry::TaskProviderStats;
 use crate::types::RunStatus;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,8 @@ pub struct TaskResult {
     pub duration_ms: u128,
     pub verification: Option<VerificationResult>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "provider_stats", alias = "providerStats")]
+    pub provider_stats: Option<TaskProviderStats>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +44,8 @@ pub struct EvalMetrics {
     pub avg_steps: f64,
     #[serde(alias = "total_tool_calls")]
     pub total_tool_calls: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "provider_stats", alias = "providerStats")]
+    pub provider_stats: Option<TaskProviderStats>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +102,82 @@ impl EvaluationReport {
 
         let total_tool_calls: usize = task_results.iter().map(|r| r.tool_calls_count).sum();
 
+        let mut agg_provider_stats = TaskProviderStats::default();
+        let mut has_provider_stats = false;
+        for tr in &task_results {
+            if let Some(ps) = &tr.provider_stats {
+                has_provider_stats = true;
+                agg_provider_stats.total_calls += ps.total_calls;
+                agg_provider_stats.successful_calls += ps.successful_calls;
+                agg_provider_stats.failed_calls += ps.failed_calls;
+                agg_provider_stats.total_retries += ps.total_retries;
+                agg_provider_stats.total_duration_ms += ps.total_duration_ms;
+                agg_provider_stats.input_tokens += ps.input_tokens;
+                agg_provider_stats.output_tokens += ps.output_tokens;
+                agg_provider_stats.total_tokens += ps.total_tokens;
+                if let Some(c) = ps.total_cost {
+                    let cur = agg_provider_stats.total_cost.unwrap_or(0.0);
+                    agg_provider_stats.total_cost = Some(cur + c);
+                }
+                for (p_key, p_stat) in &ps.by_provider {
+                    let entry = agg_provider_stats
+                        .by_provider
+                        .entry(p_key.clone())
+                        .or_insert_with(|| crate::telemetry::ProviderCallStats::new(p_key, None));
+                    entry.total_calls += p_stat.total_calls;
+                    entry.successful_calls += p_stat.successful_calls;
+                    entry.failed_calls += p_stat.failed_calls;
+                    entry.total_duration_ms += p_stat.total_duration_ms;
+                    entry.input_tokens += p_stat.input_tokens;
+                    entry.output_tokens += p_stat.output_tokens;
+                    entry.total_tokens += p_stat.total_tokens;
+                    entry.retries += p_stat.retries;
+                    if let Some(c) = p_stat.total_cost {
+                        let cur = entry.total_cost.unwrap_or(0.0);
+                        entry.total_cost = Some(cur + c);
+                    }
+                    for err in &p_stat.errors {
+                        if !entry.errors.contains(err) {
+                            entry.errors.push(err.clone());
+                        }
+                    }
+                    if entry.total_calls > 0 {
+                        entry.avg_duration_ms = (entry.total_duration_ms as f64) / (entry.total_calls as f64);
+                    }
+                }
+                for (m_key, m_stat) in &ps.by_model {
+                    let entry = agg_provider_stats
+                        .by_model
+                        .entry(m_key.clone())
+                        .or_insert_with(|| crate::telemetry::ProviderCallStats::new(&m_stat.provider, m_stat.model.clone()));
+                    entry.total_calls += m_stat.total_calls;
+                    entry.successful_calls += m_stat.successful_calls;
+                    entry.failed_calls += m_stat.failed_calls;
+                    entry.total_duration_ms += m_stat.total_duration_ms;
+                    entry.input_tokens += m_stat.input_tokens;
+                    entry.output_tokens += m_stat.output_tokens;
+                    entry.total_tokens += m_stat.total_tokens;
+                    entry.retries += m_stat.retries;
+                    if let Some(c) = m_stat.total_cost {
+                        let cur = entry.total_cost.unwrap_or(0.0);
+                        entry.total_cost = Some(cur + c);
+                    }
+                    for err in &m_stat.errors {
+                        if !entry.errors.contains(err) {
+                            entry.errors.push(err.clone());
+                        }
+                    }
+                    if entry.total_calls > 0 {
+                        entry.avg_duration_ms = (entry.total_duration_ms as f64) / (entry.total_calls as f64);
+                    }
+                }
+            }
+        }
+        if agg_provider_stats.total_calls > 0 {
+            agg_provider_stats.avg_duration_ms =
+                (agg_provider_stats.total_duration_ms as f64) / (agg_provider_stats.total_calls as f64);
+        }
+
         Self {
             suite_name: suite_name.into(),
             policy_name: policy_name.into(),
@@ -111,6 +192,11 @@ impl EvaluationReport {
                 avg_duration_ms,
                 avg_steps,
                 total_tool_calls,
+                provider_stats: if has_provider_stats {
+                    Some(agg_provider_stats)
+                } else {
+                    None
+                },
             },
             task_results,
             metadata: HashMap::new(),

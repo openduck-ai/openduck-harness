@@ -8,7 +8,7 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveRuleSummary {
     pub name: String,
@@ -18,7 +18,7 @@ pub struct ActiveRuleSummary {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsageSummary {
     #[serde(default, alias = "input_tokens", alias = "inputTokens")]
@@ -66,6 +66,13 @@ pub struct TrajectoryStep {
     pub llm_response: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "judgments")]
     pub judgments: Option<Vec<crate::judge::JudgmentRecord>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "provider_calls",
+        alias = "providerCalls"
+    )]
+    pub provider_calls: Option<Vec<super::provider_stats::ProviderCallRecord>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +106,13 @@ pub struct TrajectoryRecord {
         alias = "active_rules"
     )]
     pub active_rules: Option<Vec<ActiveRuleSummary>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "provider_stats",
+        alias = "providerStats"
+    )]
+    pub provider_stats: Option<super::provider_stats::TaskProviderStats>,
 }
 
 pub struct TrajectoryLogger {

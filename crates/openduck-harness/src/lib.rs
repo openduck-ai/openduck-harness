@@ -38,7 +38,10 @@ pub use runtime::{
     format_structured_context_summary, prune_context_messages, snip_tool_output,
     trajectory_steps_to_messages, AgentHarness, StepObserver, TaskExecutionResult,
 };
-pub use telemetry::{TrajectoryLogger, TrajectoryRecord, TrajectoryStep};
+pub use telemetry::{
+    ProviderCallRecord, ProviderCallStats, TaskProviderStats, TrajectoryLogger, TrajectoryRecord,
+    TrajectoryStep,
+};
 pub use types::{
     discover_advisor_configs, effective_max_turns_limit, load_advisor_configs_file,
     parse_advisor_configs_str, standard_advisor_config_paths, AdvisorProxyConfig, ExecOptions,
