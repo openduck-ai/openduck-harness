@@ -1829,6 +1829,31 @@ pub fn snip_tool_output(output: &str, max_lines: usize, max_bytes: usize) -> (St
     (output.to_string(), false)
 }
 
+pub fn snip_tool_call_arguments(
+    _tool_name: &str,
+    arguments: &mut serde_json::Value,
+    max_content_bytes: usize,
+) -> bool {
+    let mut modified = false;
+    if let Some(map) = arguments.as_object_mut() {
+        let targets = ["content", "patch", "replacement", "file_text"];
+        for key in targets {
+            if let Some(serde_json::Value::String(s)) = map.get(key) {
+                if s.len() > max_content_bytes {
+                    let original_bytes = s.len();
+                    let snippet: String = s.chars().take(120).collect();
+                    let replacement = format!(
+                        "{snippet}\n[... {original_bytes} bytes omitted from historical tool call by OpenDuck harness ...]"
+                    );
+                    map.insert(key.to_string(), serde_json::Value::String(replacement));
+                    modified = true;
+                }
+            }
+        }
+    }
+    modified
+}
+
 fn find_valid_char_boundary(s: &str, mut idx: usize) -> usize {
     if idx >= s.len() {
         return s.len();
@@ -2290,6 +2315,11 @@ pub fn compact_context_messages(
         let current_tokens = compacted.iter().map(|m| m.estimate_tokens()).sum::<usize>();
         if current_tokens > token_watermark && compacted.len() > 3 {
             for msg in compacted.iter_mut().skip(3) {
+                if let Some(calls) = &mut msg.tool_calls {
+                    for call in calls {
+                        snip_tool_call_arguments(&call.name, &mut call.arguments, 1024);
+                    }
+                }
                 if let Some(results) = &mut msg.tool_results {
                     for res in results {
                         let (snipped, _) = snip_tool_output(&res.output, 50, 4096);

@@ -26,7 +26,10 @@ use openduck_providers::conversation::token_usage::ProviderUsage;
 pub use format::format_message_for_compacting;
 pub use model::{CompactionModel, ProviderModel, TokenEstimator};
 pub use provider::CompactingProvider;
-pub use snip::{is_protected_zone_message, snip_tool_output};
+pub use snip::{
+    is_protected_zone_message, snip_tool_call_arguments, snip_tool_output,
+    DEFAULT_MAX_TOOL_CALL_CONTENT_BYTES,
+};
 pub use structured::{FileActivity, StructuredSummary};
 pub use summarize::{summarize, Summary};
 pub use templates::Templates;

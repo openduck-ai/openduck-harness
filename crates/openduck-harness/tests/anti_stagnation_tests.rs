@@ -1050,6 +1050,29 @@ fn test_tool_output_snipping_behavior() {
 }
 
 #[test]
+fn test_tool_call_arguments_snipping() {
+    use openduck_harness::runtime::snip_tool_call_arguments;
+
+    let mut args = serde_json::json!({
+        "path": "output/large_report.md",
+        "content": "a".repeat(15_000)
+    });
+
+    let snipped = snip_tool_call_arguments("write_file", &mut args, 1024);
+    assert!(snipped);
+    let content = args.get("content").unwrap().as_str().unwrap();
+    assert!(content.contains("omitted from historical tool call by OpenDuck harness"));
+    assert!(content.len() < 500);
+
+    let mut small_args = serde_json::json!({
+        "path": "small.txt",
+        "content": "short text"
+    });
+    let small_snipped = snip_tool_call_arguments("write_file", &mut small_args, 1024);
+    assert!(!small_snipped);
+}
+
+#[test]
 fn test_global_harness_settings_parsing() {
     use openduck_harness::types::parse_harness_global_settings_str;
 

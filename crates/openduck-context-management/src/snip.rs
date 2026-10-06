@@ -98,6 +98,40 @@ pub fn is_protected_zone_message(msg: &Message) -> bool {
     false
 }
 
+pub const DEFAULT_MAX_TOOL_CALL_CONTENT_BYTES: usize = 1024;
+
+/// Snips large file-writing/patching content strings from historical tool call arguments.
+///
+/// Once a tool has executed (such as `write_file` or `create_file`), keeping 10-50 KB of raw file
+/// content in the historical tool call request inside subsequent prompts adds severe token bloat and
+/// latency without adding value, since the file exists on disk and the tool response already confirmed execution.
+pub fn snip_tool_call_arguments(
+    _tool_name: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    max_content_bytes: usize,
+) -> (serde_json::Map<String, serde_json::Value>, bool) {
+    let mut modified = false;
+    let mut new_args = arguments.clone();
+
+    // Check common large payload fields in file/patch tools
+    let targets = ["content", "patch", "replacement", "file_text"];
+    for key in targets {
+        if let Some(serde_json::Value::String(s)) = new_args.get(key) {
+            if s.len() > max_content_bytes {
+                let original_bytes = s.len();
+                let snippet: String = s.chars().take(120).collect();
+                let replacement = format!(
+                    "{snippet}\n[... {original_bytes} bytes omitted from historical tool call by OpenDuck context manager ...]"
+                );
+                new_args.insert(key.to_string(), serde_json::Value::String(replacement));
+                modified = true;
+            }
+        }
+    }
+
+    (new_args, modified)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +155,34 @@ mod tests {
         assert!(snipped.contains("log entry 100"));
         assert!(snipped.contains("80 lines"));
         assert!(snipped.contains("snipped by OpenDuck context manager"));
+    }
+
+    #[test]
+    fn test_snip_tool_call_arguments() {
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "path".to_string(),
+            serde_json::Value::String("foo.md".to_string()),
+        );
+        args.insert(
+            "content".to_string(),
+            serde_json::Value::String("x".repeat(5000)),
+        );
+
+        let (snipped, was_snipped) = snip_tool_call_arguments("write_file", &args, 1024);
+        assert!(was_snipped);
+        assert_eq!(snipped.get("path").unwrap().as_str().unwrap(), "foo.md");
+        let content = snipped.get("content").unwrap().as_str().unwrap();
+        assert!(content.contains("omitted from historical tool call by OpenDuck context manager"));
+        assert!(content.len() < 500);
+
+        // Short content should not be snipped
+        let mut short_args = serde_json::Map::new();
+        short_args.insert(
+            "content".to_string(),
+            serde_json::Value::String("hello world".to_string()),
+        );
+        let (_, short_snipped) = snip_tool_call_arguments("write_file", &short_args, 1024);
+        assert!(!short_snipped);
     }
 }

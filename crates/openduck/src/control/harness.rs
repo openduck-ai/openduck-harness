@@ -513,7 +513,13 @@ impl AgentPolicy for GooseAgentPolicy {
                             } else {
                                 let mut params = CallToolRequestParams::new(call.name.clone());
                                 if let Some(args) = call.arguments.as_object() {
-                                    params = params.with_arguments(args.clone());
+                                    let (snipped_args, _) =
+                                        openduck_context_management::snip_tool_call_arguments(
+                                            &call.name,
+                                            args,
+                                            openduck_context_management::DEFAULT_MAX_TOOL_CALL_CONTENT_BYTES,
+                                        );
+                                    params = params.with_arguments(snipped_args);
                                 }
                                 Ok(params)
                             };
