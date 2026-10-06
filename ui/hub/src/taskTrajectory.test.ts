@@ -9,6 +9,7 @@ import {
   filterTrajectorySteps,
   formatToolArguments,
   describeToolCall,
+  presentToolCall,
   isLiveTrajectoryVisible,
   parseAgentAction,
   parseToolCallRecord,
@@ -171,6 +172,122 @@ test('describeToolCall summarizes harness tools from arguments', () => {
   assert.equal(described.startsWith('Run '), true)
   assert.equal(described.endsWith('…'), true)
   assert.ok(described.length <= 100)
+})
+
+test('presentToolCall prepares shell, read, write, search, advisor, and unknown tools', () => {
+  const shell = presentToolCall({
+    name: 'developer__shell',
+    arguments: { command: 'cargo clippy' },
+    output: 'Finished',
+  })
+  assert.equal(shell.summary, 'Run cargo clippy')
+  assert.equal(shell.kind, 'shell')
+  assert.equal(shell.language, 'shell')
+  assert.equal(shell.argsText, 'cargo clippy')
+  assert.equal(shell.outputText, 'Finished')
+  assert.equal(shell.path, undefined)
+  assert.equal(shell.diffText, undefined)
+
+  const quiet = presentToolCall({
+    name: 'shell',
+    arguments: { command: 'true' },
+    output: '  \n',
+  })
+  assert.equal(quiet.outputText, undefined)
+
+  const read = presentToolCall({
+    name: 'read_file',
+    arguments: { path: 'src/lib.rs' },
+    output: 'fn lib() {}',
+  })
+  assert.equal(read.kind, 'read')
+  assert.equal(read.summary, 'Read src/lib.rs')
+  assert.equal(read.path, 'src/lib.rs')
+  assert.equal(read.language, 'rust')
+  assert.equal(read.outputText, 'fn lib() {}')
+  assert.match(read.argsText, /src\/lib\.rs/)
+  assert.equal(read.diffText, undefined)
+
+  const write = presentToolCall({
+    name: 'write_file',
+    arguments: { path: 'src/lib.rs', content: 'fn lib() {}\n' },
+    output: 'wrote src/lib.rs',
+  })
+  assert.equal(write.kind, 'write')
+  assert.equal(write.path, 'src/lib.rs')
+  assert.equal(write.summary, 'Write src/lib.rs')
+  assert.equal(write.language, 'rust')
+  assert.match(write.argsText, /fn lib/)
+  assert.equal(write.diffText, undefined)
+  assert.equal(write.outputText, 'wrote src/lib.rs')
+
+  const search = presentToolCall({
+    name: 'grep_search',
+    arguments: { query: 'AgentLog', path: 'ui/hub' },
+    output: 'taskTrajectory.ts',
+  })
+  assert.equal(search.kind, 'search')
+  assert.equal(search.summary, 'Search "AgentLog" in ui/hub')
+  assert.equal(search.path, undefined)
+  assert.equal(search.language, 'text')
+  assert.match(search.argsText, /AgentLog/)
+
+  const advisor = presentToolCall({
+    name: 'consult_advisor',
+    arguments: { command: 'grok', prompt: 'Review the trajectory parser' },
+  })
+  assert.equal(advisor.kind, 'advisor')
+  assert.equal(advisor.summary, 'Ask grok: Review the trajectory parser')
+  assert.equal(advisor.language, 'text')
+  assert.equal(advisor.outputText, undefined)
+  assert.match(advisor.argsText, /Review the trajectory parser/)
+
+  const unknown = presentToolCall({
+    name: 'extensions__ping_host',
+    arguments: { url: 'https://example.com' },
+    output: 'pong',
+  })
+  assert.equal(unknown.kind, 'other')
+  assert.equal(unknown.summary, 'https://example.com')
+  assert.equal(unknown.language, 'text')
+  assert.equal(unknown.outputText, 'pong')
+  assert.equal(unknown.path, undefined)
+})
+
+test('presentToolCall keeps a failed result and detects unified diff output', () => {
+  const failed = presentToolCall({
+    name: 'shell',
+    arguments: { command: 'cargo test' },
+    output: 'error: could not compile `openduck`',
+    isError: true,
+  })
+  assert.equal(failed.summary, 'Run cargo test')
+  assert.equal(failed.kind, 'shell')
+  assert.equal(failed.argsText, 'cargo test')
+  assert.equal(failed.outputText, 'error: could not compile `openduck`')
+  assert.equal(failed.diffText, undefined)
+
+  const diffOut = [
+    'diff --git a/src/lib.rs b/src/lib.rs',
+    '@@ -1 +1,2 @@',
+    ' fn lib() {}',
+    '+fn extra() {}',
+  ].join('\n')
+  const diffed = presentToolCall({
+    name: 'shell',
+    arguments: { command: 'git diff' },
+    output: diffOut,
+  })
+  assert.equal(diffed.argsText, 'git diff')
+  assert.equal(diffed.diffText, diffOut)
+  assert.equal(diffed.outputText, diffOut)
+
+  const hunkOnly = presentToolCall({
+    name: 'shell',
+    arguments: { command: 'git diff -U0' },
+    output: '@@ -1 +1 @@\n-old\n+new',
+  })
+  assert.equal(hunkOnly.diffText, '@@ -1 +1 @@\n-old\n+new')
 })
 
 test('extractLlmTelemetry parses prompt messages, thinking, tool calls, and token metrics', () => {
@@ -602,6 +719,124 @@ test('buildAgentLog only shows the added prompts of the current step', () => {
 
   assert.equal(turns[3].promptMessages?.length, 1)
   assert.equal(turns[3].promptMessages?.[0].toolResults?.length, 1)
+})
+
+test('buildAgentLog emits a second user turn for a follow-up prompt', () => {
+  const run: HarnessRunResponse = {
+    taskId: 'follow-up-task',
+    status: 'Success',
+    stepCount: 3,
+    toolCallsCount: 2,
+    durationMs: 900,
+    trajectory: {
+      taskId: 'follow-up-task',
+      policyName: 'agent',
+      startedAt: '2026-09-14T00:00:00Z',
+      completedAt: '2026-09-14T00:00:03Z',
+      steps: [
+        {
+          stepIndex: 1,
+          timestamp: '2026-09-14T00:00:01Z',
+          durationMs: 300,
+          agentAction: {
+            CallTools: [{ id: 't1', name: 'shell', arguments: { command: 'cargo check' } }],
+          },
+          toolResults: [{ id: 't1', name: 'shell', output: 'ok', is_error: false }],
+          llmRequest: {
+            messages: [{ role: 'user', content: 'Run cargo check and fix errors' }],
+          },
+          llmResponse: { text: 'Running cargo check' },
+        },
+        {
+          stepIndex: 2,
+          timestamp: '2026-09-14T00:00:02Z',
+          durationMs: 400,
+          agentAction: {
+            CallTools: [{ id: 't2', name: 'shell', arguments: { command: 'cargo test' } }],
+          },
+          toolResults: [{ id: 't2', name: 'shell', output: 'passed', is_error: false }],
+          llmRequest: {
+            messages: [
+              { role: 'user', content: 'Run cargo check and fix errors' },
+              { role: 'assistant', content: 'Running cargo check' },
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'toolResponse',
+                    id: 't1',
+                    toolResult: { Ok: { content: [{ type: 'text', text: 'ok' }] } },
+                  },
+                ],
+              },
+            ],
+          },
+          llmResponse: { text: 'Running tests' },
+        },
+        {
+          stepIndex: 3,
+          timestamp: '2026-09-14T00:00:03Z',
+          durationMs: 200,
+          agentAction: { FinalAnswer: 'Formatted.' },
+          llmRequest: {
+            messages: [
+              { role: 'user', content: 'Run cargo check and fix errors' },
+              { role: 'assistant', content: 'Running cargo check' },
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'toolResponse',
+                    id: 't1',
+                    toolResult: { Ok: { content: [{ type: 'text', text: 'ok' }] } },
+                  },
+                ],
+              },
+              { role: 'assistant', content: 'Running tests' },
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'toolResponse',
+                    id: 't2',
+                    toolResult: { Ok: { content: [{ type: 'text', text: 'passed' }] } },
+                  },
+                ],
+              },
+              { role: 'user', content: 'Also format the crate' },
+              { role: 'system', content: 'Anti-stagnation nudge: proceed to test' },
+            ],
+          },
+          llmResponse: { text: 'Formatted.' },
+        },
+      ],
+    },
+  }
+
+  const turns = buildAgentLog(run)
+  assert.equal(turns[0].kind, 'user')
+  assert.equal(turns[0].id, 'user-prompt')
+  assert.equal(turns[0].text, 'Run cargo check and fix errors')
+
+  const userTurns = turns.filter(turn => turn.kind === 'user')
+  assert.equal(userTurns.length, 2)
+  assert.equal(userTurns[1].text, 'Also format the crate')
+
+  const followUpIndex = turns.findIndex(turn => turn.text === 'Also format the crate')
+  const step3Index = turns.findIndex(turn => turn.stepIndex === 3)
+  assert.ok(followUpIndex >= 0 && followUpIndex < step3Index)
+
+  const step3 = turns[step3Index]
+  assert.ok(step3.promptMessages?.some(message => message.role === 'system'))
+  assert.ok(step3.promptMessages?.some(message => (message.toolResults?.length ?? 0) > 0))
+  assert.equal(
+    turns.some(turn => turn.role === 'user' && turn.text === 'passed'),
+    false,
+  )
+  assert.equal(
+    turns.some(turn => turn.role === 'user' && (turn.text ?? '').includes('Anti-stagnation')),
+    false,
+  )
 })
 
 test('evaluateAutoScrollState pauses when user scrolls up and resumes at bottom', () => {

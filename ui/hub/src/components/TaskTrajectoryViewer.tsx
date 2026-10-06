@@ -8,7 +8,6 @@ import {
   parseAgentAction,
   extractFinalAnswer,
   formatToolArguments,
-  describeToolCall,
   extractLlmTelemetry,
   filterTrajectorySteps,
   calculateTrajectoryMetrics,
@@ -18,14 +17,11 @@ import {
   parseToolResults,
   type TrajectoryFilterType,
   type TrajectoryViewMode,
-  type AgentLogTurn,
-  type AgentLogToolCall,
-  type HarnessJudgmentRecord,
   evaluateAutoScrollState,
-  formatPromptMessageText,
 } from '../taskTrajectory.ts'
 import { isContinuableStatus } from '../taskContinuation.ts'
 import { MarkdownPreview } from './MarkdownPreview.tsx'
+import { AgentLogTranscript } from './AgentLogTranscript.tsx'
 import { FilePreviewModal } from './FilePreviewModal.tsx'
 import { ProviderStatsDashboard } from './ProviderStatsDashboard.tsx'
 import { formatSelectionExtraPrompt } from '../dynamicPrompt.ts'
@@ -58,15 +54,8 @@ import {
   Sparkles,
   Filter,
   Layers,
-  User,
-  Wrench,
   CheckCircle2,
   AlertCircle,
-  ChevronDown,
-  ChevronRight as ChevronRightIcon,
-  Terminal,
-  ArrowDownToLine,
-  Scale,
 } from 'lucide-react'
 
 interface TaskTrajectoryViewerProps {
@@ -83,7 +72,7 @@ interface TaskTrajectoryViewerProps {
   onStopTask?: (taskId: string) => Promise<void>
   onStopJob?: (job: HarnessActiveJob) => Promise<void>
   onBackToTasks: () => void
-  onContinueTask?: (taskId: string, extraTurns: number) => Promise<void>
+  onContinueTask?: (taskId: string, extraTurns: number, extraPrompt?: string) => Promise<void>
   maxTurnsLimit?: number
   onOpenContinueModal?: (
     taskId: string,
@@ -160,13 +149,6 @@ export function TaskTrajectoryViewer({
   const programmaticScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const userExplicitlyDisabledRef = useRef(false)
   const [autoScroll, setAutoScroll] = useState(true)
-  const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({})
-  const [allPromptsExpanded, setAllPromptsExpanded] = useState(false)
-  const [allThinkingExpanded, setAllThinkingExpanded] = useState(false)
-  const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({})
-  const [expandedLogTools, setExpandedLogTools] = useState<Record<string, boolean>>({})
-  const [allJudgmentsExpanded, setAllJudgmentsExpanded] = useState(false)
-  const [expandedJudgments, setExpandedJudgments] = useState<Record<string, boolean>>({})
 
   const steps = useMemo(() => run.trajectory?.steps ?? [], [run.trajectory?.steps])
   const metrics = useMemo(() => calculateTrajectoryMetrics(run), [run])
@@ -258,20 +240,6 @@ export function TaskTrajectoryViewer({
     }
   }, [autoScroll])
 
-  // Explicit toggle button click handler
-  const handleToggleAutoScroll = useCallback(() => {
-    setAutoScroll(prev => {
-      const next = !prev
-      userExplicitlyDisabledRef.current = !next
-      if (next) {
-        setTimeout(() => {
-          scrollToLogBottom('smooth')
-        }, 50)
-      }
-      return next
-    })
-  }, [scrollToLogBottom])
-
   // Floating resume button click handler
   const handleResumeAutoScroll = useCallback(() => {
     userExplicitlyDisabledRef.current = false
@@ -296,7 +264,16 @@ export function TaskTrajectoryViewer({
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ignore if user is typing in an input or textarea
       const target = e.target as HTMLElement | null
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+      const typing = Boolean(
+        target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable),
+      )
+      const inSearch = target?.classList.contains('trajectory-search-input') ?? false
+      if (e.key === 'Escape' && searchQuery && (inSearch || !typing)) {
+        e.preventDefault()
+        setSearchQuery('')
+        return
+      }
+      if (typing || viewMode === 'log') {
         return
       }
 
@@ -307,23 +284,17 @@ export function TaskTrajectoryViewer({
         e.preventDefault()
         setSelectedStepIdx(prev => Math.max(0, prev - 1))
       } else if (e.key === 'f') {
-        // Jump to final answer if present
         const finalIdx = steps.findIndex(s => parseAgentAction(s.agentAction).kind === 'final_answer')
         if (finalIdx !== -1) {
           e.preventDefault()
           setSelectedStepIdx(finalIdx)
-        }
-      } else if (e.key === 'Escape') {
-        if (searchQuery) {
-          e.preventDefault()
-          setSearchQuery('')
         }
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [steps, searchQuery])
+  }, [steps, searchQuery, viewMode])
 
   // Copy handlers
   const handleCopyFinalAnswer = (text: string) => {
@@ -404,6 +375,14 @@ export function TaskTrajectoryViewer({
     }
   }
 
+  const toolStepCount = steps.filter(step => parseAgentAction(step.agentAction).kind === 'call_tools').length
+  const answerStepCount = steps.filter(step => parseAgentAction(step.agentAction).kind === 'final_answer').length
+  const stopStepCount = steps.filter(step => {
+    const kind = parseAgentAction(step.agentAction).kind
+    return kind === 'yield_control' || kind === 'request_input'
+  }).length
+  const telemetryStepCount = steps.filter(step => Boolean(step.llmRequest || step.llmResponse || step.tokenUsage)).length
+
   const finalAnswer = extractFinalAnswer(run)
   const mentionedFiles = useMemo(() => {
     return finalAnswer ? extractMentionedFiles(finalAnswer) : []
@@ -412,7 +391,7 @@ export function TaskTrajectoryViewer({
   const activeRules = run.activeRules || run.trajectory?.activeRules
 
   return (
-    <div className="trajectory-viewer-container">
+    <div className={`trajectory-viewer-container${viewMode === 'log' ? ' is-log-mode' : ''}`}>
       {/* ================= HEADER & STATS BAR ================= */}
       <div className="trajectory-header-card">
         <div className="trajectory-header-main">
@@ -586,7 +565,7 @@ export function TaskTrajectoryViewer({
       </div>
 
       {/* Continuable Run Warning Banner */}
-      {isContinuableStatus(String(run.status)) && !liveInspect && onContinueTask && onOpenContinueModal && (
+      {viewMode !== 'log' && isContinuableStatus(String(run.status)) && !liveInspect && onContinueTask && onOpenContinueModal && (
         <div className="cancelled-warning-banner">
           <div className="cancelled-warning-content">
             <h4>⚠️ Incomplete run — continue from saved progress summary</h4>
@@ -660,7 +639,7 @@ export function TaskTrajectoryViewer({
       )}
 
       {/* System Prompt & Active Rules Inspector (Collapsible Card) */}
-      {(systemPrompt || (activeRules && activeRules.length > 0)) && (
+      {viewMode !== 'log' && (systemPrompt || (activeRules && activeRules.length > 0)) && (
         <div className="trajectory-prompt-inspector-card">
           <div className="prompt-inspector-header">
             <div className="prompt-inspector-title-group">
@@ -754,8 +733,8 @@ export function TaskTrajectoryViewer({
         </div>
       )}
 
-      {/* Final Answer Banner (if present) */}
-      {finalAnswer && (
+      {/* Final Answer Banner — Split and Stream. Log mode shows the answer in the transcript. */}
+      {viewMode !== 'log' && finalAnswer && (
         <div className="trajectory-final-answer">
           <div className="final-answer-header">
             <div className="final-answer-title-group">
@@ -898,43 +877,60 @@ export function TaskTrajectoryViewer({
             </button>
           </div>
 
-          <div className="filter-pills-group">
-            <button
-              type="button"
-              className={`filter-pill ${filterType === 'all' ? 'active' : ''}`}
-              onClick={() => setFilterType('all')}
-            >
-              All ({steps.length})
-            </button>
-            <button
-              type="button"
-              className={`filter-pill ${filterType === 'tools' ? 'active' : ''}`}
-              onClick={() => setFilterType('tools')}
-            >
-              🛠️ Tools ({steps.filter(s => parseAgentAction(s.agentAction).kind === 'call_tools').length})
-            </button>
-            <button
-              type="button"
-              className={`filter-pill ${filterType === 'final_answer' ? 'active' : ''}`}
-              onClick={() => setFilterType('final_answer')}
-            >
-              🏁 Answer ({steps.filter(s => parseAgentAction(s.agentAction).kind === 'final_answer').length})
-            </button>
-            <button
-              type="button"
-              className={`filter-pill ${filterType === 'yield' ? 'active' : ''}`}
-              onClick={() => setFilterType('yield')}
-            >
-              ⏸️ Stops ({steps.filter(s => ['yield_control', 'request_input'].includes(parseAgentAction(s.agentAction).kind)).length})
-            </button>
-            <button
-              type="button"
-              className={`filter-pill ${filterType === 'telemetry' ? 'active' : ''}`}
-              onClick={() => setFilterType('telemetry')}
-            >
-              🤖 Telemetry ({steps.filter(s => Boolean(s.llmRequest || s.llmResponse || s.tokenUsage)).length})
-            </button>
-          </div>
+          {viewMode === 'log' ? (
+            <label className="agent-log-filter">
+              <Filter size={14} aria-hidden="true" />
+              <select
+                aria-label="Filter log"
+                value={filterType}
+                onChange={event => setFilterType(event.target.value as TrajectoryFilterType)}
+              >
+                <option value="all">All ({steps.length})</option>
+                <option value="tools">Tools ({toolStepCount})</option>
+                <option value="final_answer">Answer ({answerStepCount})</option>
+                <option value="yield">Stops ({stopStepCount})</option>
+                <option value="telemetry">Telemetry ({telemetryStepCount})</option>
+              </select>
+            </label>
+          ) : (
+            <div className="filter-pills-group">
+              <button
+                type="button"
+                className={`filter-pill ${filterType === 'all' ? 'active' : ''}`}
+                onClick={() => setFilterType('all')}
+              >
+                All ({steps.length})
+              </button>
+              <button
+                type="button"
+                className={`filter-pill ${filterType === 'tools' ? 'active' : ''}`}
+                onClick={() => setFilterType('tools')}
+              >
+                🛠️ Tools ({toolStepCount})
+              </button>
+              <button
+                type="button"
+                className={`filter-pill ${filterType === 'final_answer' ? 'active' : ''}`}
+                onClick={() => setFilterType('final_answer')}
+              >
+                🏁 Answer ({answerStepCount})
+              </button>
+              <button
+                type="button"
+                className={`filter-pill ${filterType === 'yield' ? 'active' : ''}`}
+                onClick={() => setFilterType('yield')}
+              >
+                ⏸️ Stops ({stopStepCount})
+              </button>
+              <button
+                type="button"
+                className={`filter-pill ${filterType === 'telemetry' ? 'active' : ''}`}
+                onClick={() => setFilterType('telemetry')}
+              >
+                🤖 Telemetry ({telemetryStepCount})
+              </button>
+            </div>
+          )}
 
           <div className="trajectory-search-wrapper">
             <Search size={14} className="search-icon" />
@@ -958,6 +954,8 @@ export function TaskTrajectoryViewer({
           </div>
         </div>
 
+        {viewMode !== 'log' && (
+        <>
         {/* Stepper + Global LLM Toggle Bar */}
         <div className="toolbar-bottom-row">
           <div className="stepper-controls">
@@ -1006,23 +1004,6 @@ export function TaskTrajectoryViewer({
           </div>
 
           <div className="toolbar-options-right">
-            {viewMode === 'log' && (
-              <button
-                type="button"
-                className={`btn-autoscroll-toggle toolbar-autoscroll-btn ${autoScroll ? 'active' : ''}`}
-                onClick={handleToggleAutoScroll}
-                title={
-                  autoScroll
-                    ? 'Auto-scroll is ON: new messages scroll into view automatically. Click to pause auto-scroll.'
-                    : 'Auto-scroll is OFF: scrolling is paused. Click to enable auto-scroll.'
-                }
-                aria-pressed={autoScroll}
-              >
-                <ArrowDownToLine size={13} />
-                <span>Auto-scroll: {autoScroll ? 'ON' : 'OFF'}</span>
-                {liveInspect && autoScroll && <span className="autoscroll-pulse-dot" />}
-              </button>
-            )}
             <label
               className="trajectory-llm-toggle-label"
               title="Expand complete prompt messages and raw LLM completions by default for all steps"
@@ -1094,6 +1075,8 @@ export function TaskTrajectoryViewer({
             })}
           </div>
         )}
+        </>
+        )}
       </div>
 
       {/* ================= EMPTY STATE ================= */}
@@ -1107,140 +1090,55 @@ export function TaskTrajectoryViewer({
         </div>
       )}
 
-      {/* ================= VIEW MODE 0: AGENT LOG (CHAT TRANSCRIPT) ================= */}
       {viewMode === 'log' && steps.length > 0 && (
-        <div className="agent-log-panel">
-          <div className="agent-log-header">
-            <p className="agent-log-intro">
-              Chat-style transcript of this task. Tool calls appear inline with a short summary of what ran;
-              expand a card to inspect arguments and output.
-            </p>
-            <div className="agent-log-header-controls">
-              <button
-                type="button"
-                className={`btn-autoscroll-toggle ${allPromptsExpanded || showAllLlmTelemetry ? 'active' : ''}`}
-                onClick={() => setAllPromptsExpanded(prev => !prev)}
-                title="Expand or collapse all prompt messages in the log"
-              >
-                <Terminal size={13} />
-                <span>Prompts {allPromptsExpanded || showAllLlmTelemetry ? 'ON' : 'OFF'}</span>
-              </button>
-              <button
-                type="button"
-                className={`btn-autoscroll-toggle ${allThinkingExpanded || showAllLlmTelemetry ? 'active' : ''}`}
-                onClick={() => setAllThinkingExpanded(prev => !prev)}
-                title="Expand or collapse all thinking blocks in the log"
-              >
-                <Sparkles size={13} />
-                <span>Thinking {allThinkingExpanded || showAllLlmTelemetry ? 'ON' : 'OFF'}</span>
-              </button>
-              <button
-                type="button"
-                className={`btn-autoscroll-toggle ${allJudgmentsExpanded || showAllLlmTelemetry ? 'active' : ''}`}
-                onClick={() => setAllJudgmentsExpanded(prev => !prev)}
-                title="Expand or collapse all Laya judgment cards in the log"
-              >
-                <Scale size={13} />
-                <span>Judgments {allJudgmentsExpanded || showAllLlmTelemetry ? 'ON' : 'OFF'}</span>
-              </button>
-              <button
-                type="button"
-                className={`btn-autoscroll-toggle ${autoScroll ? 'active' : ''}`}
-                onClick={handleToggleAutoScroll}
-                title={
-                  autoScroll
-                    ? 'Auto-scroll is ON: new messages scroll into view automatically. Click to pause auto-scroll.'
-                    : 'Auto-scroll is OFF: scrolling is locked. Click to enable auto-scroll.'
+        <AgentLogTranscript
+          turns={filteredLogTurns}
+          live={liveInspect}
+          status={String(run.status)}
+          sessionKey={`${run.taskId}:${selectedHistoryId ?? ''}:${String(run.status)}:${steps.length}`}
+          copiedId={copiedMsgIdx}
+          onCopyText={handleCopyMessageText}
+          onOpenFile={setPreviewFilePath}
+          transcriptRef={agentLogTranscriptRef}
+          endRef={agentLogEndRef}
+          onScroll={handleLogScroll}
+          showLatest={liveInspect && !autoScroll}
+          onLatest={handleResumeAutoScroll}
+          mentionedFiles={mentionedFiles}
+          resolveImageUrl={src =>
+            api && effectiveProjectSlug
+              ? api.getFileBytesUrl(effectiveProjectSlug, resolveProjectAssetPath('', src))
+              : src
+          }
+          dynamicTasks={dynamicTasks}
+          selectionNotice={selectionRunNotice}
+          selectionBusy={selectionRunBusy}
+          selectionEnabled={Boolean(api && effectiveProjectSlug)}
+          api={api}
+          projectSlug={effectiveProjectSlug}
+          onSelectDynamicTask={(task, text) => {
+            void runWithSelection(task, formatSelectionExtraPrompt('Final Agent Answer', text))
+          }}
+          continueRequest={
+            onContinueTask && isContinuableStatus(String(run.status)) && !liveInspect
+              ? {
+                  busy: runningTaskId === run.taskId,
+                  summary: run.continuation?.compactedSummary,
+                  onContinue: (extraTurns, extraPrompt) => onContinueTask(run.taskId, extraTurns, extraPrompt),
+                  onSpecifiedTurns: onOpenContinueModal
+                    ? () =>
+                        onOpenContinueModal(
+                          run.taskId,
+                          metrics.totalSteps,
+                          undefined,
+                          selectedHistoryId ?? undefined,
+                          run.continuation?.compactedSummary ?? undefined,
+                        )
+                    : undefined,
                 }
-                aria-pressed={autoScroll}
-              >
-                <ArrowDownToLine size={13} />
-                <span>Auto-scroll {autoScroll ? 'ON' : 'OFF'}</span>
-                {liveInspect && autoScroll && <span className="autoscroll-pulse-dot" />}
-              </button>
-            </div>
-          </div>
-          {filteredLogTurns.length === 0 ? (
-            <div className="empty-card">No log entries match filter / search criteria.</div>
-          ) : (
-            <div
-              className="agent-log-transcript"
-              ref={agentLogTranscriptRef}
-              onScroll={handleLogScroll}
-            >
-              {filteredLogTurns.map((turn, turnIdx) => {
-                const isLatestStep = Boolean(liveInspect && turnIdx === filteredLogTurns.length - 1 && turn.role === 'assistant')
-                const isPromptOpen = Boolean(
-                  showAllLlmTelemetry ||
-                  allPromptsExpanded ||
-                  (expandedPrompts[turn.id] ?? false)
-                )
-                const isThinkingOpen = Boolean(
-                  showAllLlmTelemetry ||
-                  allThinkingExpanded ||
-                  (expandedThinking[turn.id] ?? isLatestStep)
-                )
-                const isJudgmentOpen = Boolean(
-                  showAllLlmTelemetry ||
-                  allJudgmentsExpanded ||
-                  (expandedJudgments[turn.id] ?? false)
-                )
-                return (
-                  <AgentLogTurnCard
-                    key={turn.id}
-                    turn={turn}
-                    isLatest={isLatestStep}
-                    promptOpen={isPromptOpen}
-                    onTogglePrompt={() =>
-                      setExpandedPrompts(prev => ({
-                        ...prev,
-                        [turn.id]: !isPromptOpen,
-                      }))
-                    }
-                    thinkingOpen={isThinkingOpen}
-                    onToggleThinking={() =>
-                      setExpandedThinking(prev => ({
-                        ...prev,
-                        [turn.id]: !isThinkingOpen,
-                      }))
-                    }
-                    judgmentOpen={isJudgmentOpen}
-                    onToggleJudgment={() =>
-                      setExpandedJudgments(prev => ({
-                        ...prev,
-                        [turn.id]: !isJudgmentOpen,
-                      }))
-                    }
-                    expandedTools={expandedLogTools}
-                    onToggleTool={toolKey =>
-                      setExpandedLogTools(prev => ({ ...prev, [toolKey]: !prev[toolKey] }))
-                    }
-                    copiedMsgIdx={copiedMsgIdx}
-                    onCopyText={handleCopyMessageText}
-                  />
-                )
-              })}
-              {liveInspect && (
-                <div className="status-live-banner agent-log-live-status">
-                  <span className="stream-dot" />
-                  <span className="status-live-text">Agent is working… log updates as each step finishes.</span>
-                </div>
-              )}
-              <div ref={agentLogEndRef} />
-            </div>
-          )}
-          {liveInspect && !autoScroll && (
-            <button
-              type="button"
-              className="agent-log-floating-autoscroll-btn"
-              onClick={handleResumeAutoScroll}
-              title="Resume auto-scroll and jump to latest log step"
-            >
-              <ArrowDownToLine size={14} />
-              <span>Resume Auto-scroll</span>
-            </button>
-          )}
-        </div>
+              : undefined
+          }
+        />
       )}
 
       {/* ================= VIEW MODE 1: SPLIT INSPECTOR (MASTER-DETAIL) ================= */}
@@ -2208,391 +2106,6 @@ function StepDetailCard({
           </div>
         )}
       </div>
-    </div>
-  )
-}
-
-// =========================================================================
-// AGENT LOG TURN (CHAT-STYLE TRANSCRIPT)
-// =========================================================================
-
-interface AgentLogTurnCardProps {
-  turn: AgentLogTurn
-  isLatest: boolean
-  promptOpen: boolean
-  onTogglePrompt: () => void
-  thinkingOpen: boolean
-  onToggleThinking: () => void
-  judgmentOpen: boolean
-  onToggleJudgment: () => void
-  expandedTools: Record<string, boolean>
-  onToggleTool: (toolKey: string) => void
-  copiedMsgIdx: string | null
-  onCopyText: (id: string, text: string) => void
-}
-
-function AgentLogTurnCard({
-  turn,
-  isLatest,
-  promptOpen,
-  onTogglePrompt,
-  thinkingOpen,
-  onToggleThinking,
-  judgmentOpen,
-  onToggleJudgment,
-  expandedTools,
-  onToggleTool,
-  copiedMsgIdx,
-  onCopyText,
-}: AgentLogTurnCardProps) {
-  const isUser = turn.role === 'user'
-  const author =
-    isUser
-      ? 'Task Prompt'
-      : turn.kind === 'final_answer'
-        ? 'OpenDuck Agent · Final Answer'
-        : turn.kind === 'yield'
-          ? 'OpenDuck Agent · Stopped'
-          : turn.kind === 'request_input'
-            ? 'OpenDuck Agent · Needs Input'
-            : turn.kind === 'error'
-              ? 'OpenDuck Agent · Error'
-              : 'OpenDuck Agent'
-
-  return (
-    <article
-      className={`message-bubble-row agent-log-turn ${isUser ? 'user-row' : 'assistant-row'} kind-${turn.kind}`}
-      data-log-step={turn.stepIndex}
-    >
-      <div className="message-avatar">
-        {isUser ? <User size={16} /> : <Bot size={16} />}
-      </div>
-
-      <div className="message-content-box">
-        <div className="message-meta-header">
-          <span className="author-name">{author}</span>
-          {turn.stepIndex !== undefined && (
-            <span className="agent-log-step-pill">Step #{turn.stepIndex}</span>
-          )}
-          {turn.timestamp && (
-            <span className="agent-log-time">
-              {new Date(turn.timestamp).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-              })}
-            </span>
-          )}
-          {turn.durationMs !== undefined && turn.durationMs > 0 && (
-            <span className="agent-log-duration">{turn.durationMs} ms</span>
-          )}
-          {turn.judgments && turn.judgments.length > 0 && (
-            <span
-              className={`agent-log-judgment-pill ${
-                turn.judgments.some(j => j.verdict?.triggered) ? 'triggered' : 'passed'
-              }`}
-              title={turn.judgments.map(j => `${j.point}: ${j.mode}`).join(', ')}
-            >
-              <Scale size={11} />
-              <span>Laya ({turn.judgments.length})</span>
-            </span>
-          )}
-          {turn.providerCalls && turn.providerCalls.length > 0 && (
-            <span
-              className={`agent-log-provider-pill ${turn.providerCalls.some(c => !c.success) ? 'has-error' : ''}`}
-              title={turn.providerCalls
-                .map(
-                  c =>
-                    `${c.provider}${c.model ? ` (${c.model})` : ''}: ${c.latencyMs}ms, ${
-                      c.success ? 'Success' : `Failed (${c.error || 'error'})`
-                    }${c.tokenUsage ? ` • ${c.tokenUsage.totalTokens} tokens` : ''}${
-                      c.retryReason ? ` [Retry: ${c.retryReason}]` : ''
-                    }`,
-                )
-                .join('\n')}
-            >
-              <Zap size={11} />
-              <span>
-                {turn.providerCalls[0].provider}
-                {turn.providerCalls.length > 1 && ` (+${turn.providerCalls.length - 1})`}
-              </span>
-            </span>
-          )}
-          {isLatest && (
-            <span className="streaming-badge">
-              <span className="stream-dot" /> Live
-            </span>
-          )}
-        </div>
-
-        {/* 1. PROMPT SECTION (for assistant turns with added prompt telemetry) */}
-        {!isUser && (turn.promptMessages || turn.lastPromptText) && (
-          <div className={`agent-log-prompt ${promptOpen ? 'open' : ''}`}>
-            <button
-              type="button"
-              className="agent-log-prompt-toggle"
-              onClick={onTogglePrompt}
-              title="Inspect prompt added for this step"
-            >
-              <Terminal size={13} />
-              <span>Prompt {turn.promptMessages ? `(${turn.promptMessages.length} msg${turn.promptMessages.length === 1 ? '' : 's'})` : ''}</span>
-              {promptOpen ? <ChevronDown size={13} /> : <ChevronRightIcon size={13} />}
-            </button>
-            {promptOpen && (
-              <div className="agent-log-prompt-body">
-                {turn.promptMessages && turn.promptMessages.length > 0 ? (
-                  <div className="agent-log-prompt-messages">
-                    {turn.promptMessages.map((msg, mIdx) => {
-                      const isToolResult = Boolean(
-                        msg.role === 'tool' || (msg.toolResults && msg.toolResults.length > 0)
-                      )
-                      const roleLabel = isToolResult ? 'tool result' : msg.role
-                      const formattedText = formatPromptMessageText(msg)
-                      return (
-                        <div
-                          key={msg.index ?? mIdx}
-                          className={`agent-log-prompt-msg role-${msg.role} ${isToolResult ? 'role-tool' : ''}`}
-                        >
-                          <div className="agent-log-prompt-msg-role">{roleLabel}</div>
-                          <div className="agent-log-prompt-msg-content">
-                            <pre className="agent-log-prompt-msg-text">{formattedText}</pre>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <pre className="agent-log-prompt-msg-text">{turn.lastPromptText}</pre>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* 2. THINKING SECTION (internal model reasoning) */}
-        {turn.thinking && (
-          <div className={`agent-log-thinking ${thinkingOpen ? 'open' : ''}`}>
-            <button type="button" className="agent-log-thinking-toggle" onClick={onToggleThinking} title="Inspect internal reasoning">
-              <Sparkles size={13} />
-              <span>Thinking</span>
-              {thinkingOpen ? <ChevronDown size={13} /> : <ChevronRightIcon size={13} />}
-            </button>
-            {thinkingOpen && <pre className="agent-log-thinking-body">{turn.thinking}</pre>}
-          </div>
-        )}
-
-        {/* 3. JUDGMENTS SECTION (System 1 Decision Engine / Laya) */}
-        {turn.judgments && turn.judgments.length > 0 && (
-          <div className={`agent-log-judgments ${judgmentOpen ? 'open' : ''}`}>
-            <button
-              type="button"
-              className="agent-log-judgments-toggle"
-              onClick={onToggleJudgment}
-              title="Inspect Laya System 1 decision engine evaluations"
-            >
-              <Scale size={13} />
-              <span>
-                Laya Decisions ({turn.judgments.length})
-              </span>
-              <span className="agent-log-judgment-summary-pills">
-                {turn.judgments.map((j, idx) => {
-                  const triggered = Boolean(j.verdict?.triggered)
-                  return (
-                    <span
-                      key={idx}
-                      className={`judgment-summary-pill ${triggered ? 'is-triggered' : 'is-ok'} mode-${j.mode}`}
-                    >
-                      {j.point} · {triggered ? '⚠️ Triggered' : '✓ OK'} ({j.latencyMs}ms)
-                    </span>
-                  )
-                })}
-              </span>
-              {judgmentOpen ? <ChevronDown size={13} /> : <ChevronRightIcon size={13} />}
-            </button>
-            {judgmentOpen && (
-              <div className="agent-log-judgments-body">
-                {turn.judgments.map((j, idx) => (
-                  <AgentLogJudgmentDetailCard key={idx} judgment={j} />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {turn.text && (
-          <div className={`message-body-text ${turn.kind === 'error' ? 'is-error' : ''} ${turn.kind === 'final_answer' ? 'is-final' : ''}`}>
-            {isUser ? (
-              turn.text
-            ) : (
-              <Suspense fallback={<div className="skeleton-line" style={{ height: '1.5rem' }} />}>
-                <MarkdownPreview content={turn.text} />
-              </Suspense>
-            )}
-          </div>
-        )}
-
-        {turn.toolCalls && turn.toolCalls.length > 0 && (
-          <div className="tool-calls-container">
-            <div className="tool-calls-title">
-              <Wrench size={13} />
-              <span>Tools ({turn.toolCalls.length})</span>
-            </div>
-            <div className="tool-calls-list">
-              {turn.toolCalls.map((tool, tIdx) => (
-                <AgentLogToolCard
-                  key={tool.id ?? `${tool.name}-${tIdx}`}
-                  tool={tool}
-                  expanded={expandedTools[`${turn.id}-${tIdx}`] ?? false}
-                  onToggle={() => onToggleTool(`${turn.id}-${tIdx}`)}
-                  copied={copiedMsgIdx === `${turn.id}-${tIdx}`}
-                  onCopy={() =>
-                    onCopyText(
-                      `${turn.id}-${tIdx}`,
-                      [
-                        tool.name,
-                        tool.arguments !== undefined ? formatToolArguments(tool.arguments) : '',
-                        tool.output ?? '',
-                      ]
-                        .filter(Boolean)
-                        .join('\n\n'),
-                    )
-                  }
-                />
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </article>
-  )
-}
-
-function AgentLogToolCard({
-  tool,
-  expanded,
-  onToggle,
-  copied,
-  onCopy,
-}: {
-  tool: AgentLogToolCall
-  expanded: boolean
-  onToggle: () => void
-  copied: boolean
-  onCopy: () => void
-}) {
-  const pending = tool.output === undefined && !tool.isError
-  const failed = Boolean(tool.isError)
-  const description = describeToolCall(tool.name, tool.arguments)
-
-  return (
-    <div className={`tool-call-card ${expanded ? 'expanded' : ''} ${failed ? 'failed' : pending ? 'pending' : 'completed'}`}>
-      <div className="tool-call-header" onClick={onToggle} role="button" tabIndex={0}>
-        <div className="tool-header-left agent-log-tool-header-left">
-          {failed && <AlertCircle size={14} className="tool-status-icon failed" />}
-          {!failed && pending && <Terminal size={14} className="tool-status-icon running" />}
-          {!failed && !pending && <CheckCircle2 size={14} className="tool-status-icon success" />}
-          <div className="agent-log-tool-identity">
-            <span className="tool-name">{tool.name}</span>
-            {description && (
-              <span className="agent-log-tool-desc" title={description}>
-                {description}
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="tool-header-right">
-          <span className={`tool-status-badge ${failed ? 'failed' : pending ? 'pending' : 'completed'}`}>
-            {failed ? 'error' : pending ? 'running' : 'ok'}
-          </span>
-          {expanded ? <ChevronDown size={14} /> : <ChevronRightIcon size={14} />}
-        </div>
-      </div>
-      {expanded && (
-        <div className="tool-call-body agent-log-tool-body">
-          {tool.arguments !== undefined && (
-            <div className="agent-log-tool-section">
-              <div className="agent-log-tool-section-header">
-                <span className="tool-label">Arguments</span>
-                <button type="button" className="mini-copy-btn" onClick={onCopy} title="Copy tool call">
-                  {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
-                </button>
-              </div>
-              <pre className="step-tool-call-args">{formatToolArguments(tool.arguments)}</pre>
-            </div>
-          )}
-          {tool.output !== undefined && (
-            <div className="agent-log-tool-section">
-              <span className="tool-label">{failed ? 'Error output' : 'Output'}</span>
-              <pre className={`step-tool-result-output ${failed ? 'is-error' : ''}`}>{tool.output}</pre>
-            </div>
-          )}
-          {pending && <div className="agent-log-tool-pending">Waiting for tool result…</div>}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function AgentLogJudgmentDetailCard({ judgment }: { judgment: HarnessJudgmentRecord }) {
-  const triggered = Boolean(judgment.verdict?.triggered)
-  const verdictKind = judgment.verdict?.kind || 'unknown'
-  const scoreVal =
-    judgment.verdict?.value !== undefined ? judgment.verdict.value.toFixed(4) : undefined
-  const thresholdVal =
-    judgment.verdict?.threshold !== undefined ? judgment.verdict.threshold.toFixed(2) : undefined
-  const confPercent =
-    judgment.confidence !== undefined ? `${(judgment.confidence * 100).toFixed(1)}%` : undefined
-
-  return (
-    <div className={`agent-log-judgment-card ${triggered ? 'is-triggered' : 'is-ok'}`}>
-      <div className="judgment-card-header">
-        <div className="judgment-card-point">
-          <span className="judgment-point-name">{judgment.point}</span>
-          <span className={`judgment-mode-badge mode-${judgment.mode}`}>{judgment.mode}</span>
-          <span className="judgment-latency-badge">{judgment.latencyMs} ms</span>
-        </div>
-        <span className={`judgment-verdict-badge ${triggered ? 'triggered' : 'ok'}`}>
-          {triggered ? '⚠️ Triggered' : '✓ Passed'}
-        </span>
-      </div>
-
-      <div className="judgment-card-metrics">
-        <div className="judgment-metric">
-          <span className="metric-label">Type:</span>
-          <span className="metric-val">{judgment.questionType || verdictKind}</span>
-        </div>
-        {scoreVal !== undefined && (
-          <div className="judgment-metric">
-            <span className="metric-label">Score / Prob:</span>
-            <span className="metric-val font-mono">{scoreVal}</span>
-          </div>
-        )}
-        {thresholdVal !== undefined && (
-          <div className="judgment-metric">
-            <span className="metric-label">Threshold:</span>
-            <span className="metric-val font-mono">{thresholdVal}</span>
-          </div>
-        )}
-        {confPercent && (
-          <div className="judgment-metric">
-            <span className="metric-label">Confidence:</span>
-            <span className="metric-val font-mono">{confPercent}</span>
-          </div>
-        )}
-        {judgment.verdict?.selected && (
-          <div className="judgment-metric">
-            <span className="metric-label">Choice:</span>
-            <span className="metric-val font-mono">{judgment.verdict.selected}</span>
-          </div>
-        )}
-      </div>
-
-      {judgment.stateDigest && (
-        <div className="judgment-card-digest">
-          <span className="digest-label">State Digest:</span>
-          <pre className="digest-pre">{judgment.stateDigest}</pre>
-        </div>
-      )}
     </div>
   )
 }

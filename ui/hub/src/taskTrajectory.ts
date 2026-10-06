@@ -226,6 +226,95 @@ export function describeToolCall(name: string, args?: Record<string, unknown> | 
   }
 }
 
+export type ToolPresentationKind = 'shell' | 'read' | 'write' | 'search' | 'list' | 'advisor' | 'other'
+
+export interface PresentedToolCall {
+  summary: string
+  kind: ToolPresentationKind
+  language: string
+  argsText: string
+  outputText?: string
+  diffText?: string
+  path?: string
+}
+
+const TOOL_EXTENSION_LANGUAGE: Record<string, string> = {
+  rs: 'rust',
+  ts: 'typescript',
+  tsx: 'typescript',
+  js: 'javascript',
+  jsx: 'javascript',
+  py: 'python',
+  go: 'go',
+  md: 'markdown',
+  json: 'json',
+  toml: 'toml',
+  yaml: 'yaml',
+  yml: 'yaml',
+  css: 'css',
+  html: 'html',
+  sh: 'shell',
+}
+
+function toolPresentationKind(name: string): ToolPresentationKind {
+  switch (shortToolName(name)) {
+    case 'shell':
+      return 'shell'
+    case 'read_file':
+      return 'read'
+    case 'write_file':
+      return 'write'
+    case 'grep_search':
+      return 'search'
+    case 'list_dir':
+      return 'list'
+    case 'consult_advisor':
+      return 'advisor'
+    default:
+      return 'other'
+  }
+}
+
+function languageForTool(kind: ToolPresentationKind, path?: string): string {
+  if (kind === 'shell') return 'shell'
+  if (!path) return 'text'
+  const base = path.split('/').pop() ?? path
+  const dot = base.lastIndexOf('.')
+  if (dot <= 0) return 'text'
+  return TOOL_EXTENSION_LANGUAGE[base.slice(dot + 1).toLowerCase()] ?? 'text'
+}
+
+function containsUnifiedDiff(text: string): boolean {
+  return text.includes('diff --git') || /^@@\s/m.test(text)
+}
+
+/** Presentation fields for one Agent Log tool row. */
+export function presentToolCall(tool: AgentLogToolCall): PresentedToolCall {
+  const kind = toolPresentationKind(tool.name)
+  const record = toolArgsRecord(tool.arguments)
+  const path =
+    kind === 'read' || kind === 'write' || kind === 'list' ? stringArg(record, 'path') : undefined
+  const argsText =
+    kind === 'shell' ? (stringArg(record, 'command') ?? '') : formatToolArguments(tool.arguments)
+  const outputText = typeof tool.output === 'string' && tool.output.trim() ? tool.output : undefined
+  let diffText: string | undefined
+  if (outputText && containsUnifiedDiff(outputText)) {
+    diffText = outputText
+  } else if (containsUnifiedDiff(argsText)) {
+    diffText = argsText
+  }
+
+  return {
+    summary: describeToolCall(tool.name, tool.arguments),
+    kind,
+    language: languageForTool(kind, path),
+    argsText,
+    outputText,
+    diffText,
+    path,
+  }
+}
+
 export type TrajectoryFilterType = 'all' | 'tools' | 'final_answer' | 'yield' | 'telemetry'
 export type TrajectoryViewMode = 'log' | 'split' | 'stream' | 'providers'
 
@@ -504,6 +593,16 @@ export function formatPromptMessageText(msg: ParsedPromptMessage): string {
   return JSON.stringify(msg.content, null, 2)
 }
 
+function isToolResultPrompt(message: ParsedPromptMessage): boolean {
+  return message.role === 'tool' || Boolean(message.toolResults && message.toolResults.length > 0)
+}
+
+function userPromptText(message: ParsedPromptMessage): string {
+  const direct = message.text?.trim()
+  if (direct) return direct
+  return formatPromptMessageText(message).trim()
+}
+
 /**
  * Rebuilds a chronological chat-style agent log from a project-task trajectory,
  * similar to a normal agent session transcript.
@@ -518,9 +617,11 @@ export function buildAgentLog(run: HarnessRunResponse | null | undefined): Agent
   let userTimestamp: string | undefined
   for (const step of steps) {
     const telemetry = extractLlmTelemetry(step)
-    const userMessage = telemetry?.messages.find(message => message.role === 'user' && message.text?.trim())
+    const userMessage = telemetry?.messages.find(
+      message => message.role === 'user' && message.text?.trim() && !isToolResultPrompt(message),
+    )
     if (userMessage?.text) {
-      userPrompt = userMessage.text
+      userPrompt = userMessage.text.trim()
       userTimestamp = step.timestamp
       break
     }
@@ -531,8 +632,11 @@ export function buildAgentLog(run: HarnessRunResponse | null | undefined): Agent
     userPrompt =
       stringField(r, 'problemStatement', 'problem_statement', 'prompt', 'taskPrompt') ??
       stringField(taskSpec, 'problemStatement', 'problem_statement')
+    if (userPrompt) userPrompt = userPrompt.trim()
   }
+  let lastUserText = ''
   if (userPrompt) {
+    lastUserText = userPrompt
     turns.push({
       id: 'user-prompt',
       role: 'user',
@@ -579,6 +683,22 @@ export function buildAgentLog(run: HarnessRunResponse | null | undefined): Agent
       if (incoming) {
         lastPromptText = formatPromptMessageText(incoming)
       }
+    }
+
+    // Tool results ride on user-role messages. They stay on the assistant step.
+    // A new user prompt, including a continue follow-up, becomes its own turn.
+    for (const message of addedPrompts) {
+      if (message.role !== 'user' || isToolResultPrompt(message)) continue
+      const followUp = userPromptText(message)
+      if (!followUp || followUp === lastUserText) continue
+      turns.push({
+        id: `user-followup-${step.stepIndex}-${message.index}`,
+        role: 'user',
+        kind: 'user',
+        text: followUp,
+        timestamp: step.timestamp,
+      })
+      lastUserText = followUp
     }
 
     turns.push({

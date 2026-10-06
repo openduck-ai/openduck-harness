@@ -3260,13 +3260,14 @@ export function ProjectHarnessTab({
             onStopTask={handleStopTask}
             onStopJob={handleStopRunningJob}
             onBackToTasks={() => setSubTab('tasks')}
-            onContinueTask={async (taskId, extraTurns) => {
+            onContinueTask={async (taskId, extraTurns, extraPrompt) => {
               await handleRunTask(
                 taskId,
                 false,
                 undefined,
                 selectedHistoryId ?? undefined,
                 extraTurns,
+                extraPrompt,
               )
             }}
             onOpenContinueModal={handleOpenContinueModal}
