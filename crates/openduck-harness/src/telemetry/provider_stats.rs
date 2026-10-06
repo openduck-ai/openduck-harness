@@ -80,7 +80,8 @@ impl ProviderCallStats {
             if let Some(tot) = usage.total_tokens {
                 self.total_tokens += tot as i64;
             } else {
-                self.total_tokens += (usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0)) as i64;
+                self.total_tokens +=
+                    (usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0)) as i64;
             }
         }
 
@@ -140,7 +141,8 @@ impl TaskProviderStats {
             if let Some(tot) = usage.total_tokens {
                 self.total_tokens += tot as i64;
             } else {
-                self.total_tokens += (usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0)) as i64;
+                self.total_tokens +=
+                    (usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0)) as i64;
             }
         }
 

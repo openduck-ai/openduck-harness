@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { createApi } from '@aaif/goose-hub-core'
 import { Sun, Moon, Laptop } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext'
+import { OpenDuckConfigPanel } from './OpenDuckConfigPanel'
 import { ProjectRootsEditor } from './ProjectRootsEditor'
 import { useProjectRoots } from './useProjectRoots'
 
@@ -69,7 +70,7 @@ export function ServerSettings({
           <p className="eyebrow">SYSTEM CONFIGURATION</p>
           <h2>Server & Settings</h2>
           <p className="muted">
-            Configure connection endpoints, appearance preferences, security credentials, and view system diagnostics.
+            Configure the OpenDuck config file, connection, appearance, and project roots.
           </p>
         </div>
       </div>
@@ -238,6 +239,8 @@ export function ServerSettings({
           </div>
         </div>
       </div>
+
+      <OpenDuckConfigPanel api={api} isConnected={isConnected} />
     </div>
   )
 }

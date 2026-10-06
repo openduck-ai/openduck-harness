@@ -26,6 +26,10 @@ import type {
   HarnessRunResponse,
   Job,
   JobRun,
+  AppConfigDocument,
+  ConfigScalar,
+  HarnessSettingsUpdate,
+  JudgeSettingsUpdate,
   Project,
   ProjectDetail,
   ProjectDirectory,
@@ -134,6 +138,28 @@ export function createApi(baseUrl: string, secret = '') {
         `/api/v1/projects/${encodeURIComponent(slug)}/insight`,
       ),
     createProject: (input: ProjectInput) => request<{ project: Project }>('/api/v1/projects', { method: 'POST', body: JSON.stringify(input) }),
+    getAppConfig: () => request<AppConfigDocument>('/api/v1/config'),
+    upsertAppConfig: (key: string, value: ConfigScalar) =>
+      request<AppConfigDocument>('/api/v1/config', {
+        method: 'PUT',
+        body: JSON.stringify({ key, value }),
+      }),
+    removeAppConfig: (key: string) =>
+      request<AppConfigDocument>(`/api/v1/config?key=${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+      }),
+    updateHarnessConfig: (update: HarnessSettingsUpdate) =>
+      request<AppConfigDocument>('/api/v1/config/harness', {
+        method: 'PUT',
+        body: JSON.stringify(update),
+      }),
+    updateJudgeConfig: (update: JudgeSettingsUpdate) =>
+      request<AppConfigDocument>('/api/v1/config/judge', {
+        method: 'PUT',
+        body: JSON.stringify(update),
+      }),
+    removeJudgeConfig: () =>
+      request<AppConfigDocument>('/api/v1/config/judge', { method: 'DELETE' }),
     listProjectRoots: () => request<{ roots: ProjectRoot[] }>('/api/v1/project-roots'),
     addProjectRoot: (input: { path: string; allowUntrustedPath?: boolean }) =>
       request<{ root: ProjectRoot }>('/api/v1/project-roots', {

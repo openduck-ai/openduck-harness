@@ -21,7 +21,12 @@ pub struct TaskResult {
     pub duration_ms: u128,
     pub verification: Option<VerificationResult>,
     pub error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "provider_stats", alias = "providerStats")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "provider_stats",
+        alias = "providerStats"
+    )]
     pub provider_stats: Option<TaskProviderStats>,
 }
 
@@ -44,7 +49,12 @@ pub struct EvalMetrics {
     pub avg_steps: f64,
     #[serde(alias = "total_tool_calls")]
     pub total_tool_calls: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "provider_stats", alias = "providerStats")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "provider_stats",
+        alias = "providerStats"
+    )]
     pub provider_stats: Option<TaskProviderStats>,
 }
 
@@ -142,14 +152,20 @@ impl EvaluationReport {
                         }
                     }
                     if entry.total_calls > 0 {
-                        entry.avg_duration_ms = (entry.total_duration_ms as f64) / (entry.total_calls as f64);
+                        entry.avg_duration_ms =
+                            (entry.total_duration_ms as f64) / (entry.total_calls as f64);
                     }
                 }
                 for (m_key, m_stat) in &ps.by_model {
                     let entry = agg_provider_stats
                         .by_model
                         .entry(m_key.clone())
-                        .or_insert_with(|| crate::telemetry::ProviderCallStats::new(&m_stat.provider, m_stat.model.clone()));
+                        .or_insert_with(|| {
+                            crate::telemetry::ProviderCallStats::new(
+                                &m_stat.provider,
+                                m_stat.model.clone(),
+                            )
+                        });
                     entry.total_calls += m_stat.total_calls;
                     entry.successful_calls += m_stat.successful_calls;
                     entry.failed_calls += m_stat.failed_calls;
@@ -168,14 +184,15 @@ impl EvaluationReport {
                         }
                     }
                     if entry.total_calls > 0 {
-                        entry.avg_duration_ms = (entry.total_duration_ms as f64) / (entry.total_calls as f64);
+                        entry.avg_duration_ms =
+                            (entry.total_duration_ms as f64) / (entry.total_calls as f64);
                     }
                 }
             }
         }
         if agg_provider_stats.total_calls > 0 {
-            agg_provider_stats.avg_duration_ms =
-                (agg_provider_stats.total_duration_ms as f64) / (agg_provider_stats.total_calls as f64);
+            agg_provider_stats.avg_duration_ms = (agg_provider_stats.total_duration_ms as f64)
+                / (agg_provider_stats.total_calls as f64);
         }
 
         Self {

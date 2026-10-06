@@ -7,9 +7,7 @@ use crate::policy::{
     AgentAction, AgentPolicy, HarnessContextView, HarnessMessage, MessageRole, YieldReason,
 };
 use crate::sandbox::SandboxDriver;
-use crate::telemetry::{
-    TaskProviderStats, TrajectoryLogger, TrajectoryRecord, TrajectoryStep,
-};
+use crate::telemetry::{TaskProviderStats, TrajectoryLogger, TrajectoryRecord, TrajectoryStep};
 use crate::types::{
     AdvisorProxyConfig, ExecOptions, RunStatus, ToolCallRequest, ToolCallResponse, ToolDefinition,
 };
@@ -1278,7 +1276,8 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         }
 
         let duration_ms = start_time.elapsed().as_millis();
-        let provider_stats = TaskProviderStats::from_steps(&cumulative_steps, Some(self.policy.name()));
+        let provider_stats =
+            TaskProviderStats::from_steps(&cumulative_steps, Some(self.policy.name()));
         let trajectory = TrajectoryRecord {
             session_id: session_id.to_string(),
             task_id: task.id.clone(),

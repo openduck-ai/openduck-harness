@@ -3,6 +3,7 @@
 //! This module contains storage and validation for the HTTP control plane.
 //! Scheduler code must not import this module.
 
+pub mod app_config;
 pub mod files;
 pub mod git;
 pub mod harness;

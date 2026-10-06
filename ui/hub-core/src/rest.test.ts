@@ -376,3 +376,52 @@ test('REST client supports lazy getProject and getProjectInsight', async () => {
     globalThis.fetch = originalFetch
   }
 })
+
+test('REST client reads and updates OpenDuck config', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: { url: string; method: string; body?: string }[] = []
+  globalThis.fetch = async (input, init) => {
+    const req = new Request(input, init)
+    calls.push({ url: req.url, method: req.method, body: init?.body ? String(init.body) : undefined })
+    return new Response(JSON.stringify({ entries: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    const api = createApi('http://host', 'secret')
+    await api.getAppConfig()
+    await api.upsertAppConfig('OLLAMA_HOST', 'http://127.0.0.1:11434')
+    await api.updateHarnessConfig({
+      maxTurns: 40,
+      stagnationThreshold: null,
+      explorationBudget: null,
+      periodicReviewInterval: null,
+      circuitBreakerEnabled: true,
+    })
+    await api.updateJudgeConfig({
+      provider: 'laya',
+      endpoint: 'http://localhost:8732/api/laya',
+      timeoutMs: 350,
+      fallbackOnError: true,
+      points: [{ id: 'tool.risk', mode: 'off' }],
+    })
+    await api.removeAppConfig('OLLAMA_HOST')
+    await api.removeJudgeConfig()
+    assert.deepEqual(
+      calls.map(call => `${call.method} ${call.url}`),
+      [
+        'GET http://host/api/v1/config',
+        'PUT http://host/api/v1/config',
+        'PUT http://host/api/v1/config/harness',
+        'PUT http://host/api/v1/config/judge',
+        'DELETE http://host/api/v1/config?key=OLLAMA_HOST',
+        'DELETE http://host/api/v1/config/judge',
+      ],
+    )
+    assert.equal(calls[1]?.body, JSON.stringify({ key: 'OLLAMA_HOST', value: 'http://127.0.0.1:11434' }))
+    assert.equal(JSON.parse(calls[2]?.body ?? '{}').maxTurns, 40)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

@@ -108,6 +108,71 @@ export interface ProjectDirectory {
   path: string
 }
 
+export type ConfigScalar = string | number | boolean
+
+export interface ConfigField {
+  value: string | null
+  fromEnv: boolean
+}
+
+export interface ConfigEntry {
+  key: string
+  value: ConfigScalar
+  fromEnv: boolean
+}
+
+export interface HarnessField<T> {
+  value: T | null
+  fromEnv: boolean
+}
+
+export interface HarnessSettingsView {
+  maxTurns: HarnessField<number>
+  stagnationThreshold: HarnessField<number>
+  explorationBudget: HarnessField<number>
+  periodicReviewInterval: HarnessField<number>
+  circuitBreakerEnabled: HarnessField<boolean>
+}
+
+export interface HarnessSettingsUpdate {
+  maxTurns: number | null
+  stagnationThreshold: number | null
+  explorationBudget: number | null
+  periodicReviewInterval: number | null
+  circuitBreakerEnabled: boolean | null
+}
+
+export interface JudgePoint {
+  id: string
+  mode: string
+}
+
+export interface JudgeSettingsView {
+  configured: boolean
+  provider: string
+  endpoint: string
+  timeoutMs: number
+  fallbackOnError: boolean
+  points: JudgePoint[]
+}
+
+export interface JudgeSettingsUpdate {
+  provider: string
+  endpoint: string
+  timeoutMs: number
+  fallbackOnError: boolean
+  points: JudgePoint[]
+}
+
+export interface AppConfigDocument {
+  provider: ConfigField
+  model: ConfigField
+  mode: ConfigField
+  harness: HarnessSettingsView
+  judge: JudgeSettingsView
+  entries: ConfigEntry[]
+}
+
 export interface Job {
   id: string
   source: string

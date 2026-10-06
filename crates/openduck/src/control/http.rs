@@ -7,12 +7,13 @@ use axum::{
     extract::{DefaultBodyLimit, Path as AxumPath, Query, State},
     http::{header, StatusCode},
     response::Response,
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::app_config::{self, AppConfigError};
 use super::insight::{inspect_project, ProjectInsight};
 use super::jobs::{JobRun, SqliteJobRunStore};
 use super::project_roots::ProjectRootsStore;
@@ -1353,6 +1354,70 @@ async fn create_project_root_directory(
     })))
 }
 
+fn config_error(error: AppConfigError) -> (StatusCode, Json<serde_json::Value>) {
+    match error {
+        AppConfigError::Invalid(message) => bad(message),
+        AppConfigError::Storage(message) => server_error(message),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpsertAppConfigRequest {
+    key: String,
+    value: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigKeyQuery {
+    key: String,
+}
+
+async fn get_app_config(
+) -> Result<Json<app_config::AppConfigDocument>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::read_document(crate::config::Config::global())
+        .map(Json)
+        .map_err(config_error)
+}
+
+async fn upsert_app_config(
+    Json(req): Json<UpsertAppConfigRequest>,
+) -> Result<Json<app_config::AppConfigDocument>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::upsert_entry(crate::config::Config::global(), &req.key, req.value)
+        .map(Json)
+        .map_err(config_error)
+}
+
+async fn remove_app_config(
+    Query(query): Query<ConfigKeyQuery>,
+) -> Result<Json<app_config::AppConfigDocument>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::remove_entry(crate::config::Config::global(), &query.key)
+        .map(Json)
+        .map_err(config_error)
+}
+
+async fn update_harness_config(
+    Json(update): Json<app_config::HarnessSettingsUpdate>,
+) -> Result<Json<app_config::AppConfigDocument>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::update_harness(crate::config::Config::global(), update)
+        .map(Json)
+        .map_err(config_error)
+}
+
+async fn update_judge_config(
+    Json(update): Json<app_config::JudgeSettingsUpdate>,
+) -> Result<Json<app_config::AppConfigDocument>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::update_judge(crate::config::Config::global(), update)
+        .map(Json)
+        .map_err(config_error)
+}
+
+async fn remove_judge_config(
+) -> Result<Json<app_config::AppConfigDocument>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::remove_judge(crate::config::Config::global())
+        .map(Json)
+        .map_err(config_error)
+}
+
 pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
     tokio::spawn(async {
         match super::task_scheduler::global().await {
@@ -1367,6 +1432,17 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
         }
     });
     Router::new()
+        .route(
+            "/api/v1/config",
+            get(get_app_config)
+                .put(upsert_app_config)
+                .delete(remove_app_config),
+        )
+        .route("/api/v1/config/harness", put(update_harness_config))
+        .route(
+            "/api/v1/config/judge",
+            put(update_judge_config).delete(remove_judge_config),
+        )
         .route(
             "/api/v1/project-roots",
             get(list_project_roots)
