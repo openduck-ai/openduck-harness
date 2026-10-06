@@ -27,6 +27,7 @@ import {
 import { isContinuableStatus } from '../taskContinuation.ts'
 import { MarkdownPreview } from './MarkdownPreview.tsx'
 import { FilePreviewModal } from './FilePreviewModal.tsx'
+import { ProviderStatsDashboard } from './ProviderStatsDashboard.tsx'
 import { formatSelectionExtraPrompt } from '../dynamicPrompt.ts'
 import {
   DynamicPromptRunNotice,
@@ -93,7 +94,7 @@ interface TaskTrajectoryViewerProps {
   ) => void
 }
 
-type TelemetryTab = 'prompt' | 'response' | 'thinking' | 'tokens' | 'raw'
+type TelemetryTab = 'prompt' | 'response' | 'thinking' | 'tokens' | 'raw' | 'provider_calls'
 type MsgRoleFilter = 'all' | 'user' | 'assistant' | 'tool' | 'system'
 
 export function TaskTrajectoryViewer({
@@ -508,6 +509,30 @@ export function TaskTrajectoryViewer({
             <span className="metric-label">Total Duration</span>
             <span className="metric-value">{(metrics.durationMs / 1000).toFixed(2)}s</span>
           </div>
+          {metrics.providerStats && metrics.providerStats.totalCalls > 0 && (
+            <div
+              className={`metric-item clickable-metric ${viewMode === 'providers' ? 'active' : ''}`}
+              onClick={() => setViewMode('providers')}
+              title="Click to view LLM provider call statistics and ledger"
+              role="button"
+              tabIndex={0}
+            >
+              <span className="metric-label">Provider Calls</span>
+              <div className="metric-value provider-calls-val">
+                <span>{metrics.providerStats.totalCalls}</span>
+                {metrics.providerStats.failedCalls > 0 && (
+                  <span className="metric-badge err" title={`${metrics.providerStats.failedCalls} failed calls`}>
+                    {metrics.providerStats.failedCalls} failed
+                  </span>
+                )}
+                {metrics.providerStats.totalRetries > 0 && (
+                  <span className="metric-badge warn" title={`${metrics.providerStats.totalRetries} retries`}>
+                    {metrics.providerStats.totalRetries} retry
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
           {metrics.totalTokens > 0 && (
             <>
               <div className="metric-item">
@@ -524,6 +549,26 @@ export function TaskTrajectoryViewer({
                 </span>
               </div>
             </>
+          )}
+          {metrics.providerStats && Object.keys(metrics.providerStats.byProvider).length > 0 && (
+            <div className="metric-item provider-breakdown-item">
+              <span className="metric-label">Providers</span>
+              <div className="tool-freq-chips">
+                {Object.entries(metrics.providerStats.byProvider).map(([pName, pStat]) => (
+                  <button
+                    key={pName}
+                    type="button"
+                    className="tool-freq-chip provider-chip"
+                    onClick={() => setViewMode('providers')}
+                    title={`${pName}: ${pStat.totalCalls} calls (${pStat.successfulCalls} ok, ${pStat.failedCalls} fail, ${pStat.retries} retries), avg ${Math.round(pStat.avgDurationMs)}ms`}
+                  >
+                    <code>{pName}</code> ×{pStat.totalCalls}
+                    {pStat.failedCalls > 0 && <span className="chip-badge err">!{pStat.failedCalls}</span>}
+                    {pStat.retries > 0 && <span className="chip-badge warn">↺{pStat.retries}</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
           {Object.keys(metrics.toolUsageFrequencies).length > 0 && (
             <div className="metric-item tool-freq-item">
@@ -842,6 +887,14 @@ export function TaskTrajectoryViewer({
               title="Stream Timeline View (Continuous Chronological Scroll)"
             >
               <SlidersHorizontal size={14} /> Stream Timeline
+            </button>
+            <button
+              type="button"
+              className={`view-mode-btn ${viewMode === 'providers' ? 'active' : ''}`}
+              onClick={() => setViewMode('providers')}
+              title="LLM Provider Calls & Performance Statistics"
+            >
+              <Zap size={14} /> Provider Stats{metrics.providerStats?.totalCalls ? ` (${metrics.providerStats.totalCalls})` : ''}
             </button>
           </div>
 
@@ -1384,6 +1437,18 @@ export function TaskTrajectoryViewer({
         </div>
       )}
 
+      {/* ================= VIEW MODE 4: PROVIDER CALL STATS DASHBOARD ================= */}
+      {viewMode === 'providers' && (
+        <ProviderStatsDashboard
+          run={run}
+          providerStats={metrics.providerStats}
+          onJumpToStep={stepIdx => {
+            setSelectedStepIdx(stepIdx)
+            setViewMode('split')
+          }}
+        />
+      )}
+
       {/* File Preview Modal */}
       {previewFilePath && api && effectiveProjectSlug && (
         <FilePreviewModal
@@ -1621,6 +1686,15 @@ function StepDetailCard({
                 >
                   <FileCode size={13} /> Raw JSON Payloads
                 </button>
+                {telemetry?.providerCalls && telemetry.providerCalls.length > 0 && (
+                  <button
+                    type="button"
+                    className={`telemetry-tab-btn ${activeTelemetryTab === 'provider_calls' ? 'active' : ''}`}
+                    onClick={() => setActiveTelemetryTab('provider_calls')}
+                  >
+                    <Zap size={13} /> Provider Calls ({telemetry.providerCalls.length})
+                  </button>
+                )}
               </div>
 
               <div className="telemetry-tabs-right">
@@ -1991,6 +2065,89 @@ function StepDetailCard({
                 </div>
               </div>
             )}
+
+            {/* TAB PANEL 6: PROVIDER CALL ATTEMPTS */}
+            {activeTelemetryTab === 'provider_calls' && telemetry?.providerCalls && (
+              <div className="telemetry-panel provider-calls-panel">
+                <div className="step-provider-calls-list">
+                  {telemetry.providerCalls.map((call, cIdx) => (
+                    <div
+                      key={call.callId || cIdx}
+                      className={`step-provider-call-card ${call.success ? 'success' : 'failed'}`}
+                    >
+                      <div className="provider-call-card-header">
+                        <div className="call-title-group">
+                          <span className="call-attempt-badge">
+                            Call #{cIdx + 1}
+                            {call.retryAttempt !== undefined && call.retryAttempt !== null && call.retryAttempt > 0 && (
+                              <span className="call-retry-pill">Retry #{call.retryAttempt}</span>
+                            )}
+                            {call.isSecondary && <span className="call-secondary-pill">Secondary Failover</span>}
+                          </span>
+                          <span className="call-provider-tag">
+                            <strong>{call.provider}</strong>
+                            {call.model && <code className="call-model-tag">{call.model}</code>}
+                          </span>
+                        </div>
+                        <span className={`call-status-badge ${call.success ? 'ok' : 'err'}`}>
+                          {call.success ? '✓ Success' : '✕ Failed'}
+                        </span>
+                      </div>
+
+                      <div className="provider-call-metrics-row">
+                        <div className="call-mini-metric">
+                          <span className="mini-label">Latency</span>
+                          <span className="mini-val font-mono">{call.latencyMs.toLocaleString()} ms</span>
+                        </div>
+                        {call.tokenUsage && (
+                          <>
+                            <div className="call-mini-metric">
+                              <span className="mini-label">Input Tokens</span>
+                              <span className="mini-val font-mono">
+                                {(call.tokenUsage.inputTokens ?? 0).toLocaleString()}
+                              </span>
+                            </div>
+                            <div className="call-mini-metric">
+                              <span className="mini-label">Output Tokens</span>
+                              <span className="mini-val font-mono">
+                                {(call.tokenUsage.outputTokens ?? 0).toLocaleString()}
+                              </span>
+                            </div>
+                            <div className="call-mini-metric">
+                              <span className="mini-label">Total Tokens</span>
+                              <span className="mini-val font-mono total">
+                                {(
+                                  call.tokenUsage.totalTokens ??
+                                  (call.tokenUsage.inputTokens ?? 0) + (call.tokenUsage.outputTokens ?? 0)
+                                ).toLocaleString()}
+                              </span>
+                            </div>
+                          </>
+                        )}
+                        {call.cost !== undefined && call.cost !== null && (
+                          <div className="call-mini-metric">
+                            <span className="mini-label">Est. Cost</span>
+                            <span className="mini-val font-mono">${call.cost.toFixed(5)}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {call.retryReason && (
+                        <div className="call-retry-reason-box">
+                          <strong>Retry Reason:</strong> {call.retryReason}
+                        </div>
+                      )}
+
+                      {call.error && (
+                        <div className="call-error-box">
+                          <strong>Error:</strong> {call.error}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -2138,6 +2295,27 @@ function AgentLogTurnCard({
             >
               <Scale size={11} />
               <span>Laya ({turn.judgments.length})</span>
+            </span>
+          )}
+          {turn.providerCalls && turn.providerCalls.length > 0 && (
+            <span
+              className={`agent-log-provider-pill ${turn.providerCalls.some(c => !c.success) ? 'has-error' : ''}`}
+              title={turn.providerCalls
+                .map(
+                  c =>
+                    `${c.provider}${c.model ? ` (${c.model})` : ''}: ${c.latencyMs}ms, ${
+                      c.success ? 'Success' : `Failed (${c.error || 'error'})`
+                    }${c.tokenUsage ? ` • ${c.tokenUsage.totalTokens} tokens` : ''}${
+                      c.retryReason ? ` [Retry: ${c.retryReason}]` : ''
+                    }`,
+                )
+                .join('\n')}
+            >
+              <Zap size={11} />
+              <span>
+                {turn.providerCalls[0].provider}
+                {turn.providerCalls.length > 1 && ` (+${turn.providerCalls.length - 1})`}
+              </span>
             </span>
           )}
           {isLatest && (

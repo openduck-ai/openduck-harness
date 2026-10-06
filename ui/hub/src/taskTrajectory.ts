@@ -227,7 +227,7 @@ export function describeToolCall(name: string, args?: Record<string, unknown> | 
 }
 
 export type TrajectoryFilterType = 'all' | 'tools' | 'final_answer' | 'yield' | 'telemetry'
-export type TrajectoryViewMode = 'log' | 'split' | 'stream'
+export type TrajectoryViewMode = 'log' | 'split' | 'stream' | 'providers'
 
 export interface AgentLogToolCall {
   id?: string
@@ -259,6 +259,7 @@ export interface AgentLogTurn {
   systemPrompt?: string
   lastPromptText?: string
   judgments?: HarnessJudgmentRecord[]
+  providerCalls?: ProviderCallRecord[]
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -594,6 +595,12 @@ export function buildAgentLog(run: HarnessRunResponse | null | undefined): Agent
       systemPrompt: telemetry?.systemPrompt,
       lastPromptText,
       judgments: step.judgments && step.judgments.length > 0 ? step.judgments : undefined,
+      providerCalls:
+        step.providerCalls && step.providerCalls.length > 0
+          ? step.providerCalls
+          : telemetry?.providerCalls && telemetry.providerCalls.length > 0
+            ? telemetry.providerCalls
+            : undefined,
     })
   }
 

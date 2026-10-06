@@ -109,7 +109,20 @@ export function HarnessHistoryTable({
                     {String(item.status).toUpperCase()}
                   </span>
                 </td>
-                <td>{item.stepCount}</td>
+                <td>
+                  <div className="history-step-count-cell">
+                    <span>{item.stepCount}</span>
+                    {item.providerStats && item.providerStats.totalCalls > 0 && (
+                      <span
+                        className="history-provider-calls-pill"
+                        title={`${item.providerStats.totalCalls} provider calls (${item.providerStats.successfulCalls} ok, ${item.providerStats.failedCalls} failed, ${item.providerStats.totalRetries} retries)`}
+                      >
+                        ⚡ {item.providerStats.totalCalls}
+                        {item.providerStats.failedCalls > 0 && ` (!${item.providerStats.failedCalls})`}
+                      </span>
+                    )}
+                  </div>
+                </td>
                 <td>{item.toolCallsCount}</td>
                 <td>{(item.durationMs / 1000).toFixed(2)}s</td>
                 <td>{new Date(item.startedAt).toLocaleString()}</td>

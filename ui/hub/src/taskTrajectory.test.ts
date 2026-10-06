@@ -17,6 +17,7 @@ import {
   extractAddedPromptMessages,
   extractToolResultOutput,
   formatPromptMessageText,
+  computeTaskProviderStats,
 } from './taskTrajectory.ts'
 import type { HarnessRunResponse } from '@aaif/goose-hub-core'
 
@@ -647,6 +648,154 @@ test('evaluateAutoScrollState pauses when user scrolls up and resumes at bottom'
   })
   assert.equal(explicitlyDisabled.autoScroll, false)
   assert.equal(explicitlyDisabled.pausedByUserScroll, false)
+})
+
+test('computeTaskProviderStats aggregates explicit providerCalls across steps', () => {
+  const run = {
+    taskId: 'task-test-providers',
+    trajectory: {
+      steps: [
+        {
+          stepIndex: 1,
+          durationMs: 1200,
+          providerCalls: [
+            {
+              callId: 'call-1',
+              provider: 'anthropic',
+              model: 'claude-3-5-sonnet',
+              latencyMs: 1100,
+              success: true,
+              tokenUsage: { inputTokens: 500, outputTokens: 100, totalTokens: 600 },
+              cost: 0.003,
+            },
+          ],
+        },
+        {
+          stepIndex: 2,
+          durationMs: 2500,
+          providerCalls: [
+            {
+              callId: 'call-2a',
+              provider: 'anthropic',
+              model: 'claude-3-5-sonnet',
+              latencyMs: 1200,
+              success: false,
+              error: 'Rate limit exceeded',
+              retryAttempt: 1,
+              retryReason: 'transient_rate_limit',
+              tokenUsage: { inputTokens: 600, outputTokens: 0, totalTokens: 600 },
+            },
+            {
+              callId: 'call-2b',
+              provider: 'openai',
+              model: 'gpt-4o',
+              latencyMs: 1300,
+              success: true,
+              isSecondary: true,
+              tokenUsage: { inputTokens: 600, outputTokens: 200, totalTokens: 800 },
+              cost: 0.005,
+            },
+          ],
+        },
+      ],
+    },
+  } as unknown as HarnessRunResponse
+
+  const stats = computeTaskProviderStats(run)
+  assert.equal(stats.totalCalls, 3)
+  assert.equal(stats.successfulCalls, 2)
+  assert.equal(stats.failedCalls, 1)
+  assert.equal(stats.totalRetries, 1)
+  assert.equal(stats.totalDurationMs, 3600)
+  assert.equal(Math.round(stats.avgDurationMs), 1200)
+  assert.equal(stats.inputTokens, 1700)
+  assert.equal(stats.outputTokens, 300)
+  assert.equal(stats.totalTokens, 2000)
+  assert.equal(stats.totalCost?.toFixed(3), '0.008')
+
+  // Check byProvider
+  assert.ok(stats.byProvider['anthropic'])
+  assert.equal(stats.byProvider['anthropic'].totalCalls, 2)
+  assert.equal(stats.byProvider['anthropic'].successfulCalls, 1)
+  assert.equal(stats.byProvider['anthropic'].failedCalls, 1)
+  assert.equal(stats.byProvider['anthropic'].retries, 1)
+  assert.deepEqual(stats.byProvider['anthropic'].errors, ['Rate limit exceeded'])
+
+  assert.ok(stats.byProvider['openai'])
+  assert.equal(stats.byProvider['openai'].totalCalls, 1)
+  assert.equal(stats.byProvider['openai'].successfulCalls, 1)
+
+  // Check byModel
+  assert.ok(stats.byModel?.['anthropic:claude-3-5-sonnet'])
+  assert.equal(stats.byModel?.['anthropic:claude-3-5-sonnet'].totalCalls, 2)
+  assert.ok(stats.byModel?.['openai:gpt-4o'])
+  assert.equal(stats.byModel?.['openai:gpt-4o'].totalCalls, 1)
+
+  // Check calculateTrajectoryMetrics integrates providerStats
+  const metrics = calculateTrajectoryMetrics(run)
+  assert.ok(metrics.providerStats)
+  assert.equal(metrics.providerStats.totalCalls, 3)
+  assert.equal(metrics.providerStats.successfulCalls, 2)
+})
+
+test('computeTaskProviderStats falls back to synthetic stats for legacy steps', () => {
+  const legacyRun = {
+    taskId: 'legacy-task',
+    policyName: 'goose_agent',
+    trajectory: {
+      steps: [
+        {
+          stepIndex: 1,
+          durationMs: 800,
+          tokenUsage: { inputTokens: 300, outputTokens: 50, totalTokens: 350 },
+        },
+        {
+          stepIndex: 2,
+          durationMs: 1200,
+          tokenUsage: { inputTokens: 400, outputTokens: 80, totalTokens: 480 },
+        },
+      ],
+    },
+  } as unknown as HarnessRunResponse
+
+  const stats = computeTaskProviderStats(legacyRun)
+  assert.equal(stats.totalCalls, 2)
+  assert.equal(stats.successfulCalls, 2)
+  assert.equal(stats.failedCalls, 0)
+  assert.equal(stats.totalDurationMs, 2000)
+  assert.equal(stats.inputTokens, 700)
+  assert.equal(stats.outputTokens, 130)
+  assert.equal(stats.totalTokens, 830)
+})
+
+test('buildAgentLog attaches providerCalls to assistant turns', () => {
+  const runWithCalls = {
+    taskId: 'agent-log-test',
+    trajectory: {
+      steps: [
+        {
+          stepIndex: 1,
+          timestamp: '2026-09-01T00:00:01Z',
+          durationMs: 500,
+          agentAction: { FinalAnswer: 'Done!' },
+          providerCalls: [
+            {
+              provider: 'anthropic',
+              model: 'claude-3-5-sonnet',
+              latencyMs: 480,
+              success: true,
+            },
+          ],
+        },
+      ],
+    },
+  } as unknown as HarnessRunResponse
+
+  const turns = buildAgentLog(runWithCalls)
+  assert.equal(turns.length, 1)
+  assert.ok(turns[0].providerCalls)
+  assert.equal(turns[0].providerCalls?.length, 1)
+  assert.equal(turns[0].providerCalls?.[0].provider, 'anthropic')
 })
 
 
