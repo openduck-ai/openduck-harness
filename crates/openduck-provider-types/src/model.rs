@@ -1,6 +1,6 @@
 use crate::formats::openai::{
-    extract_reasoning_effort, is_openai_responses_model, is_xai_reasoning_model,
-    supports_xai_reasoning_effort,
+    extract_reasoning_effort, is_openai_responses_model, is_qwen_reasoning_model,
+    is_xai_reasoning_model, supports_qwen_reasoning_effort, supports_xai_reasoning_effort,
 };
 use crate::thinking::ThinkingEffort;
 use serde::de::Deserializer;
@@ -264,6 +264,7 @@ impl ModelConfig {
             || self.model_name.to_lowercase().contains("claude")
             || Self::is_gemini3_reasoning_model_name(&self.model_name)
             || is_xai_reasoning_model(&self.model_name)
+            || is_qwen_reasoning_model(&self.model_name)
     }
 
     fn is_gemini3_reasoning_model_name(model_name: &str) -> bool {
@@ -280,7 +281,10 @@ impl ModelConfig {
     }
 
     pub fn normalize_effort_suffix(&mut self) {
-        if !self.is_openai_reasoning_model() && !supports_xai_reasoning_effort(&self.model_name) {
+        if !self.is_openai_reasoning_model()
+            && !supports_xai_reasoning_effort(&self.model_name)
+            && !supports_qwen_reasoning_effort(&self.model_name)
+        {
             return;
         }
         let parts: Vec<&str> = self.model_name.split('-').collect();
@@ -611,6 +615,25 @@ mod tests {
             let config = ModelConfig::new("grok-4.5-high");
             assert_eq!(config.model_name, "grok-4.5");
             assert_eq!(config.thinking_effort(), Some(ThinkingEffort::High));
+        }
+
+        #[test]
+        fn qwen_reasoning_effort_suffix_is_normalized() {
+            let _guard = env_lock::lock_env([
+                ("GOOSE_THINKING_EFFORT", None::<&str>),
+                ("GOOSE_MAX_TOKENS", None::<&str>),
+                ("GOOSE_TEMPERATURE", None::<&str>),
+                ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+                ("GOOSE_TOOLSHIM", None::<&str>),
+                ("GOOSE_TOOLSHIM_OLLAMA_MODEL", None::<&str>),
+            ]);
+            let config = ModelConfig::new("qwen3.8-flash-low");
+            assert_eq!(config.model_name, "qwen3.8-flash");
+            assert_eq!(config.thinking_effort(), Some(ThinkingEffort::Low));
+            assert!(config.is_reasoning_model());
+
+            let config_space = ModelConfig::new("qwen 3.8 flash");
+            assert!(config_space.is_reasoning_model());
         }
 
         #[test]

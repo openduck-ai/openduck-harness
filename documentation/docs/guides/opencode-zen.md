@@ -93,7 +93,7 @@ Zen exposes many models. goose keeps a curated static list and can fetch the liv
 | Claude | `claude-haiku-4-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`, `claude-opus-4-5`, `claude-opus-4-6` |
 | OpenAI | `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex` |
 | Gemini | `gemini-3.5-flash`, `gemini-3.1-pro` |
-| Others | `kimi-k2.6`, `deepseek-v4-pro`, `deepseek-v4-flash`, `grok-4.5`, `glm-5.1`, `minimax-m2.7`, `qwen3.6-plus` |
+| Others | `kimi-k2.6`, `deepseek-v4-pro`, `deepseek-v4-flash`, `grok-4.5`, `glm-5.1`, `minimax-m2.7`, `qwen3.6-plus`, `qwen3.8-flash` |
 
 **Important:** request model ids must match Zen’s API listing (dash-style Claude versions such as `claude-sonnet-4-5`, not dotted catalog-only names).
 

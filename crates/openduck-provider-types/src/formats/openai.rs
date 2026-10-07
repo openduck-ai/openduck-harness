@@ -1656,6 +1656,7 @@ pub fn create_request_for_model_with_options(
     let (model_name, legacy_reasoning_effort) = extract_reasoning_effort(capability_model_name);
     let is_reasoning_model = is_openai_responses_model(&model_name);
     let supports_xai_effort = supports_xai_reasoning_effort(&model_name);
+    let supports_qwen_effort = supports_qwen_reasoning_effort(&model_name);
     let reasoning_effort = if is_reasoning_model {
         model_config
             .thinking_effort()
@@ -1666,6 +1667,12 @@ pub fn create_request_for_model_with_options(
         model_config
             .thinking_effort()
             .and_then(|effort| xai_reasoning_effort_for_thinking(&model_name, effort))
+    } else if supports_qwen_effort {
+        model_config
+            .thinking_effort()
+            .map_or(legacy_reasoning_effort, |effort| {
+                qwen_reasoning_effort_for_thinking(&model_name, effort)
+            })
     } else {
         None
     };
@@ -1749,7 +1756,10 @@ pub fn create_request_for_model_with_options(
 /// certain models (e.g. `gpt-5-pro` only accepts `high`; older o-series
 /// models reject `none` and `xhigh`).
 pub fn extract_reasoning_effort(model_name: &str) -> (String, Option<String>) {
-    if !is_openai_responses_model(model_name) {
+    if !is_openai_responses_model(model_name)
+        && !supports_xai_reasoning_effort(model_name)
+        && !supports_qwen_reasoning_effort(model_name)
+    {
         return (model_name.to_string(), None);
     }
 
@@ -1822,6 +1832,43 @@ pub fn xai_reasoning_effort_for_thinking(
         ThinkingEffort::Medium | ThinkingEffort::High | ThinkingEffort::Max => {
             Some("high".to_string())
         }
+    }
+}
+
+/// Returns whether a Qwen Chat Completions model accepts `reasoning_effort`.
+pub fn supports_qwen_reasoning_effort(model_name: &str) -> bool {
+    let lower = model_name.to_ascii_lowercase();
+    let sanitized = lower.replace(['-', '_', ' '], "");
+    sanitized.contains("qwen3.8")
+        || sanitized.contains("qwq")
+        || lower.contains("qwen3-max-thinking")
+        || lower.contains("qwen3-vl-235b-a22b-thinking")
+        || lower.contains("qwen3-vl-30b-a3b-thinking")
+        || lower.contains("qwen3-vl-8b-thinking")
+}
+
+/// Returns whether a Qwen model performs server-side reasoning.
+pub fn is_qwen_reasoning_model(model_name: &str) -> bool {
+    let lower = model_name.to_ascii_lowercase();
+
+    if lower.contains("non-reasoning") || lower.contains("non_reasoning") {
+        return false;
+    }
+
+    supports_qwen_reasoning_effort(model_name)
+}
+
+/// Maps Goose's effort levels to values accepted by Qwen Chat Completions.
+pub fn qwen_reasoning_effort_for_thinking(
+    _model_name: &str,
+    effort: ThinkingEffort,
+) -> Option<String> {
+    match effort {
+        ThinkingEffort::Off => Some("none".to_string()),
+        ThinkingEffort::Low => Some("low".to_string()),
+        ThinkingEffort::Medium => Some("medium".to_string()),
+        ThinkingEffort::High => Some("high".to_string()),
+        ThinkingEffort::Max => Some("xhigh".to_string()),
     }
 }
 
@@ -4968,6 +5015,76 @@ data: [DONE]"#;
 
         assert_eq!(payload.get("reasoning_effort"), Some(&json!("medium")));
         assert!(payload.get("temperature").is_none());
+    }
+
+    #[test]
+    fn test_qwen_reasoning_model_capabilities() {
+        for model in [
+            "qwen3.8-flash",
+            "qwen 3.8 flash",
+            "qwen-3.8-flash",
+            "qwen3.8-max",
+            "qwen3.8-27b",
+            "qwq-32b",
+        ] {
+            assert!(supports_qwen_reasoning_effort(model), "{model}");
+            assert!(is_qwen_reasoning_model(model), "{model}");
+        }
+
+        for model in ["qwen3.8-flash-non-reasoning", "qwen-turbo", "qwen-plus"] {
+            assert!(!is_qwen_reasoning_model(model), "{model}");
+        }
+    }
+
+    #[test]
+    fn test_qwen_reasoning_effort_levels() {
+        assert_eq!(
+            qwen_reasoning_effort_for_thinking("qwen3.8-flash", ThinkingEffort::Off),
+            Some("none".to_string())
+        );
+        assert_eq!(
+            qwen_reasoning_effort_for_thinking("qwen3.8-flash", ThinkingEffort::Low),
+            Some("low".to_string())
+        );
+        assert_eq!(
+            qwen_reasoning_effort_for_thinking("qwen3.8-flash", ThinkingEffort::Medium),
+            Some("medium".to_string())
+        );
+        assert_eq!(
+            qwen_reasoning_effort_for_thinking("qwen3.8-flash", ThinkingEffort::High),
+            Some("high".to_string())
+        );
+        assert_eq!(
+            qwen_reasoning_effort_for_thinking("qwen3.8-flash", ThinkingEffort::Max),
+            Some("xhigh".to_string())
+        );
+    }
+
+    #[test]
+    fn test_create_request_applies_qwen_reasoning_controls() {
+        let model_config = ModelConfig::new("qwen3.8-flash")
+            .with_thinking_effort(ThinkingEffort::Low)
+            .with_temperature(Some(0.7));
+
+        let payload = create_request(
+            &model_config,
+            "system prompt",
+            &[],
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(payload.get("reasoning_effort"), Some(&json!("low")));
+        assert_eq!(payload.get("temperature"), Some(&json!(0.7f32)));
+    }
+
+    #[test]
+    fn test_create_request_extracts_qwen_reasoning_suffix() {
+        let (model, effort) = extract_reasoning_effort("qwen3.8-flash-high");
+        assert_eq!(model, "qwen3.8-flash");
+        assert_eq!(effort, Some("high".to_string()));
     }
 
     #[test]

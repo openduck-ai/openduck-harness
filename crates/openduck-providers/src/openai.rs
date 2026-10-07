@@ -487,6 +487,18 @@ impl OpenAiProvider {
         model_config: &ModelConfig,
     ) -> serde_json::Value {
         if let Some(obj) = payload.as_object_mut() {
+            if self.is_opencode() {
+                if let Some(model_val) = obj.get_mut("model") {
+                    if let Some(model_str) = model_val.as_str() {
+                        let lower = model_str.to_ascii_lowercase();
+                        let sanitized = lower.replace(['-', '_', ' '], "");
+                        if sanitized == "qwen3.8flash" {
+                            *model_val = serde_json::Value::String("qwen3.8-flash".to_string());
+                        }
+                    }
+                }
+            }
+
             if Self::PROVIDERS_NEEDING_MAX_TOKENS_REMAP.contains(&self.name.as_str()) {
                 if let Some(value) = obj.remove("max_completion_tokens") {
                     obj.entry("max_tokens").or_insert(value);
@@ -1233,6 +1245,23 @@ mod tests {
         let obj = result.as_object().unwrap();
 
         assert!(!obj.contains_key("reasoning_effort"));
+    }
+
+    #[test]
+    fn sanitize_opencode_normalizes_qwen3_8_flash_model_name() {
+        let provider = make_provider("opencode");
+        for model in ["qwen 3.8 flash", "qwen-3.8-flash", "qwen3.8-flash"] {
+            let payload = json!({
+                "model": model,
+                "messages": [],
+                "reasoning_effort": "low"
+            });
+            let model_config = ModelConfig::new(model);
+            let result = provider.sanitize_request_for_compat(payload, &model_config);
+            let obj = result.as_object().unwrap();
+            assert_eq!(obj.get("model"), Some(&json!("qwen3.8-flash")));
+            assert_eq!(obj.get("reasoning_effort"), Some(&json!("low")));
+        }
     }
 
     #[test]

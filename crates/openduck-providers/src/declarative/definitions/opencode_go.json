@@ -23,7 +23,8 @@
     {"name": "minimax-m2.7", "context_limit": 204800},
     {"name": "minimax-m2.5", "context_limit": 204800},
     {"name": "qwen3.6-plus", "context_limit": 262144},
-    {"name": "qwen3.5-plus", "context_limit": 262144}
+    {"name": "qwen3.5-plus", "context_limit": 262144},
+    {"name": "qwen3.8-flash", "context_limit": 262144, "reasoning": true}
   ],
   "supports_streaming": true
 }

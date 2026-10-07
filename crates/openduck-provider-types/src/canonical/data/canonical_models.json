@@ -135254,6 +135254,38 @@
     }
   },
   {
+    "id": "opencode-go/qwen3.8-flash",
+    "name": "Qwen3.8 Flash",
+    "family": "qwen3.8-flash",
+    "attachment": true,
+    "reasoning": true,
+    "tool_call": true,
+    "temperature": true,
+    "release_date": "2026-08-03",
+    "last_updated": "2026-08-03",
+    "modalities": {
+      "input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": false,
+    "cost": {
+      "input": 0.15,
+      "output": 0.47,
+      "cache_read": 0.02,
+      "cache_write": 0.2
+    },
+    "limit": {
+      "context": 262144,
+      "output": 65536
+    }
+  },
+  {
     "id": "opencode/big-pickle",
     "name": "Big Pickle",
     "family": "big-pickle",
@@ -138038,6 +138070,38 @@
       "input": 0.0,
       "output": 0.0,
       "cache_read": 0.0
+    },
+    "limit": {
+      "context": 262144,
+      "output": 65536
+    }
+  },
+  {
+    "id": "opencode/qwen3.8-flash",
+    "name": "Qwen3.8 Flash",
+    "family": "qwen3.8-flash",
+    "attachment": true,
+    "reasoning": true,
+    "tool_call": true,
+    "temperature": true,
+    "release_date": "2026-08-03",
+    "last_updated": "2026-08-03",
+    "modalities": {
+      "input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": false,
+    "cost": {
+      "input": 0.15,
+      "output": 0.47,
+      "cache_read": 0.02,
+      "cache_write": 0.2
     },
     "limit": {
       "context": 262144,
