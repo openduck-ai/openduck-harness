@@ -142,6 +142,8 @@ pub struct ProjectTaskSummary {
     pub has_verifier: bool,
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub schedule_paused: bool,
@@ -151,6 +153,33 @@ pub struct ProjectTaskSummary {
     pub currently_running: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub dynamic_prompt: bool,
+}
+
+/// Builds a short prompt preview from a task prompt.
+///
+/// Takes the first two non-empty trimmed lines, joined with `\n`, capped at 240
+/// characters on a char boundary, with `…` if truncated. Returns `None` if the prompt is empty.
+pub fn build_prompt_preview(prompt: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    for line in prompt.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            lines.push(trimmed);
+            if lines.len() == 2 {
+                break;
+            }
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let joined = lines.join("\n");
+    if joined.chars().count() <= 240 {
+        Some(joined)
+    } else {
+        let truncated: String = joined.chars().take(240).collect();
+        Some(format!("{truncated}…"))
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -237,6 +266,7 @@ impl ProjectTaskStore {
                             file_path: path.to_string_lossy().to_string(),
                             has_verifier: task_def.verifier.is_some(),
                             created_at,
+                            prompt_preview: build_prompt_preview(&task_def.prompt),
                             cron: task_def.cron,
                             schedule_paused: task_def.schedule_paused,
                             next_run_at: None,

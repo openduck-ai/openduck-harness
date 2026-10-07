@@ -1218,14 +1218,16 @@ export function computeTaskProviderStats(
   if (!foundExplicitCalls && steps.length > 0) {
     const policyName = run?.trajectory?.policyName || 'unknown'
     const [pName, mName] = policyName.includes(':') ? policyName.split(':', 2) : [policyName, 'default']
+    const stepDurationSum = steps.reduce((sum, s) => sum + (s.durationMs || 0), 0)
+    const runTotalDuration = run?.durationMs || stepDurationSum
     const pStat: ProviderCallStats = {
       provider: pName,
       model: mName,
       totalCalls: steps.length,
       successfulCalls: steps.length,
       failedCalls: 0,
-      totalDurationMs: run?.durationMs || 0,
-      avgDurationMs: steps.length > 0 ? (run?.durationMs || 0) / steps.length : 0,
+      totalDurationMs: runTotalDuration,
+      avgDurationMs: steps.length > 0 ? runTotalDuration / steps.length : 0,
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
@@ -1403,4 +1405,25 @@ export function dockRevealDelta(dockBottom: number, viewportHeight: number): num
   if (overflow <= 2) return 0
   return overflow
 }
+
+function statusWord(raw: string): string {
+  if (!raw) return ''
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase()
+}
+
+export function liveLineText(turns: AgentLogTurn[], live: boolean, status: string): string {
+  if (!live) return statusWord(status)
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turn = turns[index]
+    if (turn.role !== 'assistant') continue
+    const newest = turn.toolCalls?.[turn.toolCalls.length - 1]
+    if (newest) {
+      const summary = describeToolCall(newest.name, newest.arguments)
+      if (summary) return summary
+    }
+    return 'Thinking…'
+  }
+  return 'Thinking…'
+}
+
 

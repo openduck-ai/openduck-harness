@@ -1,19 +1,20 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import {
-  Activity,
   AlertCircle,
+  BarChart3,
+  ChevronDown,
   CircleDot,
   Clock,
-  Eye,
-  EyeOff,
+  Disc,
   FastForward,
+  History,
   Loader2,
+  MoreHorizontal,
   Paperclip,
   Pencil,
   Play,
   RotateCcw,
-  SlidersHorizontal,
-  Square,
+  Settings,
   Trash2,
   X,
 } from 'lucide-react'
@@ -44,8 +45,17 @@ import {
 } from '@aaif/goose-hub-core'
 import { inspectProjectHarnessJob } from '../api.ts'
 import { extraTurnsForContinue, isContinuableStatus } from '../taskContinuation.ts'
-import { isLiveTrajectoryVisible } from '../taskTrajectory.ts'
-import { fetchWithRetry, filterAndSortProjectTasks, historyTaskTitle } from '../projectTasks.ts'
+import { buildAgentLog, liveLineText } from '../taskTrajectory.ts'
+import {
+  fetchWithRetry,
+  filterAndSortProjectTasks,
+  formatDurationMs,
+  historyTaskTitle,
+  latestRunForTask,
+  presentLastRun,
+  projectTaskListEmpty,
+  type ProjectTaskSort,
+} from '../projectTasks.ts'
 import {
   isAcceptedTaskAttachment,
   listTaskAttachmentPaths,
@@ -83,6 +93,7 @@ interface ProjectHarnessTabProps {
 }
 
 type ProjectSubTab = 'tasks' | 'config' | 'reports' | 'cassettes' | 'history' | 'trajectory'
+type LogOrigin = 'tasks' | 'history' | 'reports' | 'config' | 'cassettes'
 
 const MIN_SUBTASK_TURNS = 8
 
@@ -122,43 +133,6 @@ function phaseTurnsFromTask(
   })
 }
 
-function InspectRunningJobButton({
-  inspectingThis,
-  loading = false,
-  onClick,
-}: {
-  inspectingThis: boolean
-  loading?: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      className={`btn-action view-btn ${inspectingThis ? 'is-pressed' : ''}`}
-      onClick={onClick}
-      disabled={loading}
-      aria-pressed={inspectingThis}
-      title={
-        inspectingThis
-          ? 'Hide the live agent log of this running task'
-          : 'Inspect the live agent log of this running task'
-      }
-    >
-      {loading ? (
-        <>
-          <Loader2 size={13} className="spinning" />
-          <span>Loading…</span>
-        </>
-      ) : (
-        <>
-          {inspectingThis ? <EyeOff size={13} /> : <Eye size={13} />}
-          <span>{inspectingThis ? 'Hide' : 'Inspect'}</span>
-        </>
-      )}
-    </button>
-  )
-}
-
 function normalizeHarnessConfig(raw: Partial<ProjectHarnessConfig> | any): ProjectHarnessConfig {
   return {
     version: raw?.version || '1.0',
@@ -193,10 +167,10 @@ function normalizeHarnessConfig(raw: Partial<ProjectHarnessConfig> | any): Proje
 
 export function ProjectHarnessTab({
   api,
-  projects = [],
+  projects: _projects = [],
   selectedProjectSlug,
-  onSelectProject,
-  onInspectTrajectory,
+  onSelectProject: _onSelectProject,
+  onInspectTrajectory: _onInspectTrajectory,
   onNavigateToFiles,
 }: ProjectHarnessTabProps) {
   const [subTab, setSubTab] = useState<ProjectSubTab>('tasks')
@@ -272,6 +246,41 @@ export function ProjectHarnessTab({
   const [savingConfig, setSavingConfig] = useState(false)
   const [filterTag, setFilterTag] = useState('')
   const [filterQuery, setFilterQuery] = useState('')
+  const [taskSort, setTaskSort] = useState<ProjectTaskSort>('activity')
+  const [historyTaskFilter, setHistoryTaskFilter] = useState<string>('')
+  const [openMenuTaskId, setOpenMenuTaskId] = useState<string | null>(null)
+  const [moreNavOpen, setMoreNavOpen] = useState(false)
+  const [logOrigin, setLogOrigin] = useState<LogOrigin | null>(null)
+  const [savedScrollY, setSavedScrollY] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (activeJobs.length === 0) return
+    const interval = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(interval)
+  }, [activeJobs.length])
+
+  useEffect(() => {
+    if (!openMenuTaskId) return
+    const handlePointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null
+      if (target?.closest('.task-menu-container')) return
+      setOpenMenuTaskId(null)
+    }
+    window.addEventListener('pointerdown', handlePointerDown)
+    return () => window.removeEventListener('pointerdown', handlePointerDown)
+  }, [openMenuTaskId])
+
+  useEffect(() => {
+    if (!moreNavOpen) return
+    const handlePointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null
+      if (target?.closest('.subnav-more-container')) return
+      setMoreNavOpen(false)
+    }
+    window.addEventListener('pointerdown', handlePointerDown)
+    return () => window.removeEventListener('pointerdown', handlePointerDown)
+  }, [moreNavOpen])
   const [selectedReportDetail, setSelectedReportDetail] = useState<HarnessEvaluationReport | null>(null)
   const [activeTrajectoryView, setActiveTrajectoryView] = useState<HarnessRunResponse | null>(null)
   const [loadingTrajectory, setLoadingTrajectory] = useState(false)
@@ -319,9 +328,6 @@ export function ProjectHarnessTab({
     loadingPrompt: boolean
     error: string
   } | null>(null)
-  const selectedProject = projects.find(p => p.slug === selectedProjectSlug)
-
-
 
   // Loaded sections registry to prevent redundant fetches
   const [loadedSections, setLoadedSections] = useState<Record<string, boolean>>({})
@@ -623,9 +629,6 @@ export function ProjectHarnessTab({
               ),
             )
             setRunningTaskId(prev => (prev === event.taskId ? null : prev))
-          } else if (event.jobId) {
-            startLiveInspect(event.jobId, event.taskId)
-            setSubTab('trajectory')
           }
           void loadTasksAndJobs(selectedProjectSlug, true)
           if (subTab === 'history') {
@@ -647,8 +650,10 @@ export function ProjectHarnessTab({
     }
   }, [selectedProjectSlug, subTab, api])
 
-  const handleSelectHistory = async (item: HarnessHistorySummary) => {
+  const handleSelectHistory = async (item: HarnessHistorySummary, origin: LogOrigin = 'history') => {
     if (!selectedProjectSlug) return
+    setLogOrigin(origin)
+    setSavedScrollY(window.scrollY)
     setSelectedHistoryId(item.id)
     setLoadingHistoryId(item.id)
     setLoadingTrajectory(true)
@@ -666,14 +671,15 @@ export function ProjectHarnessTab({
     }
   }
 
-  const handleInspectRunningJob = async (job: HarnessActiveJob) => {
+  const handleInspectRunningJob = async (job: HarnessActiveJob, origin?: LogOrigin) => {
     if (!selectedProjectSlug) return
-
-    if (isLiveTrajectoryVisible(job.jobId, inspectingJobId, liveInspect, subTab === 'trajectory')) {
-      stopLiveInspect()
-      setSubTab('tasks')
-      return
-    }
+    const effectiveOrigin: LogOrigin =
+      origin ||
+      ((['tasks', 'history', 'reports', 'config', 'cassettes'].includes(subTab)
+        ? subTab
+        : 'tasks') as LogOrigin)
+    setLogOrigin(effectiveOrigin)
+    setSavedScrollY(window.scrollY)
 
     startLiveInspect(job.jobId, job.taskId)
     setLoadingTrajectory(true)
@@ -688,11 +694,21 @@ export function ProjectHarnessTab({
     } catch (err) {
       if (inspectingJobIdRef.current !== job.jobId) return
       stopLiveInspect()
-      if (subTab === 'trajectory') setSubTab('tasks')
+      if (subTab === 'trajectory') setSubTab(effectiveOrigin)
       setError(err instanceof Error ? err.message : 'Failed to inspect running task')
     } finally {
       setLoadingTrajectory(false)
     }
+  }
+
+  const handleBackFromTrajectory = () => {
+    const targetTab = logOrigin || 'tasks'
+    setSubTab(targetTab)
+    setLogOrigin(null)
+    stopLiveInspect()
+    setTimeout(() => {
+      window.scrollTo({ top: savedScrollY, behavior: 'instant' })
+    }, 0)
   }
 
   const handleStopTask = async (taskId: string) => {
@@ -1303,14 +1319,15 @@ export function ProjectHarnessTab({
     }
   }
 
-  const handleDeleteTask = async (taskId: string) => {
+  const handleDeleteTask = async (taskId: string, taskName?: string) => {
     if (!selectedProjectSlug) return
-    if (!confirm(`Are you sure you want to delete task "${taskId}"?`)) return
+    const displayName = taskName?.trim() || taskId
+    if (!confirm(`Are you sure you want to delete task "${displayName}"?`)) return
     setError('')
     setSuccessMsg('')
     try {
       await api.deleteProjectTask(selectedProjectSlug, taskId)
-      setSuccessMsg(`Task ${taskId} deleted`)
+      setSuccessMsg(`Task "${displayName}" deleted`)
       await loadTasksAndJobs(selectedProjectSlug)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete task')
@@ -1337,18 +1354,18 @@ export function ProjectHarnessTab({
         extraTurns: continueFromRunId ? extraTurns ?? 25 : extraTurns,
         extraPrompt: extraPrompt?.trim() || undefined,
       })
-      setActiveTrajectoryView(res)
-      stopLiveInspect()
-      if (onInspectTrajectory) {
-        onInspectTrajectory(res)
-      }
       setSuccessMsg(`Task ${taskId} completed with status: ${res.status}`)
       await loadTasksAndJobs(selectedProjectSlug, true)
       const historyList = await api.listProjectHistory(selectedProjectSlug)
       setHistory(historyList)
-      const latest = historyList.find(item => item.taskId === taskId)
-      if (latest) {
-        setSelectedHistoryId(latest.id)
+      const isThisLogOpen =
+        subTab === 'trajectory' &&
+        (inspectingJobId !== null || activeTrajectoryView?.taskId === taskId)
+      if (isThisLogOpen) {
+        const latest = latestRunForTask(historyList, taskId)
+        if (latest) {
+          setSelectedHistoryId(latest.id)
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to run task ${taskId}`)
@@ -1433,25 +1450,6 @@ export function ProjectHarnessTab({
     await handleRunTask(taskId, record, undefined, runId, extraTurns)
   }
 
-  const handleRunProjectEval = async () => {
-    if (!selectedProjectSlug) return
-    setRunningEval(true)
-    setError('')
-    setSuccessMsg('')
-    try {
-      const report = await api.runProjectHarnessEval(selectedProjectSlug, {})
-      setSelectedReportDetail(report)
-      setSuccessMsg(
-        `Project eval completed! Pass rate: ${(report.metrics.passRate * 100).toFixed(1)}% (${report.metrics.passedTasks}/${report.metrics.totalTasks})`,
-      )
-      await loadReports(selectedProjectSlug, true)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Project evaluation failed')
-    } finally {
-      setRunningEval(false)
-    }
-  }
-
   const handleSaveConfig = async () => {
     if (!selectedProjectSlug || !config) return
     setSavingConfig(true)
@@ -1468,10 +1466,38 @@ export function ProjectHarnessTab({
     }
   }
 
-  const filteredTasks = filterAndSortProjectTasks(tasks, {
-    query: filterQuery,
-    tag: filterTag,
-  })
+  const latestByTaskId = useMemo(() => {
+    const map = new Map<string, HarnessHistorySummary>()
+    for (const t of tasks) {
+      const latest = latestRunForTask(history, t.id)
+      if (latest) {
+        map.set(t.id, latest)
+      }
+    }
+    return map
+  }, [tasks, history])
+
+  const runningJobStartedAt = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const job of activeJobs) {
+      if (job.taskId && job.startedAt) {
+        map.set(job.taskId, job.startedAt)
+      }
+    }
+    return map
+  }, [activeJobs])
+
+  const filteredTasks = useMemo(
+    () =>
+      filterAndSortProjectTasks(tasks, {
+        query: filterQuery,
+        tag: filterTag,
+        sort: taskSort,
+        latestByTaskId,
+        runningJobStartedAt,
+      }),
+    [tasks, filterQuery, filterTag, taskSort, latestByTaskId, runningJobStartedAt],
+  )
 
   const taskNamesById = useMemo(
     () => Object.fromEntries(tasks.map(t => [t.id, t.name])),
@@ -1479,6 +1505,26 @@ export function ProjectHarnessTab({
   )
 
   const allTags = Array.from(new Set(tasks.flatMap(t => (Array.isArray(t.tags) ? t.tags : []))))
+
+  const handleRunProjectEval = async () => {
+    if (!selectedProjectSlug) return
+    setRunningEval(true)
+    setError('')
+    setSuccessMsg('')
+    try {
+      const taskIds = filteredTasks.map(t => t.id)
+      const report = await api.runProjectHarnessEval(selectedProjectSlug, { taskIds })
+      setSelectedReportDetail(report)
+      setSuccessMsg(
+        `Project eval completed! Pass rate: ${(report.metrics.passRate * 100).toFixed(1)}% (${report.metrics.passedTasks}/${report.metrics.totalTasks})`,
+      )
+      await loadReports(selectedProjectSlug, true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Project evaluation failed')
+    } finally {
+      setRunningEval(false)
+    }
+  }
 
   useEffect(() => {
     if (!dynamicRun) return
@@ -1489,161 +1535,167 @@ export function ProjectHarnessTab({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [dynamicRun])
 
+  useEffect(() => {
+    if (!isEditingTask) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !savingTask) {
+        setTaskAttachments([])
+        setExistingAttachmentMentions([])
+        setIsEditingTask(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [isEditingTask, savingTask])
+
   return (
     <div className="project-harness-container">
-      {/* Project Header / Selector Bar */}
-      <div className="harness-card project-selector-card">
-        <div className="project-selector-header">
-          <div className="project-selector-info">
-            <span className="project-label">PROJECT HARNESS:</span>
-            {projects.length > 1 && onSelectProject ? (
-              <select
-                className="form-input project-select-dropdown"
-                value={selectedProjectSlug}
-                onChange={e => onSelectProject(e.target.value)}
-              >
-                {projects.map(p => (
-                  <option key={p.slug} value={p.slug}>
-                    {p.title || p.slug} ({p.path})
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <span className="project-current-name">
-                <strong>{selectedProject?.title || selectedProjectSlug}</strong>
-                {selectedProject?.path && <span className="project-path-sub"> ({selectedProject.path})</span>}
-              </span>
-            )}
-            {selectedProject && (
-              <span className={`status-tag status-${selectedProject.status}`}>
-                {selectedProject.status}
-              </span>
-            )}
-          </div>
-          <div className="project-selector-actions">
+      {subTab !== 'trajectory' && (
+        <div className="project-subnav-bar">
+          <div className="project-subnav-tabs">
             <button
               type="button"
-              className="btn-secondary"
+              className={`project-subnav-btn ${subTab === 'tasks' ? 'active' : ''}`}
               onClick={() => {
-                if (selectedProjectSlug) {
-                  void loadSubTabData(selectedProjectSlug, subTab, true)
-                }
+                setSubTab('tasks')
+                setMoreNavOpen(false)
               }}
-              disabled={loading || Boolean(sectionLoading) || runningEval || runningTaskId !== null}
             >
-              🔄 Refresh
+              Tasks ({tasks.length})
             </button>
-          </div>
-        </div>
-
-        <div className="project-subnav-tabs">
-          <button
-            type="button"
-            className={`project-subnav-btn ${subTab === 'tasks' ? 'active' : ''}`}
-            onClick={() => setSubTab('tasks')}
-          >
-            📋 Project Tasks ({tasks.length})
-          </button>
-          <button
-            type="button"
-            className={`project-subnav-btn ${subTab === 'history' ? 'active' : ''}`}
-            onClick={() => setSubTab('history')}
-          >
-            📜 Task History {loadedSections.history ? `(${history.length})` : ''}
-          </button>
-          <button
-            type="button"
-            className={`project-subnav-btn ${subTab === 'reports' ? 'active' : ''}`}
-            onClick={() => setSubTab('reports')}
-          >
-            📊 Eval Reports {loadedSections.reports ? `(${reports.length})` : ''}
-          </button>
-          <button
-            type="button"
-            className={`project-subnav-btn ${subTab === 'config' ? 'active' : ''}`}
-            onClick={() => setSubTab('config')}
-          >
-            ⚙️ Harness Config
-          </button>
-          <button
-            type="button"
-            className={`project-subnav-btn ${subTab === 'cassettes' ? 'active' : ''}`}
-            onClick={() => setSubTab('cassettes')}
-          >
-            📼 Cassettes {loadedSections.cassettes ? `(${cassettes.length})` : ''}
-          </button>
-          {(activeTrajectoryView || loadingTrajectory) && (
             <button
               type="button"
-              className={`project-subnav-btn ${subTab === 'trajectory' ? 'active' : ''}`}
-              onClick={() => setSubTab('trajectory')}
+              className={`project-subnav-btn ${subTab === 'history' ? 'active' : ''}`}
+              onClick={() => {
+                setSubTab('history')
+                setMoreNavOpen(false)
+              }}
             >
-              {loadingTrajectory && !activeTrajectoryView ? (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <Loader2 size={13} className="spinning text-accent" />
-                  <span>Loading Agent Log…</span>
-                </span>
-              ) : (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <span>🧠 {liveInspect ? 'Live' : 'Last Run'} Agent Log ({activeTrajectoryView?.taskId ?? '…'})</span>
-                  {loadingTrajectory && (
-                    <Loader2 size={13} className="spinning text-accent" />
-                  )}
-                </span>
-              )}
+              History {loadedSections.history ? `(${history.length})` : ''}
             </button>
-          )}
+            <div className="subnav-more-container">
+              <button
+                type="button"
+                className={`project-subnav-btn subnav-more-btn ${['reports', 'config', 'cassettes'].includes(subTab) ? 'active' : ''}`}
+                onClick={() => setMoreNavOpen(prev => !prev)}
+                aria-expanded={moreNavOpen}
+              >
+                <span>More</span>
+                <ChevronDown size={13} />
+              </button>
+              {moreNavOpen && (
+                <div className="subnav-more-menu" role="menu">
+                  <button
+                    type="button"
+                    className={`subnav-more-item ${subTab === 'reports' ? 'active' : ''}`}
+                    role="menuitem"
+                    onClick={() => {
+                      setSubTab('reports')
+                      setMoreNavOpen(false)
+                    }}
+                  >
+                    <BarChart3 size={14} />
+                    <span>Reports {loadedSections.reports ? `(${reports.length})` : ''}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`subnav-more-item ${subTab === 'config' ? 'active' : ''}`}
+                    role="menuitem"
+                    onClick={() => {
+                      setSubTab('config')
+                      setMoreNavOpen(false)
+                    }}
+                  >
+                    <Settings size={14} />
+                    <span>Config</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`subnav-more-item ${subTab === 'cassettes' ? 'active' : ''}`}
+                    role="menuitem"
+                    onClick={() => {
+                      setSubTab('cassettes')
+                      setMoreNavOpen(false)
+                    }}
+                  >
+                    <Disc size={14} />
+                    <span>Cassettes {loadedSections.cassettes ? `(${cassettes.length})` : ''}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {error && <div className="error-banner">{error}</div>}
       {successMsg && <div className="success-banner">{successMsg}</div>}
 
-      {activeJobs.length > 0 && (
-        <div className="active-jobs-banner">
-          <div className="active-jobs-header">
-            <span className="live-dot" />
-            <strong>Currently Running Project Tasks ({activeJobs.length})</strong>
-          </div>
-          <div className="active-jobs-list">
-            {activeJobs.map(job => (
-              <div key={job.jobId} className="active-job-item">
-                <div className="active-job-row">
-                  <div className="active-job-meta">
-                    <span className="job-type-pill">{job.jobType.toUpperCase()}</span>
-                    <span className="job-task-name">{job.taskId}</span>
-                    <span className="job-time">
-                      Started {new Date(job.startedAt).toLocaleTimeString()}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                    <InspectRunningJobButton
-                      inspectingThis={isLiveTrajectoryVisible(
-                        job.jobId,
-                        inspectingJobId,
-                        liveInspect,
-                        subTab === 'trajectory',
-                      )}
-                      loading={inspectingJobId === job.jobId && loadingTrajectory}
-                      onClick={() => void handleInspectRunningJob(job)}
-                    />
+      {(() => {
+        const visibleActiveJobs = activeJobs.filter(
+          job => !(subTab === 'trajectory' && inspectingJobId === job.jobId),
+        )
+        if (visibleActiveJobs.length === 0) return null
+
+        return (
+          <div className="active-jobs-banner sticky-active-jobs">
+            <div className="active-jobs-list">
+              {visibleActiveJobs.map(job => {
+                const matchedTask = tasks.find(t => t.id === job.taskId)
+                const title = matchedTask?.name || job.description || job.taskId
+                const elapsed = formatDurationMs(
+                  Math.max(0, now - (Date.parse(job.startedAt) || now)),
+                )
+                const isInspected =
+                  liveInspect && inspectingJobId === job.jobId && Boolean(activeTrajectoryView)
+                const actionText = isInspected
+                  ? liveLineText(
+                      buildAgentLog(activeTrajectoryView),
+                      true,
+                      String(activeTrajectoryView?.status || 'running'),
+                    )
+                  : undefined
+
+                return (
+                  <div
+                    key={job.jobId}
+                    id={`active-job-${job.jobId}`}
+                    className="active-job-item active-job-row-interactive"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => void handleInspectRunningJob(job)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        void handleInspectRunningJob(job)
+                      }
+                    }}
+                    title="Open live agent log"
+                  >
+                    <span className="live-dot" />
+                    <span className="active-job-title">{title}</span>
+                    <span className="active-job-elapsed">{elapsed}</span>
+                    {job.model && <span className="active-job-model">{job.model}</span>}
+                    {actionText && <span className="active-job-action">{actionText}</span>}
                     <button
                       type="button"
-                      className="btn-action stop-btn"
-                      onClick={() => void handleStopRunningJob(job)}
+                      className="btn-action stop-btn active-job-stop"
+                      onClick={e => {
+                        e.stopPropagation()
+                        void handleStopRunningJob(job)
+                      }}
                       disabled={stoppingTaskId === job.taskId}
-                      title="Stop this running task"
+                      title="Stop this running job"
                     >
-                      {stoppingTaskId === job.taskId ? '⏳ Stopping…' : '⏹ Stop'}
+                      {stoppingTaskId === job.taskId ? 'Stopping…' : 'Stop'}
                     </button>
                   </div>
-                </div>
-                <div className="active-job-desc">{job.description}</div>
-              </div>
-            ))}
+                )
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* ================= SUBTAB: TASKS ================= */}
       {subTab === 'tasks' && (
@@ -1679,41 +1731,92 @@ export function ProjectHarnessTab({
                   ))}
                 </div>
               )}
+              <div className="tasks-sort-control">
+                <select
+                  className="form-input form-select-sm task-sort-select"
+                  value={taskSort}
+                  onChange={e => setTaskSort(e.target.value as ProjectTaskSort)}
+                  aria-label="Sort tasks"
+                >
+                  <option value="activity">Last activity</option>
+                  <option value="created">Created</option>
+                </select>
+              </div>
+              <button
+                type="button"
+                className="btn-secondary btn-sm run-eval-btn"
+                onClick={handleRunProjectEval}
+                disabled={runningEval || filteredTasks.length === 0}
+              >
+                {runningEval ? 'Running eval…' : `Run these (${filteredTasks.length})`}
+              </button>
             </div>
 
             <div className="tasks-actions-row">
               <button
                 type="button"
-                className="btn-secondary"
-                onClick={() => setSubTab('history')}
-              >
-                📜 Task History ({history.length})
-              </button>
-              <button
-                type="button"
                 className="btn-primary"
                 onClick={handleOpenCreateTask}
               >
-                ➕ New Project Task
+                New Task
               </button>
               <button
                 type="button"
                 className="btn-secondary"
-                onClick={handleRunProjectEval}
-                disabled={runningEval || tasks.length === 0}
+                onClick={() => {
+                  if (selectedProjectSlug) {
+                    void loadSubTabData(selectedProjectSlug, subTab, true)
+                  }
+                }}
+                disabled={loading || Boolean(sectionLoading) || runningEval || runningTaskId !== null}
+                title="Refresh project data"
               >
-                {runningEval ? '⏳ Running Eval...' : '🚀 Run Batch Eval'}
+                <RotateCcw size={13} />
+                <span>Refresh</span>
               </button>
             </div>
           </div>
 
-          {/* Task Editor Modal / Section */}
+          {/* Task Editor Drawer */}
           {isEditingTask && (
-            <div className="harness-card task-editor-card">
-              <h3 className="section-title">
-                {editingTaskId ? `✏️ Edit Task: ${editingTaskId}` : '➕ Create New Project Task'}
-              </h3>
-              <div className="form-grid">
+            <div
+              className="modal-backdrop task-editor-backdrop"
+              onClick={() => {
+                if (!savingTask) {
+                  setTaskAttachments([])
+                  setExistingAttachmentMentions([])
+                  setIsEditingTask(false)
+                }
+              }}
+            >
+              <div
+                className="harness-card task-editor-drawer"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="task-editor-title"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="task-editor-drawer-header">
+                  <h3 id="task-editor-title" className="section-title" style={{ margin: 0 }}>
+                    {editingTaskId ? (taskForm.name || editingTaskId) : 'Create New Project Task'}
+                  </h3>
+                  <button
+                    type="button"
+                    className="modal-close-btn"
+                    onClick={() => {
+                      if (!savingTask) {
+                        setTaskAttachments([])
+                        setExistingAttachmentMentions([])
+                        setIsEditingTask(false)
+                      }
+                    }}
+                    disabled={savingTask}
+                    aria-label="Close editor"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="form-grid">
                 <div className="form-row-2">
                   <div className="form-group">
                     <label className="form-label">Task ID (Filename Slug)</label>
@@ -2320,7 +2423,7 @@ export function ProjectHarnessTab({
                   >
                     {savingTask
                       ? 'Saving…'
-                      : `💾 Save Task (.goose/tasks/${taskForm.id}.yaml)`}
+                      : `Save Task (.goose/tasks/${taskForm.id}.yaml)`}
                   </button>
                   <button
                     type="button"
@@ -2337,387 +2440,385 @@ export function ProjectHarnessTab({
                 </div>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
           {/* Tasks List */}
-          {filteredTasks.length === 0 ? (
-            <div className="empty-tasks-card">
-              <p className="empty-text">No tasks found in this project.</p>
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={handleOpenCreateTask}
-              >
-                Create your first Task
-              </button>
-            </div>
-          ) : (
-            <div className="tasks-grid">
-              {filteredTasks.map(t => (
-                <div key={t.id} className="task-card">
-                  <div className="task-card-header">
-                    <div>
-                      <h4 className="task-card-title">{t.name}</h4>
-                      <code className="task-card-id">{t.id}</code>
-                    </div>
-                    <div className="task-badges">
-                      {t.category && <span className="badge category-badge">{t.category}</span>}
-                      {t.hasVerifier ? (
-                        <span className="badge verifier-badge">✓ Verifier</span>
-                      ) : (
-                        <span className="badge no-verifier-badge">No Verifier</span>
-                      )}
-                      {t.cron && (
-                        t.schedulePaused ? (
-                          <span className="badge schedule-paused-badge">Auto-run off</span>
-                        ) : (
-                          <span className="badge schedule-badge">Auto-runs</span>
-                        )
-                      )}
-                      {t.dynamicPrompt && (
-                        <span className="badge dynamic-prompt-badge">Dynamic prompt</span>
-                      )}
-                    </div>
-                  </div>
+          {(() => {
+            const emptyState = projectTaskListEmpty({
+              taskCount: tasks.length,
+              matchCount: filteredTasks.length,
+            })
+            if (emptyState === 'no-tasks') {
+              return (
+                <div className="empty-tasks-card">
+                  <p className="empty-text">No tasks found in this project.</p>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={handleOpenCreateTask}
+                  >
+                    Create your first Task
+                  </button>
+                </div>
+              )
+            }
+            if (emptyState === 'no-match') {
+              return (
+                <div className="empty-tasks-card">
+                  <p className="empty-text">No tasks match your filter criteria.</p>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => {
+                      setFilterQuery('')
+                      setFilterTag('')
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              )
+            }
+            return (
+              <div className="tasks-grid">
+                {filteredTasks.map(t => {
+                  const runningJob = activeJobs.find(job => job.taskId === t.id)
+                  const runningSnapshot =
+                    runningJob && inspectingJobId === runningJob.jobId && liveInspect
+                      ? activeTrajectoryView
+                      : undefined
+                  const stepCount = runningSnapshot
+                    ? (runningSnapshot.stepCount ?? runningSnapshot.trajectory?.steps?.length)
+                    : undefined
+                  const runningInfo = runningJob
+                    ? {
+                        jobId: runningJob.jobId,
+                        startedAt: runningJob.startedAt,
+                        stepCount,
+                      }
+                    : undefined
+                  const latestRun = latestByTaskId.get(t.id)
 
-                  {t.tags.length > 0 && (
-                    <div className="task-card-tags">
-                      {t.tags.map(tag => (
-                        <span key={tag} className="tag-pill">
-                          #{tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
+                  const lastRunPres = presentLastRun({
+                    historyLoaded: Boolean(loadedSections.history),
+                    historyError: Boolean(historyError),
+                    latest: latestRun,
+                    running: runningInfo,
+                    now,
+                  })
 
-                  {t.cron && (
-                    <div className="task-card-schedule">
-                      <span>{describeTaskSchedule(t.cron, t.schedulePaused)}</span>
-                      {!t.schedulePaused && t.nextRunAt && (
-                        <span>Next run {new Date(t.nextRunAt).toLocaleString()}</span>
+                  return (
+                    <div key={t.id} className="task-card">
+                      <div className="task-card-header">
+                        <div>
+                          <h4 className="task-card-title">{t.name}</h4>
+                          <code className="task-card-id">{t.id}</code>
+                        </div>
+                        <div className="task-badges">
+                          {t.category && <span className="badge category-badge">{t.category}</span>}
+                          {t.hasVerifier && (
+                            <span className="badge verifier-badge">✓ Verifier</span>
+                          )}
+                          {t.cron && (
+                            t.schedulePaused ? (
+                              <span className="badge schedule-paused-badge">Auto-run off</span>
+                            ) : (
+                              <span className="badge schedule-badge">Auto-runs</span>
+                            )
+                          )}
+                          {t.dynamicPrompt && (
+                            <span className="badge dynamic-prompt-badge">Dynamic prompt</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {t.tags.length > 0 && (
+                        <div className="task-card-tags">
+                          {t.tags.map(tag => (
+                            <span key={tag} className="tag-pill">
+                              #{tag}
+                            </span>
+                          ))}
+                        </div>
                       )}
-                    </div>
-                  )}
 
-                  <div className="task-card-path">
-                    <span>📄 {t.filePath}</span>
-                  </div>
+                      {t.promptPreview && (
+                        <div className="task-card-prompt-preview">{t.promptPreview}</div>
+                      )}
 
-                  <div className="task-card-actions">
-                    <div className="task-actions-group task-actions-primary">
-                      <button
-                        type="button"
-                        className="btn-action run-btn"
-                        onClick={() => {
-                          if (t.dynamicPrompt) {
-                            void openDynamicRun(t, false)
-                          } else {
-                            void handleRunTask(t.id, false)
-                          }
-                        }}
-                        disabled={runningTaskId === t.id || activeJobs.some(job => job.taskId === t.id)}
-                        title={
-                          runningTaskId === t.id || activeJobs.some(job => job.taskId === t.id)
-                            ? 'Task is currently running'
-                            : t.dynamicPrompt
-                              ? 'Review the current prompt and add extra instructions for this run'
-                              : 'Run this task'
-                        }
-                      >
-                        {runningTaskId === t.id || activeJobs.some(job => job.taskId === t.id) ? (
-                          <>
-                            <Loader2 size={13} className="spinning" />
-                            <span>Running...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Play size={13} fill="currentColor" />
-                            <span>Run</span>
-                          </>
+                      <div className="task-card-status">
+                        {lastRunPres.kind === 'loading' && (
+                          <div className="task-card-status-skeleton" aria-label="Loading last run status" />
                         )}
-                      </button>
+                        {lastRunPres.kind === 'unavailable' && (
+                          <div className="task-card-status-error">
+                            <span>Couldn't load the last run</span>
+                            <button
+                              type="button"
+                              className="btn-retry-inline"
+                              onClick={() => void handleRetryHistory()}
+                            >
+                              Retry
+                            </button>
+                          </div>
+                        )}
+                        {lastRunPres.kind === 'none' && (
+                          <div className="task-card-status-empty">
+                            <span>No runs yet</span>
+                          </div>
+                        )}
+                        {lastRunPres.kind === 'running' && (
+                          <div
+                            className="task-card-status-running"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => {
+                              const el = document.getElementById(`active-job-${lastRunPres.jobId}`)
+                              if (el) {
+                                el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+                                el.focus()
+                              }
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                const el = document.getElementById(`active-job-${lastRunPres.jobId}`)
+                                if (el) {
+                                  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+                                  el.focus()
+                                }
+                              }
+                            }}
+                            title="Focus running job in banner"
+                          >
+                            <span className="task-status-text">{lastRunPres.text}</span>
+                          </div>
+                        )}
+                        {(lastRunPres.kind === 'success' || lastRunPres.kind === 'terminal') && (
+                          <button
+                            type="button"
+                            className={`task-card-status-btn status-${lastRunPres.kind}`}
+                            onClick={() => {
+                              const summary = history.find(h => h.id === lastRunPres.runId)
+                              if (summary) {
+                                void handleSelectHistory(summary, 'tasks')
+                              }
+                            }}
+                            title="Open agent log for this run"
+                          >
+                            <div className="task-status-line">{lastRunPres.text}</div>
+                            {lastRunPres.detail && (
+                              <div className="task-status-detail">{lastRunPres.detail}</div>
+                            )}
+                          </button>
+                        )}
+                      </div>
+
+                      {t.cron && (
+                        <div className="task-card-schedule">
+                          <span>{describeTaskSchedule(t.cron, t.schedulePaused)}</span>
+                          {!t.schedulePaused && t.nextRunAt && (
+                            <span>Next run {new Date(t.nextRunAt).toLocaleString()}</span>
+                          )}
+                        </div>
+                      )}
+
                       {(() => {
-                        const latest = history.find(h => h.taskId === t.id)
-                        const canContinue =
+                        const latest = latestRunForTask(history, t.id)
+                        const canContinue = Boolean(
                           latest &&
-                          (latest.continuable || isContinuableStatus(String(latest.status)))
-                        if (!canContinue || !latest) return null
-                        const prevSteps = latest.stepCount || 25
+                            (latest.continuable || isContinuableStatus(String(latest.status))),
+                        )
                         const isTaskBusy =
                           runningTaskId === t.id || activeJobs.some(job => job.taskId === t.id)
+                        const isMenuOpen = openMenuTaskId === t.id
+
                         return (
-                          <div className="continue-btn-group">
-                            <button
-                              type="button"
-                              className="btn-action continue-btn"
-                              onClick={() => handleRunTask(t.id, false, undefined, latest.id, 25)}
-                              disabled={isTaskBusy}
-                              title="New run seeded with compacted progress from the last incomplete run (+25 turns)"
-                            >
-                              <FastForward size={13} fill="currentColor" />
-                              <span>Continue (+25)</span>
-                            </button>
-                            <button
-                              type="button"
-                              className="btn-action continue-more-btn"
-                              onClick={() =>
-                                handleOpenContinueModal(t.id, prevSteps, t.name, latest.id)
-                              }
-                              disabled={isTaskBusy}
-                              title="Continue task with specified extra turns..."
-                              aria-label="Configure turns and continue"
-                            >
-                              <SlidersHorizontal size={13} />
-                            </button>
+                          <div className="task-card-actions">
+                            <div className="task-actions-group task-actions-primary">
+                              {canContinue && latest ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="btn-action continue-btn continue-btn-primary"
+                                    onClick={() =>
+                                      handleOpenContinueModal(
+                                        t.id,
+                                        latest.stepCount || 25,
+                                        t.name,
+                                        latest.id,
+                                        latest.progressSummary ?? undefined,
+                                      )
+                                    }
+                                    disabled={isTaskBusy}
+                                    title="Continue task seeded with progress from previous run"
+                                  >
+                                    <FastForward size={13} fill="currentColor" />
+                                    <span>Continue</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-action run-btn run-btn-outline"
+                                    onClick={() => {
+                                      if (t.dynamicPrompt) {
+                                        void openDynamicRun(t, false)
+                                      } else {
+                                        void handleRunTask(t.id, false)
+                                      }
+                                    }}
+                                    disabled={isTaskBusy}
+                                    title={
+                                      t.dynamicPrompt
+                                        ? 'Review prompt and run fresh'
+                                        : 'Run fresh from start'
+                                    }
+                                  >
+                                    <Play size={13} />
+                                    <span>Run</span>
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="btn-action run-btn run-btn-filled"
+                                  onClick={() => {
+                                    if (t.dynamicPrompt) {
+                                      void openDynamicRun(t, false)
+                                    } else {
+                                      void handleRunTask(t.id, false)
+                                    }
+                                  }}
+                                  disabled={isTaskBusy}
+                                  title={
+                                    isTaskBusy
+                                      ? 'Task is currently running'
+                                      : t.dynamicPrompt
+                                        ? 'Review the current prompt and add extra instructions for this run'
+                                        : 'Run this task'
+                                  }
+                                >
+                                  {isTaskBusy ? (
+                                    <>
+                                      <Loader2 size={13} className="spinning" />
+                                      <span>Running...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Play size={13} fill="currentColor" />
+                                      <span>Run</span>
+                                    </>
+                                  )}
+                                </button>
+                              )}
+                            </div>
+
+                            <div className="task-actions-group task-actions-secondary">
+                              <div className="task-menu-container">
+                                <button
+                                  type="button"
+                                  className={`btn-action task-menu-btn ${isMenuOpen ? 'is-active' : ''}`}
+                                  onClick={e => {
+                                    e.stopPropagation()
+                                    setOpenMenuTaskId(isMenuOpen ? null : t.id)
+                                  }}
+                                  title="Task actions"
+                                  aria-label="More task actions"
+                                  aria-expanded={isMenuOpen}
+                                >
+                                  <MoreHorizontal size={15} />
+                                </button>
+                                {isMenuOpen && (
+                                  <div
+                                    className="task-overflow-menu"
+                                    role="menu"
+                                    onClick={e => e.stopPropagation()}
+                                  >
+                                    <button
+                                      type="button"
+                                      className="task-overflow-item"
+                                      role="menuitem"
+                                      onClick={() => {
+                                        setOpenMenuTaskId(null)
+                                        if (t.dynamicPrompt) {
+                                          void openDynamicRun(t, true)
+                                        } else {
+                                          void handleRunTask(t.id, true)
+                                        }
+                                      }}
+                                      disabled={isTaskBusy}
+                                      title="Run and record cassette for offline deterministic replay"
+                                    >
+                                      <CircleDot size={13} />
+                                      <span>Record</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="task-overflow-item"
+                                      role="menuitem"
+                                      onClick={() => {
+                                        setOpenMenuTaskId(null)
+                                        handleOpenEditTask(t.id)
+                                      }}
+                                    >
+                                      <Pencil size={13} />
+                                      <span>Edit</span>
+                                    </button>
+                                    {t.cron && (
+                                      <button
+                                        type="button"
+                                        className="task-overflow-item"
+                                        role="menuitem"
+                                        onClick={() => {
+                                          setOpenMenuTaskId(null)
+                                          void handleToggleSchedulePause(t)
+                                        }}
+                                      >
+                                        <Clock size={13} />
+                                        <span>
+                                          {t.schedulePaused ? 'Resume auto-runs' : 'Pause auto-runs'}
+                                        </span>
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="task-overflow-item"
+                                      role="menuitem"
+                                      onClick={() => {
+                                        setOpenMenuTaskId(null)
+                                        setHistoryTaskFilter(t.id)
+                                        setSubTab('history')
+                                      }}
+                                    >
+                                      <History size={13} />
+                                      <span>All runs</span>
+                                    </button>
+                                    <div className="task-overflow-divider" />
+                                    <button
+                                      type="button"
+                                      className="task-overflow-item task-overflow-item-danger"
+                                      role="menuitem"
+                                      onClick={() => {
+                                        setOpenMenuTaskId(null)
+                                        void handleDeleteTask(t.id, t.name)
+                                      }}
+                                    >
+                                      <Trash2 size={13} />
+                                      <span>Delete</span>
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         )
                       })()}
-                      <button
-                        type="button"
-                        className="btn-action record-btn"
-                        onClick={() => {
-                          if (t.dynamicPrompt) {
-                            void openDynamicRun(t, true)
-                          } else {
-                            void handleRunTask(t.id, true)
-                          }
-                        }}
-                        disabled={runningTaskId === t.id}
-                        title={
-                          t.dynamicPrompt
-                            ? 'Review the current prompt, add extra instructions, and record a cassette'
-                            : 'Run and record cassette for offline deterministic replay'
-                        }
-                      >
-                        <CircleDot size={13} />
-                        <span>Record</span>
-                      </button>
-                      {(() => {
-                        const runningJob = activeJobs.find(job => job.taskId === t.id)
-                        const isRunning = runningTaskId === t.id || Boolean(runningJob)
-                        return (
-                          <>
-                            {runningJob && (
-                              <button
-                                type="button"
-                                className="btn-action view-btn"
-                                onClick={() => void handleInspectRunningJob(runningJob)}
-                                disabled={inspectingJobId === runningJob.jobId && loadingTrajectory}
-                                title="Inspect the live agent log of this running task"
-                              >
-                                {inspectingJobId === runningJob.jobId && loadingTrajectory ? (
-                                  <>
-                                    <Loader2 size={13} className="spinning" />
-                                    <span>Loading…</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Eye size={13} />
-                                    <span>Inspect</span>
-                                  </>
-                                )}
-                              </button>
-                            )}
-                            {isRunning && (
-                              <button
-                                type="button"
-                                className="btn-action stop-btn"
-                                onClick={() => {
-                                  if (runningJob) {
-                                    void handleStopRunningJob(runningJob)
-                                  } else {
-                                    void handleStopTask(t.id)
-                                  }
-                                }}
-                                disabled={stoppingTaskId === t.id}
-                                title="Stop this running task"
-                              >
-                                {stoppingTaskId === t.id ? (
-                                  <>
-                                    <Loader2 size={13} className="spinning" />
-                                    <span>Stopping…</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Square size={12} fill="currentColor" />
-                                    <span>Stop</span>
-                                  </>
-                                )}
-                              </button>
-                            )}
-                            {!runningJob && activeTrajectoryView?.taskId === t.id && (
-                              <button
-                                type="button"
-                                className="btn-action view-btn trace-btn"
-                                onClick={() => setSubTab('trajectory')}
-                                title="View last execution trajectory"
-                              >
-                                <Activity size={13} />
-                                <span>Trace</span>
-                              </button>
-                            )}
-                          </>
-                        )
-                      })()}
-                    </div>
-
-                    <div className="task-actions-group task-actions-secondary">
-                      {t.cron && (
-                        <button
-                          type="button"
-                          className={`btn-action pause-btn ${t.schedulePaused ? 'is-paused' : 'is-active'}`}
-                          onClick={() => void handleToggleSchedulePause(t)}
-                          title={
-                            t.schedulePaused
-                              ? 'Start running this task on its schedule again'
-                              : 'Keep the schedule, but stop running it automatically'
-                          }
-                        >
-                          <Clock size={13} />
-                          <span>{t.schedulePaused ? 'Auto-run off' : 'Auto-runs'}</span>
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="btn-action edit-btn"
-                        onClick={() => handleOpenEditTask(t.id)}
-                        title="Edit task"
-                      >
-                        <Pencil size={13} />
-                        <span>Edit</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-action delete-btn"
-                        onClick={() => handleDeleteTask(t.id)}
-                        title="Delete task"
-                        aria-label="Delete task"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
                 </div>
-              ))}
-            </div>
-          )}
-
-          <div className="harness-card history-card recent-history-card">
-            <div className="history-card-header">
-              <div>
-                <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span>📜 Recent Task History</span>
-                  {isHistoryLoading && (
-                    <span
-                      title={
-                        historyRetryAttempt > 0
-                          ? `Retrying recent task history (attempt ${historyRetryAttempt}/2)…`
-                          : 'Loading recent task history…'
-                      }
-                      style={{ display: 'inline-flex', alignItems: 'center' }}
-                    >
-                      <Loader2 size={15} className="spinning text-accent" />
-                    </span>
-                  )}
-                  {historyError && !isHistoryLoading && (
-                    <button
-                      type="button"
-                      className="btn-action retry-btn"
-                      onClick={() => void handleRetryHistory()}
-                      title="Retry loading recent task history"
-                      style={{ padding: '2px 8px', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                    >
-                      <RotateCcw size={12} />
-                      <span>Retry</span>
-                    </button>
-                  )}
-                </h3>
-                <p className="section-desc">
-                  Completed and failed harness runs for this project. Open a run to inspect its trajectory.
-                </p>
-              </div>
-              {history.length > 5 && (
-                <button type="button" className="btn-secondary" onClick={() => setSubTab('history')}>
-                  View all {history.length} runs
-                </button>
-              )}
-            </div>
-
-            {historyError && history.length > 0 && !isHistoryLoading && (
-              <div
-                className="history-error-banner"
-                style={{
-                  marginBottom: '1rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '0.75rem',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <AlertCircle size={16} />
-                  <span>Failed to refresh recent task history: {historyError}</span>
-                </div>
-                <button
-                  type="button"
-                  className="btn-secondary mini-btn"
-                  onClick={() => void handleRetryHistory()}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
-                >
-                  <RotateCcw size={12} />
-                  <span>Retry</span>
-                </button>
-              </div>
-            )}
-
-            {isHistoryLoading && history.length === 0 ? (
-              <div className="history-loading-spinner-box">
-                <Loader2 size={24} className="spinning" />
-                <span>
-                  {historyRetryAttempt > 0
-                    ? `Loading recent task history… (retry ${historyRetryAttempt}/2)`
-                    : 'Loading recent task history…'}
-                </span>
-              </div>
-            ) : historyError && history.length === 0 ? (
-              <div className="history-loading-spinner-box history-error-box">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <AlertCircle size={20} className="history-error-icon" />
-                  <span className="history-error-title">Failed to load recent task history</span>
-                </div>
-                <p style={{ margin: 0, fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: '420px' }}>
-                  {historyError}
-                </p>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => void handleRetryHistory()}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.5rem' }}
-                >
-                  <RotateCcw size={14} />
-                  <span>Retry</span>
-                </button>
-              </div>
-            ) : (
-              <HarnessHistoryTable
-                items={history.slice(0, 5)}
-                selectedId={selectedHistoryId}
-                loadingRunId={loadingHistoryId}
-                taskNames={taskNamesById}
-                emptyText="No historical project task runs yet. Run a task above to populate this list."
-                onInspect={item => void handleSelectHistory(item)}
-                onContinue={item =>
-                  handleOpenContinueModal(
-                    item.taskId,
-                    item.stepCount || 25,
-                    historyTaskTitle(item, taskNamesById),
-                    item.id,
-                    item.progressSummary ?? undefined,
-                  )
-                }
-              />
-            )}
+              )
+            })}
           </div>
+        )
+      })()}
         </div>
       )}
 
@@ -3218,8 +3319,11 @@ export function ProjectHarnessTab({
               selectedId={selectedHistoryId}
               loadingRunId={loadingHistoryId}
               taskNames={taskNamesById}
+              tasks={tasks}
+              initialTaskId={historyTaskFilter}
+              now={now}
               emptyText="No historical project task runs yet. Run a task to populate this list."
-              onInspect={item => void handleSelectHistory(item)}
+              onInspect={item => void handleSelectHistory(item, 'history')}
               onContinue={item =>
                 handleOpenContinueModal(
                   item.taskId,
@@ -3263,7 +3367,8 @@ export function ProjectHarnessTab({
             activeJobs={activeJobs}
             onStopTask={handleStopTask}
             onStopJob={handleStopRunningJob}
-            onBackToTasks={() => setSubTab('tasks')}
+            onBackToTasks={handleBackFromTrajectory}
+            backLabel={logOrigin ? `Back to ${logOrigin}` : 'Back to tasks'}
             onContinueTask={async (taskId, extraTurns, extraPrompt) => {
               await handleRunTask(
                 taskId,

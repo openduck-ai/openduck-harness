@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { createApi } from '@aaif/goose-hub-core'
 import {
-  describeToolCall,
   formatPromptMessageText,
   isCurrentThinkingTurn,
+  liveLineText,
   presentToolCall,
   resolveThinkingOpen,
   type AgentLogToolCall,
@@ -84,26 +84,6 @@ function firstErrorLine(output: string | undefined): string | undefined {
   return line.length > 140 ? `${line.slice(0, 139)}…` : line
 }
 
-function statusWord(status: string): string {
-  const raw = status.trim()
-  if (!raw) return 'Done'
-  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase()
-}
-
-function liveLineText(turns: AgentLogTurn[], live: boolean, status: string): string {
-  if (!live) return statusWord(status)
-  for (let index = turns.length - 1; index >= 0; index--) {
-    const turn = turns[index]
-    if (turn.role !== 'assistant') continue
-    const newest = turn.toolCalls?.[turn.toolCalls.length - 1]
-    if (newest) {
-      const summary = describeToolCall(newest.name, newest.arguments)
-      if (summary) return summary
-    }
-    return 'Thinking…'
-  }
-  return 'Thinking…'
-}
 
 function splitSummary(summary: string, path?: string): { before: string; path?: string; after: string } {
   if (!path) return { before: summary, after: '' }

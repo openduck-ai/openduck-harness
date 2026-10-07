@@ -94,6 +94,10 @@ async fn test_project_task_store_crud() {
     assert_eq!(list[0].name, "Fetch Polymarket Data");
     assert_eq!(list[0].tags, vec!["python", "web3"]);
     assert!(list[0].has_verifier);
+    assert_eq!(
+        list[0].prompt_preview.as_deref(),
+        Some("Fetch top 5 markets")
+    );
 
     // 4. Get task
     let fetched = ProjectTaskStore::get_task(&tasks_dir, "task-fetch-polymarket")
@@ -126,6 +130,65 @@ async fn test_project_task_store_crud() {
         .unwrap();
     let list_after = ProjectTaskStore::list_tasks(&tasks_dir).await.unwrap();
     assert!(list_after.is_empty());
+}
+
+#[tokio::test]
+async fn test_project_task_prompt_preview() {
+    let dir = tempdir().unwrap();
+    let tasks_dir = dir.path().join(".goose/tasks");
+
+    // Multi-line prompt that keeps first two lines
+    let task_multi = ProjectTaskDefinition {
+        id: "task-multi".into(),
+        name: Some("Multi Line".into()),
+        category: None,
+        tags: vec![],
+        prompt: "\n  Line 1  \n\n  Line 2  \nLine 3\n".into(),
+        environment: None,
+        verifier: None,
+        max_turns: None,
+        timeout_seconds: None,
+        cron: None,
+        schedule_paused: false,
+        subtasks: None,
+        auto_decompose: None,
+        phase_max_turns: None,
+        dynamic_prompt: false,
+    };
+    ProjectTaskStore::save_task(&tasks_dir, &task_multi)
+        .await
+        .unwrap();
+
+    // Long prompt that truncates past 240 chars
+    let long_text = "a".repeat(300);
+    let task_long = ProjectTaskDefinition {
+        id: "task-long".into(),
+        name: Some("Long Line".into()),
+        category: None,
+        tags: vec![],
+        prompt: long_text,
+        environment: None,
+        verifier: None,
+        max_turns: None,
+        timeout_seconds: None,
+        cron: None,
+        schedule_paused: false,
+        subtasks: None,
+        auto_decompose: None,
+        phase_max_turns: None,
+        dynamic_prompt: false,
+    };
+    ProjectTaskStore::save_task(&tasks_dir, &task_long)
+        .await
+        .unwrap();
+
+    let list = ProjectTaskStore::list_tasks(&tasks_dir).await.unwrap();
+    let multi = list.iter().find(|t| t.id == "task-multi").unwrap();
+    assert_eq!(multi.prompt_preview.as_deref(), Some("Line 1\nLine 2"));
+
+    let long = list.iter().find(|t| t.id == "task-long").unwrap();
+    let expected_long = format!("{}…", "a".repeat(240));
+    assert_eq!(long.prompt_preview.as_deref(), Some(expected_long.as_str()));
 }
 
 #[tokio::test]

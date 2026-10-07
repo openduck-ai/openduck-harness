@@ -772,6 +772,7 @@ export interface ProjectTaskSummary {
   filePath: string
   hasVerifier: boolean
   createdAt: string
+  promptPreview?: string
   cron?: string
   schedulePaused?: boolean
   nextRunAt?: string

@@ -23,6 +23,7 @@ import {
   extractToolResultOutput,
   formatPromptMessageText,
   computeTaskProviderStats,
+  liveLineText,
 } from './taskTrajectory.ts'
 import type { HarnessRunResponse } from '@aaif/goose-hub-core'
 
@@ -1101,6 +1102,51 @@ test('resolveThinkingOpen folds a current thought when it ends and keeps an expl
   assert.equal(resolveThinkingOpen({ open: true, sticky: false }, false), false)
   assert.equal(resolveThinkingOpen({ open: true, sticky: true }, false), true)
   assert.equal(resolveThinkingOpen({ open: false, sticky: true }, true), false)
+})
+
+test('liveLineText returns newest tool summary on latest assistant turn, or Thinking… when no tool', () => {
+  // 1. Assistant turn with tool calls
+  const runWithTool = {
+    taskId: 'test-task',
+    trajectory: {
+      steps: [
+        {
+          stepIndex: 1,
+          agentAction: {
+            CallTools: [
+              {
+                id: 'call_1',
+                name: 'developer__shell',
+                arguments: { command: 'cargo test' },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  } as unknown as HarnessRunResponse
+
+  const turnsWithTool = buildAgentLog(runWithTool)
+  assert.equal(liveLineText(turnsWithTool, true, 'running'), 'Run cargo test')
+
+  // 2. Assistant turn with no tool calls (just thinking/text)
+  const runWithoutTool = {
+    taskId: 'test-task',
+    trajectory: {
+      steps: [
+        {
+          stepIndex: 1,
+          thinking: 'Analyzing the repository structure...',
+        },
+      ],
+    },
+  } as unknown as HarnessRunResponse
+
+  const turnsWithoutTool = buildAgentLog(runWithoutTool)
+  assert.equal(liveLineText(turnsWithoutTool, true, 'running'), 'Thinking…')
+
+  // 3. Not live returns formatted status
+  assert.equal(liveLineText(turnsWithTool, false, 'success'), 'Success')
 })
 
 

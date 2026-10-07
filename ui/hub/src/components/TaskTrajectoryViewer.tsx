@@ -74,6 +74,7 @@ interface TaskTrajectoryViewerProps {
   onStopTask?: (taskId: string) => Promise<void>
   onStopJob?: (job: HarnessActiveJob) => Promise<void>
   onBackToTasks: () => void
+  backLabel?: string
   onContinueTask?: (taskId: string, extraTurns: number, extraPrompt?: string) => Promise<void>
   maxTurnsLimit?: number
   onOpenContinueModal?: (
@@ -102,6 +103,7 @@ export function TaskTrajectoryViewer({
   onStopTask,
   onStopJob,
   onBackToTasks,
+  backLabel,
   onContinueTask,
   onOpenContinueModal,
   maxTurnsLimit = 500,
@@ -115,6 +117,7 @@ export function TaskTrajectoryViewer({
     runWithSelection,
   } = useSelectionTaskRun(api, effectiveProjectSlug)
   const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
+  const [copiedRunId, setCopiedRunId] = useState(false)
   // Navigation & View state
   const [viewMode, setViewMode] = useState<TrajectoryViewMode>('log')
   const [selectedStepIdx, setSelectedStepIdx] = useState<number>(0)
@@ -577,8 +580,26 @@ export function TaskTrajectoryViewer({
             </h3>
             <div className="trajectory-meta-row">
               {selectedHistoryId && !liveInspect && (
-                <span className="meta-pill">
+                <span className="meta-pill run-id-pill">
                   Run ID: <code>{selectedHistoryId}</code>
+                  <button
+                    type="button"
+                    className="history-copy-btn run-id-copy-btn"
+                    onClick={async e => {
+                      e.stopPropagation()
+                      try {
+                        await navigator.clipboard.writeText(selectedHistoryId)
+                        setCopiedRunId(true)
+                        setTimeout(() => setCopiedRunId(false), 2000)
+                      } catch {
+                        // ignore clipboard error
+                      }
+                    }}
+                    title="Copy Run ID"
+                    aria-label="Copy Run ID"
+                  >
+                    {copiedRunId ? <Check size={11} /> : <Copy size={11} />}
+                  </button>
                 </span>
               )}
               {liveInspect && inspectingJobId && (
@@ -635,9 +656,9 @@ export function TaskTrajectoryViewer({
               type="button"
               className="btn-secondary"
               onClick={onBackToTasks}
-              title="Return to task list"
+              title="Return to origin screen"
             >
-              ← Back to Tasks
+              ← {backLabel || 'Back to tasks'}
             </button>
           </div>
         </div>
@@ -2138,7 +2159,7 @@ function StepDetailCard({
                 <div className="step-provider-calls-list">
                   {telemetry.providerCalls.map((call, cIdx) => (
                     <div
-                      key={call.callId || cIdx}
+                      key={`call-${cIdx}-${call.provider}`}
                       className={`step-provider-call-card ${call.success ? 'success' : 'failed'}`}
                     >
                       <div className="provider-call-card-header">

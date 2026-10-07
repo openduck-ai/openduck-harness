@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import type { HarnessRunResponse, ProviderCallRecord, TaskProviderStats } from '@aaif/goose-hub-core'
+import { computeTaskProviderStats } from '../taskTrajectory.ts'
 import {
   Zap,
   CheckCircle2,
@@ -16,7 +17,7 @@ import {
 
 interface ProviderStatsDashboardProps {
   run: HarnessRunResponse
-  providerStats: TaskProviderStats
+  providerStats?: TaskProviderStats | null
   onJumpToStep?: (stepIdx: number) => void
 }
 
@@ -29,9 +30,13 @@ type StatusFilter = 'all' | 'success' | 'failed' | 'retried'
 
 export function ProviderStatsDashboard({
   run,
-  providerStats,
+  providerStats: inputProviderStats,
   onJumpToStep,
 }: ProviderStatsDashboardProps) {
+  const providerStats = useMemo(
+    () => inputProviderStats ?? computeTaskProviderStats(run),
+    [inputProviderStats, run],
+  )
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedProvider, setSelectedProvider] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
