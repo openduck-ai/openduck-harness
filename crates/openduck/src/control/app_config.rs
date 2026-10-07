@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::config::{Config, ConfigError, env_lookup};
+use crate::config::{env_lookup, Config, ConfigError};
 use openduck_harness::JudgeConfig;
 
 #[derive(Debug)]
@@ -1116,18 +1116,14 @@ extensions:
         );
         let document = read_document(&fixture.config).unwrap();
         assert_eq!(document.mode.value.as_deref(), Some("auto"));
-        assert!(
-            document
-                .entries
-                .iter()
-                .all(|entry| entry.key != "OPENAI_API_KEY")
-        );
-        assert!(
-            document
-                .entries
-                .iter()
-                .all(|entry| entry.key != "extensions")
-        );
+        assert!(document
+            .entries
+            .iter()
+            .all(|entry| entry.key != "OPENAI_API_KEY"));
+        assert!(document
+            .entries
+            .iter()
+            .all(|entry| entry.key != "extensions"));
         assert_eq!(
             document
                 .entries
@@ -1163,37 +1159,31 @@ extensions:
         assert_eq!(document.provider.value.as_deref(), Some("openai"));
         assert_eq!(document.model.value.as_deref(), Some("gpt-4o"));
         assert_eq!(document.mode.value.as_deref(), Some("smart_approve"));
-        assert!(
-            upsert_entry(
-                &fixture.config,
-                "GOOSE_MODE",
-                Value::String("nope".to_string()),
-            )
-            .is_err()
-        );
+        assert!(upsert_entry(
+            &fixture.config,
+            "GOOSE_MODE",
+            Value::String("nope".to_string()),
+        )
+        .is_err());
     }
 
     #[test]
     fn rejects_secret_and_nested_writes() {
         let _guard = quiet_env();
         let fixture = fixture_with("{}\n");
-        assert!(
-            upsert_entry(
-                &fixture.config,
-                "OPENAI_API_KEY",
-                Value::String("sk-test".to_string()),
-            )
-            .is_err()
-        );
+        assert!(upsert_entry(
+            &fixture.config,
+            "OPENAI_API_KEY",
+            Value::String("sk-test".to_string()),
+        )
+        .is_err());
         assert!(upsert_entry(&fixture.config, "extensions", Value::Object(Map::new()),).is_err());
-        assert!(
-            upsert_entry(
-                &fixture.config,
-                "HUB_EXAMPLE_FLAG",
-                Value::Array(Vec::new()),
-            )
-            .is_err()
-        );
+        assert!(upsert_entry(
+            &fixture.config,
+            "HUB_EXAMPLE_FLAG",
+            Value::Array(Vec::new()),
+        )
+        .is_err());
     }
 
     #[test]

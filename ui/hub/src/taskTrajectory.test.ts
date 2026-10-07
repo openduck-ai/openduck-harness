@@ -10,11 +10,15 @@ import {
   formatToolArguments,
   describeToolCall,
   presentToolCall,
+  isCurrentThinkingTurn,
   isLiveTrajectoryVisible,
   parseAgentAction,
   parseToolCallRecord,
   parseToolResults,
+  resolveThinkingOpen,
+  agentLogScrollKey,
   evaluateAutoScrollState,
+  dockRevealDelta,
   extractAddedPromptMessages,
   extractToolResultOutput,
   formatPromptMessageText,
@@ -839,6 +843,17 @@ test('buildAgentLog emits a second user turn for a follow-up prompt', () => {
   )
 })
 
+test('agentLogScrollKey changes when a running log grows in place', () => {
+  const thought = { id: 'live-thinking', thinking: 'Clippy first' }
+  const grown = { id: 'live-thinking', thinking: 'Clippy first, then the warnings.' }
+  assert.notEqual(agentLogScrollKey([thought]), agentLogScrollKey([grown]))
+
+  const pending = { id: 'step-2', toolCalls: [{ name: 'shell', output: undefined }] }
+  const finished = { id: 'step-2', toolCalls: [{ name: 'shell', output: 'ok' }] }
+  assert.notEqual(agentLogScrollKey([pending]), agentLogScrollKey([finished]))
+  assert.equal(agentLogScrollKey([grown, finished]), agentLogScrollKey([grown, finished]))
+})
+
 test('evaluateAutoScrollState pauses when user scrolls up and resumes at bottom', () => {
   // At bottom initially: autoScroll remains true
   const atBottom = evaluateAutoScrollState({
@@ -883,6 +898,15 @@ test('evaluateAutoScrollState pauses when user scrolls up and resumes at bottom'
   })
   assert.equal(explicitlyDisabled.autoScroll, false)
   assert.equal(explicitlyDisabled.pausedByUserScroll, false)
+})
+
+test('dockRevealDelta scrolls only when the live dock is below the viewport', () => {
+  const viewport = 713
+  assert.equal(dockRevealDelta(viewport, viewport), 0)
+  assert.equal(dockRevealDelta(viewport - 16, viewport), 0)
+  assert.equal(dockRevealDelta(viewport + 2, viewport), 0)
+  assert.equal(dockRevealDelta(viewport + 40, viewport), 40)
+  assert.equal(dockRevealDelta(100, viewport), 0)
 })
 
 test('computeTaskProviderStats aggregates explicit providerCalls across steps', () => {
@@ -1031,6 +1055,52 @@ test('buildAgentLog attaches providerCalls to assistant turns', () => {
   assert.ok(turns[0].providerCalls)
   assert.equal(turns[0].providerCalls?.length, 1)
   assert.equal(turns[0].providerCalls?.[0].provider, 'anthropic')
+})
+
+test('isCurrentThinkingTurn is only the live latest step that is still a thought', () => {
+  const thought = { role: 'assistant' as const, thinking: 'Clippy first, then the warnings.' }
+  assert.equal(isCurrentThinkingTurn(thought, true, true), true)
+  assert.equal(isCurrentThinkingTurn(thought, false, true), false)
+  assert.equal(isCurrentThinkingTurn(thought, true, false), false)
+  assert.equal(isCurrentThinkingTurn({ ...thought, text: 'I will run clippy first.' }, true, true), false)
+  assert.equal(isCurrentThinkingTurn({ ...thought, text: '   ' }, true, true), true)
+  assert.equal(
+    isCurrentThinkingTurn({ ...thought, toolCalls: [{ name: 'shell' }] }, true, true),
+    false,
+  )
+  assert.equal(isCurrentThinkingTurn({ role: 'assistant', thinking: '  ' }, true, true), false)
+  assert.equal(isCurrentThinkingTurn({ role: 'user', thinking: 'hello' }, true, true), false)
+})
+
+test('buildAgentLog appends in-progress thinking and folds it once prose arrives', () => {
+  const run = {
+    taskId: 'live-thought',
+    status: 'running',
+    partialThinking: 'Clippy first, then the warnings.',
+    trajectory: { steps: [] },
+  } as unknown as HarnessRunResponse
+
+  const open = buildAgentLog(run).find(turn => turn.id === 'live-thinking')
+  assert.ok(open)
+  assert.equal(open?.thinking, 'Clippy first, then the warnings.')
+  assert.equal(open?.text, undefined)
+  assert.equal(isCurrentThinkingTurn(open!, true, true), true)
+
+  const withProse = buildAgentLog({
+    ...run,
+    partialText: 'I will run clippy first.',
+  } as unknown as HarnessRunResponse).find(turn => turn.id === 'live-thinking')
+  assert.equal(withProse?.text, 'I will run clippy first.')
+  assert.equal(isCurrentThinkingTurn(withProse!, true, true), false)
+})
+
+test('resolveThinkingOpen folds a current thought when it ends and keeps an explicit choice', () => {
+  assert.equal(resolveThinkingOpen(undefined, true), true)
+  assert.equal(resolveThinkingOpen(undefined, false), false)
+  assert.equal(resolveThinkingOpen({ open: false, sticky: false }, true), false)
+  assert.equal(resolveThinkingOpen({ open: true, sticky: false }, false), false)
+  assert.equal(resolveThinkingOpen({ open: true, sticky: true }, false), true)
+  assert.equal(resolveThinkingOpen({ open: false, sticky: true }, true), false)
 })
 
 

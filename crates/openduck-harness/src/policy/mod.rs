@@ -1,6 +1,8 @@
 pub mod adapters;
 pub mod context;
 
+use std::sync::Arc;
+
 use crate::telemetry::TokenUsageSummary;
 use crate::types::{ToolCallRequest, ToolDefinition};
 use anyhow::Result;
@@ -23,6 +25,14 @@ pub enum AgentAction {
     RequestInput { prompt: String },
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PartialGeneration {
+    pub thinking: String,
+    pub text: String,
+}
+
+pub type PartialThinkingObserver = Arc<dyn Fn(PartialGeneration) + Send + Sync>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct StepTelemetry {
@@ -44,6 +54,8 @@ pub struct StepTelemetry {
 #[async_trait]
 pub trait AgentPolicy: Send + Sync {
     fn name(&self) -> &str;
+
+    fn set_partial_observer(&mut self, _observer: Option<PartialThinkingObserver>) {}
 
     async fn step(
         &mut self,

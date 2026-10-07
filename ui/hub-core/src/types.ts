@@ -670,6 +670,8 @@ export interface HarnessRunResponse {
   continuation?: ContinuationCheckpoint | null
   projectSlug?: string | null
   providerStats?: TaskProviderStats | null
+  partialThinking?: string | null
+  partialText?: string | null
 }
 
 export interface HarnessJobInspect {

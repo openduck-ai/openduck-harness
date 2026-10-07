@@ -11,7 +11,7 @@
 
 ## 1. Summary
 
-The task Agent Log should read like a normal coding-agent session: a quiet, full-height transcript of the user prompt, the assistant’s prose, and one-line tool rows. Harness telemetry (full prompts, Laya judgments, provider calls, step index, duration) stays in the product and leaves the default reading path.
+The task Agent Log should read like a normal coding-agent session: a quiet, full-height transcript of the user prompt, the assistant’s prose, and one-line tool rows. A thought that is still in progress stays open in a shimmer style, then folds to one line when that thought ends. Harness telemetry (full prompts, Laya judgments, provider calls, step index, duration) stays in the product and leaves the default reading path.
 
 Split Inspector, Stream Timeline, and Provider Stats stay as they are. Project Chat is a separate surface and is out of this change.
 
@@ -43,11 +43,18 @@ Agent Log | Split | Stream | Providers          [search] [filter]
 You
 Fix the clippy warnings in this crate.
 
-  Thought · 1 line                         collapsed
+  Thought · 1 line                         folded once that thought ended
   I will run clippy first.                 plain markdown
   ✓  Run cargo clippy                      one line; click expands
   Lint is clean.                           last answer, same prose
   [file chips extracted from that answer]
+
+While the latest step is still only a thought:
+
+  Thinking…
+  Clippy first, then the warnings.         open; shimmer on the text
+
+Once that step has a reply or a tool, the same block is the folded row above.
 
                          ↓ Latest          only after the user scrolls up
 
@@ -57,7 +64,7 @@ Fix the clippy warnings in this crate.
 
 Reading order inside an assistant step:
 
-1. Thinking, collapsed. The live step stays open until that step finishes.
+1. Thinking. The current thought stays open with the shimmer in [Current thinking](#current-thinking). Every finished thought is one folded row.
 2. Assistant markdown, flush on the canvas. No bubble and no author row.
 3. Tool rows, collapsed. A failed tool shows the first line of the error on the row and starts expanded.
 4. One **Details** disclosure when the step has prompt messages, judgments, or provider calls. Closed by default. A triggered Laya verdict is an amber dot on that row, with the point name. Passing judgments stay inside the disclosure.
@@ -71,6 +78,18 @@ The Final Answer banner, the system-prompt inspector, the step scrubber, the Pre
 Auto-scroll follows the viewport. Near the bottom, new steps scroll into view. Scrolling up pauses it and shows one **Latest** button.
 
 While `liveInspect` is on, a sticky line at the bottom names the current action from the latest step: `Thinking…`, or `describeToolCall` of the newest tool (`Run cargo test`, `Read src/lib.rs`). When the run ends, that line shows the status word already used in the header (`Success`, `Cancelled`, and the rest).
+
+### Current thinking
+
+One thinking block has two states. Only the latest assistant step of a live run can be current, and only while that step has thinking text and does not yet have assistant prose or a tool call.
+
+**Show it.** The block is open. The label is `Thinking…`. The body is the thinking text, muted and smaller than the answer, in the transcript font. A slow light band sweeps across the glyphs, the same treatment Claude Code, Grok, and OpenCode use for an in-progress thought. The dashed border stays off. The sweep restyles the thinking string already stored on the step. A refresh that replaces the string keeps the sweep on the new text.
+
+**Fold it.** When that step gains prose or a tool call, when a newer assistant step arrives, or when `liveInspect` turns off, collapse the block to `Thought · N lines` without a click. The sweep stops. Opening it later shows the same words in the quiet static style. A finished run, and a live step that already includes a reply or a tool, paint every thought folded.
+
+**Leave the reader’s choice alone.** Collapsing the current thought stays collapsed on the next refresh. Opening an older thought stays open, and that text does not sweep.
+
+**Motion.** Under `prefers-reduced-motion: reduce`, the current thought stays open and muted, with no sweep.
 
 ## 4. Tool rows
 
@@ -112,7 +131,8 @@ A pending tool (no output yet, and not an error) uses a spinner and no status wo
    - User block: subtle tint, no avatar column.
    - Prose: no card border. The final answer uses the existing lime tint as a left border.
    - Tool row: one monospace line and a hover outline. The expanded body uses the current canvas background.
-   - Thinking and Details: one muted row. A dashed border appears only while open.
+   - Thinking: the current thought uses `.agent-thinking.is-current`, label `Thinking…`, body open, with the glyph sweep from [Current thinking](#current-thinking). Scope the sweep to `.agent-transcript .agent-thinking.is-current .agent-thinking-body`. A finished thought is one muted row, `Thought · N lines`. A dashed border appears only while a finished thought is open. Leave `.skeleton-shimmer` for loading placeholders.
+   - Details: one muted row. A dashed border appears only while open.
    - Sticky live line at the bottom of the panel.
    - Use the light-theme tokens the trajectory view already uses. At a narrow width the filter menu and search wrap, and tool summaries truncate.
 
@@ -134,7 +154,7 @@ After the transcript matches the reading UX, pin a composer to the bottom of the
 
 ## 7. Out of scope
 
-- Token streaming. The hub refreshes when a step is recorded.
+- Token streaming. The hub refreshes when a step is recorded. The current-thinking sweep restyles text already on the step.
 - Restyling Split Inspector, Stream Timeline, Provider Stats, or Project Chat.
 - Server or trajectory schema changes.
 - Editing task files, turn-budget rules, or how continue seeds the next run.
@@ -143,7 +163,8 @@ After the transcript matches the reading UX, pin a composer to the bottom of the
 
 - `cd ui/hub && pnpm test` covers `presentToolCall` and the extra user turn. Existing `buildAgentLog` assertions stay green.
 - In the browser, on a finished run and a live run when one is available:
-  - Agent Log is the default. A multi-step run reads top to bottom as user prompt, prose, one-line tools, and collapsed thinking.
+  - Agent Log is the default. A multi-step run reads top to bottom as user prompt, prose, one-line tools, and folded thinking.
+  - On a live run whose latest step is thinking only, that thought is open, labeled `Thinking…`, and the text sweeps. When the step gains a reply or a tool, or the run ends, it folds to `Thought · N lines` and the sweep stops. Expanding a folded thought shows static text. Collapsing the current thought stays collapsed on the next refresh. A finished run shows every thought folded on first paint.
   - Expand a shell tool, a read or write tool, and a failed tool. Copy output. Open a file-path chip.
   - Open Details on a step that has Laya or provider calls. The row is closed on first paint.
   - Split and Stream still show the scrubber, stepper, final-answer banner, and prompt inspector.
@@ -164,3 +185,4 @@ After the transcript matches the reading UX, pin a composer to the bottom of the
 2. `AgentLogTranscript` and the log-mode toolbar, with duplicate chrome hidden in log mode.
 3. Styles, then a browser pass on the transcript.
 4. Composer and the `onContinueTask` signature, then a browser pass on continue.
+5. Current-thinking sweep and auto-fold in `AgentLogTranscript` and `.agent-thinking`. No trajectory schema change.

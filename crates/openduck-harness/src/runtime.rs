@@ -302,6 +302,13 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         self
     }
 
+    pub fn set_partial_observer(
+        &mut self,
+        observer: Option<crate::policy::PartialThinkingObserver>,
+    ) {
+        self.policy.set_partial_observer(observer);
+    }
+
     pub fn with_continuation(
         mut self,
         continuation: Option<crate::eval::ContinuationCheckpoint>,
@@ -1561,6 +1568,27 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                     context
                         .messages
                         .push(HarnessMessage::assistant_with_tools("", calls.clone()));
+
+                    let preview_response = res_payload.clone().unwrap_or_else(|| {
+                        serde_json::json!({
+                            "toolCallsCount": calls.len(),
+                            "toolCalls": calls
+                        })
+                    });
+                    let mut preview_steps = steps.clone();
+                    preview_steps.push(TrajectoryStep {
+                        step_number: step_idx + 1,
+                        timestamp: Utc::now(),
+                        action: action.clone(),
+                        tool_results: None,
+                        duration_ms: step_duration,
+                        token_usage: token_usage_payload.clone(),
+                        llm_request: req_payload.clone(),
+                        llm_response: Some(preview_response),
+                        judgments: None,
+                        provider_calls: provider_calls_payload.clone(),
+                    });
+                    self.notify_step_observer_with_prefix(step_prefix, &preview_steps);
 
                     let mut responses = Vec::new();
                     for call in calls {

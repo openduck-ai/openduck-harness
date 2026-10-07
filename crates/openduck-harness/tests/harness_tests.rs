@@ -221,15 +221,31 @@ async fn test_step_observer_is_notified_after_each_step() {
     let sandbox = LocalSandbox::ephemeral().unwrap();
     let mut harness =
         AgentHarness::new(policy, sandbox).with_step_observer(Arc::new(move |steps| {
-            seen_cb.lock().unwrap().push(steps.len());
+            let tool_result_count = steps
+                .last()
+                .and_then(|step| step.tool_results.as_ref().map(|results| results.len()));
+            seen_cb
+                .lock()
+                .unwrap()
+                .push((steps.len(), tool_result_count));
         }));
 
     let task = TaskSpec::new("obs-1", "smoke-test", "Write 42 to output.txt");
     let result = harness.run_task(&task).await.expect("run_task failed");
 
     assert_eq!(result.status, RunStatus::Success);
-    assert_eq!(*seen.lock().unwrap(), vec![1, 2]);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(1, None), (1, Some(1)), (2, None),]
+    );
     assert_eq!(result.trajectory.steps.len(), 2);
+    assert_eq!(
+        result.trajectory.steps[0]
+            .tool_results
+            .as_ref()
+            .map(|results| results.len()),
+        Some(1)
+    );
 }
 
 #[tokio::test]

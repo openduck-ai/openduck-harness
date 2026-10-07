@@ -9937,8 +9937,12 @@ button.git-log-row {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  height: calc(100dvh - 15rem);
-  background: transparent;
+  position: sticky;
+  top: 5rem;
+  height: calc(100dvh - 6rem);
+  height: calc(100svh - 6rem);
+  z-index: 4;
+  background: var(--bg-canvas);
   border: none;
   border-radius: 0;
   overflow: hidden;
@@ -9978,10 +9982,15 @@ button.git-log-row {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  padding: 0.35rem 0.15rem 1.25rem;
+}
+
+.agent-transcript-content {
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
-  padding: 0.35rem 0.15rem 1.25rem;
 }
 
 .agent-transcript .agent-user {
@@ -10047,7 +10056,7 @@ button.git-log-row {
   color: var(--text-muted);
 }
 
-.agent-transcript .agent-thinking.open,
+.agent-transcript .agent-thinking.open:not(.is-current),
 .agent-transcript .agent-details.open {
   border: 1px dashed var(--border-default);
   border-radius: 8px;
@@ -10116,6 +10125,45 @@ button.git-log-row {
 
 .agent-transcript .agent-thinking-body {
   white-space: pre-wrap;
+}
+
+@keyframes agent-thinking-sweep {
+  0%, 24% {
+    background-position: 0% center;
+  }
+  76%, 100% {
+    background-position: 100% center;
+  }
+}
+
+/* Peak stays on text tokens so the sweep never fades toward the page background. */
+.agent-transcript .agent-thinking.is-current .agent-thinking-sheen {
+  color: var(--text-secondary);
+  background-image: linear-gradient(
+    90deg,
+    var(--text-secondary) 0%,
+    var(--text-secondary) 38%,
+    color-mix(in srgb, var(--text-secondary) 25%, var(--text-primary)) 50%,
+    var(--text-secondary) 62%,
+    var(--text-secondary) 100%
+  );
+  background-size: 300% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  animation: agent-thinking-sweep 8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-transcript .agent-thinking.is-current .agent-thinking-sheen {
+    animation: none;
+    background-image: none;
+    color: var(--text-secondary);
+    -webkit-text-fill-color: currentColor;
+  }
 }
 
 .agent-verdict-chip {
@@ -10471,7 +10519,9 @@ button.git-log-row {
   }
 
   .trajectory-viewer-container.is-log-mode .agent-log-panel {
-    height: calc(100dvh - 12rem);
+    top: 4.25rem;
+    height: calc(100dvh - 5rem);
+    height: calc(100svh - 5rem);
   }
 }
 

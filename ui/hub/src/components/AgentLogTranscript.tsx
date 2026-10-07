@@ -3,10 +3,13 @@ import type { createApi } from '@aaif/goose-hub-core'
 import {
   describeToolCall,
   formatPromptMessageText,
+  isCurrentThinkingTurn,
   presentToolCall,
+  resolveThinkingOpen,
   type AgentLogToolCall,
   type AgentLogTurn,
   type HarnessJudgmentRecord,
+  type ThinkingOpenChoice,
 } from '../taskTrajectory.ts'
 import { gitDiffLineClass } from '../gitDiff.ts'
 import { getFileIcon } from '../pathUtils.ts'
@@ -138,7 +141,7 @@ export function AgentLogTranscript({
   continueRequest,
 }: AgentLogTranscriptProps) {
   const finalProseRef = useRef<HTMLDivElement>(null)
-  const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({})
+  const [thinkingChoice, setThinkingChoice] = useState<Record<string, ThinkingOpenChoice>>({})
   const [detailsOpen, setDetailsOpen] = useState<Record<string, boolean>>({})
   const [toolsOpen, setToolsOpen] = useState<Record<string, boolean>>({})
 
@@ -153,28 +156,35 @@ export function AgentLogTranscript({
     <div className="agent-log-panel">
       <div className="agent-transcript-wrap">
         <div className="agent-transcript" ref={transcriptRef} onScroll={onScroll}>
+          <div className="agent-transcript-content">
           {turns.length === 0 ? (
             <div className="empty-card">No log entries match filter / search criteria.</div>
           ) : (
-            turns.map((turn, index) =>
-              turn.role === 'user' ? (
-                <UserTurn
-                  key={turn.id}
-                  turn={turn}
-                  onOpenFile={onOpenFile}
-                  resolveImageUrl={resolveImageUrl}
-                />
-              ) : (
+            turns.map((turn, index) => {
+              if (turn.role === 'user') {
+                return (
+                  <UserTurn
+                    key={turn.id}
+                    turn={turn}
+                    onOpenFile={onOpenFile}
+                    resolveImageUrl={resolveImageUrl}
+                  />
+                )
+              }
+              const thinkingCurrent = isCurrentThinkingTurn(turn, live, index === lastAssistantIndex)
+              const thinkingOpen = resolveThinkingOpen(thinkingChoice[turn.id], thinkingCurrent)
+              return (
                 <AssistantTurn
                   key={turn.id}
                   turn={turn}
                   isLiveStep={live && index === lastAssistantIndex}
                   isFinal={turn.id === lastFinalId}
-                  thinkingOpen={turn.id in thinkingOpen ? thinkingOpen[turn.id] : live && index === lastAssistantIndex}
+                  thinkingCurrent={thinkingCurrent}
+                  thinkingOpen={thinkingOpen}
                   onToggleThinking={() =>
-                    setThinkingOpen(prev => ({
+                    setThinkingChoice(prev => ({
                       ...prev,
-                      [turn.id]: !(turn.id in prev ? prev[turn.id] : live && index === lastAssistantIndex),
+                      [turn.id]: { open: !thinkingOpen, sticky: !thinkingCurrent },
                     }))
                   }
                   detailsOpen={detailsOpen[turn.id] ?? false}
@@ -202,10 +212,11 @@ export function AgentLogTranscript({
                   projectSlug={projectSlug}
                   onSelectDynamicTask={onSelectDynamicTask}
                 />
-              ),
-            )
+              )
+            })
           )}
           <div ref={endRef} />
+          </div>
         </div>
         {showLatest && (
           <button type="button" className="agent-latest" onClick={onLatest}>
@@ -246,6 +257,7 @@ function AssistantTurn({
   turn,
   isLiveStep,
   isFinal,
+  thinkingCurrent,
   thinkingOpen,
   onToggleThinking,
   detailsOpen,
@@ -269,6 +281,7 @@ function AssistantTurn({
   turn: AgentLogTurn
   isLiveStep: boolean
   isFinal: boolean
+  thinkingCurrent: boolean
   thinkingOpen: boolean
   onToggleThinking: () => void
   detailsOpen: boolean
@@ -300,14 +313,24 @@ function AssistantTurn({
   return (
     <section className={`agent-step${isLiveStep ? ' is-live' : ''}`} data-log-step={turn.stepIndex}>
       {turn.thinking && (
-        <div className={`agent-thinking${thinkingOpen ? ' open' : ''}`}>
+        <div className={`agent-thinking${thinkingOpen ? ' open' : ''}${thinkingCurrent ? ' is-current' : ''}`}>
           <button type="button" className="agent-thinking-toggle" onClick={onToggleThinking} aria-expanded={thinkingOpen}>
             <span>
-              Thought · {thoughtLines} {thoughtLines === 1 ? 'line' : 'lines'}
+              {thinkingCurrent
+                ? 'Thinking…'
+                : `Thought · ${thoughtLines} ${thoughtLines === 1 ? 'line' : 'lines'}`}
             </span>
             {thinkingOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           </button>
-          {thinkingOpen && <div className="agent-thinking-body">{turn.thinking}</div>}
+          {thinkingOpen && (
+            <div className="agent-thinking-body">
+              {thinkingCurrent ? (
+                <span className="agent-thinking-sheen">{turn.thinking}</span>
+              ) : (
+                turn.thinking
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -402,8 +402,19 @@ pub fn model_info_for_provider_model(provider_name: &str, model_name: &str) -> M
 
 /// Collect all chunks from a MessageStream into a single Message and ProviderUsage
 pub async fn collect_stream(
-    mut stream: MessageStream,
+    stream: MessageStream,
 ) -> Result<(Message, ProviderUsage), ProviderError> {
+    collect_stream_with(stream, |_| {}).await
+}
+
+/// Collect a stream and invoke `on_update` with the coalesced message after each chunk.
+pub async fn collect_stream_with<F>(
+    mut stream: MessageStream,
+    mut on_update: F,
+) -> Result<(Message, ProviderUsage), ProviderError>
+where
+    F: FnMut(&Message),
+{
     use futures::StreamExt;
 
     let mut final_message: Option<Message> = None;
@@ -453,6 +464,9 @@ pub async fn collect_stream(
                 }
                 None => msg,
             });
+            if let Some(message) = &final_message {
+                on_update(message);
+            }
         }
 
         if let Some(usage) = usage_opt {

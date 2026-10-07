@@ -351,6 +351,28 @@ export interface AgentLogTurn {
   providerCalls?: ProviderCallRecord[]
 }
 
+export interface ThinkingOpenChoice {
+  open: boolean
+  sticky: boolean
+}
+
+export function isCurrentThinkingTurn(
+  turn: Pick<AgentLogTurn, 'role' | 'thinking' | 'text' | 'toolCalls'>,
+  live: boolean,
+  isLatestAssistant: boolean,
+): boolean {
+  if (!live || !isLatestAssistant || turn.role !== 'assistant') return false
+  if (!turn.thinking?.trim()) return false
+  if (turn.text?.trim()) return false
+  if ((turn.toolCalls?.length ?? 0) > 0) return false
+  return true
+}
+
+export function resolveThinkingOpen(choice: ThinkingOpenChoice | undefined, current: boolean): boolean {
+  if (choice && (choice.sticky || current)) return choice.open
+  return current
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
 }
@@ -721,6 +743,18 @@ export function buildAgentLog(run: HarnessRunResponse | null | undefined): Agent
           : telemetry?.providerCalls && telemetry.providerCalls.length > 0
             ? telemetry.providerCalls
             : undefined,
+    })
+  }
+
+  const partialThinking = run.partialThinking?.trim()
+  if (partialThinking) {
+    const partialText = run.partialText?.trim()
+    turns.push({
+      id: 'live-thinking',
+      role: 'assistant',
+      kind: 'assistant',
+      thinking: partialThinking,
+      text: partialText || undefined,
     })
   }
 
@@ -1311,6 +1345,19 @@ export function downloadTrajectoryJson(run: HarnessRunResponse): void {
   URL.revokeObjectURL(url)
 }
 
+export function agentLogScrollKey(
+  turns: Pick<AgentLogTurn, 'id' | 'thinking' | 'text' | 'toolCalls'>[],
+): string {
+  return turns
+    .map(turn => {
+      const tools = (turn.toolCalls ?? [])
+        .map(tool => [tool.name, tool.output?.length ?? '', tool.isError ? '1' : '0'].join('\u0001'))
+        .join('\u0002')
+      return [turn.id, turn.thinking?.length ?? 0, turn.text?.length ?? 0, tools].join('\u0001')
+    })
+    .join('\u0003')
+}
+
 export interface AutoScrollEvaluation {
   autoScroll: boolean
   pausedByUserScroll: boolean
@@ -1346,5 +1393,14 @@ export function evaluateAutoScrollState(params: {
     autoScroll: params.currentAutoScroll,
     pausedByUserScroll: !params.currentAutoScroll,
   }
+}
+
+// How far to move the page so the live dock's bottom edge meets the viewport.
+// A dock already flush with the viewport stays put; subpixel rounding can
+// report a bottom a hair past innerHeight.
+export function dockRevealDelta(dockBottom: number, viewportHeight: number): number {
+  const overflow = dockBottom - viewportHeight
+  if (overflow <= 2) return 0
+  return overflow
 }
 

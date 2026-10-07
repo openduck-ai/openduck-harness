@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback, Suspense } from 'react'
+import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback, Suspense } from 'react'
 import type {
   HarnessRunResponse,
   HarnessActiveJob,
@@ -17,7 +17,9 @@ import {
   parseToolResults,
   type TrajectoryFilterType,
   type TrajectoryViewMode,
+  agentLogScrollKey,
   evaluateAutoScrollState,
+  dockRevealDelta,
 } from '../taskTrajectory.ts'
 import { isContinuableStatus } from '../taskContinuation.ts'
 import { MarkdownPreview } from './MarkdownPreview.tsx'
@@ -147,8 +149,17 @@ export function TaskTrajectoryViewer({
   const agentLogTranscriptRef = useRef<HTMLDivElement>(null)
   const isProgrammaticScrollRef = useRef(false)
   const programmaticScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const programmaticGenerationRef = useRef(0)
   const userExplicitlyDisabledRef = useRef(false)
+  const userPagedAwayRef = useRef(false)
+  const userScrollIntentRef = useRef(false)
+  const userScrollIntentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scrollbarDragRef = useRef(false)
+  const liveFollowKey = liveInspect ? `${inspectingJobId ?? ''}:${run.taskId}` : ''
+  const liveFollowKeyRef = useRef(liveFollowKey)
   const [autoScroll, setAutoScroll] = useState(true)
+  const autoScrollRef = useRef(true)
+  autoScrollRef.current = autoScroll
 
   const steps = useMemo(() => run.trajectory?.steps ?? [], [run.trajectory?.steps])
   const metrics = useMemo(() => calculateTrajectoryMetrics(run), [run])
@@ -157,6 +168,17 @@ export function TaskTrajectoryViewer({
     () => filterAgentLogTurns(agentLog, filterType, searchQuery),
     [agentLog, filterType, searchQuery],
   )
+  const logScrollKey = useMemo(() => agentLogScrollKey(filteredLogTurns), [filteredLogTurns])
+  const showAgentLog = viewMode === 'log' && (steps.length > 0 || filteredLogTurns.length > 0)
+  if (liveFollowKeyRef.current !== liveFollowKey) {
+    liveFollowKeyRef.current = liveFollowKey
+    if (liveInspect) {
+      userPagedAwayRef.current = false
+      userExplicitlyDisabledRef.current = false
+      autoScrollRef.current = true
+      if (!autoScroll) setAutoScroll(true)
+    }
+  }
 
   // Filtered steps
   const filteredSteps = useMemo(
@@ -187,41 +209,180 @@ export function TaskTrajectoryViewer({
     }
   }, [])
 
-  // Smoothly scroll the agent log container to the bottom
-  const scrollToLogBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+  const pinLogToBottom = useCallback((revealDock: boolean) => {
+    const el = agentLogTranscriptRef.current
+    if (!el) {
+      agentLogEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+      return
+    }
+    // An upward read suppresses the pin until the gesture settles.
+    if (userScrollIntentRef.current) return
+
     isProgrammaticScrollRef.current = true
+    const generation = ++programmaticGenerationRef.current
     if (programmaticScrollTimerRef.current) {
       clearTimeout(programmaticScrollTimerRef.current)
     }
-
-    if (agentLogTranscriptRef.current) {
-      agentLogTranscriptRef.current.scrollTo({
-        top: agentLogTranscriptRef.current.scrollHeight,
-        behavior,
-      })
-    } else {
-      agentLogEndRef.current?.scrollIntoView({ behavior, block: 'end' })
+    const pinInner = () => {
+      el.scrollTop = el.scrollHeight
     }
-
+    pinInner()
+    if (revealDock && !userPagedAwayRef.current) {
+      const panel = el.closest('.agent-log-panel')
+      const dock = panel?.querySelector('.agent-log-dock')
+      const target = dock instanceof HTMLElement ? dock : panel
+      if (target instanceof HTMLElement) {
+        const rect = target.getBoundingClientRect()
+        const delta = dockRevealDelta(rect.bottom, window.innerHeight)
+        if (delta > 0) {
+          const beforeY = window.scrollY
+          const beforeTop = rect.top
+          window.scrollBy(0, delta)
+          const next = target.getBoundingClientRect()
+          // A stuck panel does not move with the page. Undo a scroll that
+          // left the dock below the fold so later tokens do not walk the document.
+          if (
+            window.scrollY !== beforeY &&
+            Math.abs(next.top - beforeTop) < 1 &&
+            dockRevealDelta(next.bottom, window.innerHeight) > 0
+          ) {
+            window.scrollTo(0, beforeY)
+          }
+        }
+      }
+      pinInner()
+    }
     programmaticScrollTimerRef.current = setTimeout(() => {
-      isProgrammaticScrollRef.current = false
-    }, 600)
+      if (programmaticGenerationRef.current === generation) {
+        isProgrammaticScrollRef.current = false
+      }
+    }, 32)
   }, [])
 
-  // Auto-scroll when new steps or log turns arrive while live inspecting
-  useEffect(() => {
-    if (liveInspect && viewMode === 'log' && autoScroll) {
-      scrollToLogBottom('smooth')
+  const settleTranscriptFollow = useCallback(() => {
+    const node = agentLogTranscriptRef.current
+    if (!node) return
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight
+    const evaluation = evaluateAutoScrollState({
+      distanceFromBottom,
+      currentAutoScroll: autoScrollRef.current,
+      userExplicitlyDisabled: userExplicitlyDisabledRef.current,
+    })
+    if (evaluation.autoScroll && !autoScrollRef.current) {
+      userPagedAwayRef.current = false
     }
-  }, [liveInspect, viewMode, autoScroll, filteredLogTurns.length, steps.length, scrollToLogBottom])
+    if (evaluation.autoScroll !== autoScrollRef.current) {
+      autoScrollRef.current = evaluation.autoScroll
+      setAutoScroll(evaluation.autoScroll)
+    }
+    if (evaluation.autoScroll) pinLogToBottom(true)
+  }, [pinLogToBottom])
 
-  // Reset auto-scroll state when inspecting a new job or task
-  useEffect(() => {
-    if (liveInspect) {
-      userExplicitlyDisabledRef.current = false
-      setAutoScroll(true)
+  // The latest line lives at the bottom of the log panel. Keep that edge on
+  // screen while the run is live, including thinking text that grows in place.
+  useLayoutEffect(() => {
+    if (!liveInspect || viewMode !== 'log' || !autoScroll) return
+    const el = agentLogTranscriptRef.current
+    if (!el) return
+
+    const pin = () => {
+      if (!autoScrollRef.current) return
+      pinLogToBottom(true)
     }
+    pin()
+
+    const content = el.querySelector(':scope > .agent-transcript-content')
+    if (!content || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => pin())
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [liveInspect, viewMode, autoScroll, logScrollKey, pinLogToBottom])
+
+  useEffect(() => {
+    if (!liveInspect) return
+    let lastY = window.scrollY
+    const onWindowScroll = () => {
+      const nextY = window.scrollY
+      if (!isProgrammaticScrollRef.current && nextY < lastY - 48) {
+        userPagedAwayRef.current = true
+      }
+      lastY = nextY
+    }
+    window.addEventListener('scroll', onWindowScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onWindowScroll)
   }, [liveInspect, inspectingJobId, run.taskId])
+
+  useEffect(() => {
+    const el = agentLogTranscriptRef.current
+    if (!el || !showAgentLog) return
+
+    let accumUp = 0
+    const armGesture = () => {
+      userScrollIntentRef.current = true
+      if (userScrollIntentTimerRef.current) clearTimeout(userScrollIntentTimerRef.current)
+      userScrollIntentTimerRef.current = setTimeout(() => {
+        userScrollIntentRef.current = false
+        accumUp = 0
+        if (!scrollbarDragRef.current) settleTranscriptFollow()
+      }, 200)
+    }
+    const wheelPixels = (event: WheelEvent) => {
+      if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * 16
+      if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return event.deltaY * el.clientHeight
+      return event.deltaY
+    }
+    const onWheel = (event: WheelEvent) => {
+      const dy = wheelPixels(event)
+      if (dy < 0) {
+        accumUp += -dy
+        armGesture()
+        const distance = el.scrollHeight - el.scrollTop - el.clientHeight + accumUp
+        if (distance > 60 && autoScrollRef.current) {
+          autoScrollRef.current = false
+          setAutoScroll(false)
+        }
+        return
+      }
+      accumUp = 0
+      if (dy > 0 && !autoScrollRef.current) armGesture()
+    }
+    let touchStartY = 0
+    const onTouchStart = (event: TouchEvent) => {
+      touchStartY = event.touches[0]?.clientY ?? 0
+    }
+    const onTouchMove = (event: TouchEvent) => {
+      const y = event.touches[0]?.clientY ?? touchStartY
+      if (y > touchStartY + 4) armGesture()
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      const scrollbar = event.offsetX > el.clientWidth || event.offsetY > el.clientHeight
+      if (!scrollbar) return
+      scrollbarDragRef.current = true
+      userScrollIntentRef.current = true
+    }
+    const onPointerUp = () => {
+      if (!scrollbarDragRef.current) return
+      scrollbarDragRef.current = false
+      userScrollIntentRef.current = false
+      settleTranscriptFollow()
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchmove', onTouchMove, { passive: true })
+    el.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('pointercancel', onPointerUp)
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove', onTouchMove)
+      el.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('pointercancel', onPointerUp)
+      if (userScrollIntentTimerRef.current) clearTimeout(userScrollIntentTimerRef.current)
+    }
+  }, [showAgentLog, settleTranscriptFollow])
 
   // Detect user scroll in the log transcript container
   const handleLogScroll = useCallback(() => {
@@ -231,21 +392,27 @@ export function TaskTrajectoryViewer({
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
     const evaluation = evaluateAutoScrollState({
       distanceFromBottom,
-      currentAutoScroll: autoScroll,
+      currentAutoScroll: autoScrollRef.current,
       userExplicitlyDisabled: userExplicitlyDisabledRef.current,
     })
 
-    if (evaluation.autoScroll !== autoScroll) {
+    if (evaluation.autoScroll && !autoScrollRef.current) {
+      userPagedAwayRef.current = false
+    }
+    if (evaluation.autoScroll !== autoScrollRef.current) {
+      autoScrollRef.current = evaluation.autoScroll
       setAutoScroll(evaluation.autoScroll)
     }
-  }, [autoScroll])
+  }, [])
 
   // Floating resume button click handler
   const handleResumeAutoScroll = useCallback(() => {
     userExplicitlyDisabledRef.current = false
+    userPagedAwayRef.current = false
+    autoScrollRef.current = true
     setAutoScroll(true)
-    scrollToLogBottom('smooth')
-  }, [scrollToLogBottom])
+    pinLogToBottom(true)
+  }, [pinLogToBottom])
 
   // Scroll active pill into view in the scrubber rail
   useEffect(() => {
@@ -357,6 +524,7 @@ export function TaskTrajectoryViewer({
   const scrollToLogStep = (idx: number) => {
     setSelectedStepIdx(idx)
     userExplicitlyDisabledRef.current = false
+    autoScrollRef.current = false
     setAutoScroll(false)
     const stepNumber = steps[idx]?.stepIndex
     const card = document.querySelector(`[data-log-step="${stepNumber}"]`) as HTMLElement | null
@@ -1080,7 +1248,7 @@ export function TaskTrajectoryViewer({
       </div>
 
       {/* ================= EMPTY STATE ================= */}
-      {steps.length === 0 && (
+      {steps.length === 0 && !showAgentLog && (
         <div className="empty-trajectory-card">
           <p className="empty-text">
             {liveInspect
@@ -1090,7 +1258,7 @@ export function TaskTrajectoryViewer({
         </div>
       )}
 
-      {viewMode === 'log' && steps.length > 0 && (
+      {showAgentLog && (
         <AgentLogTranscript
           turns={filteredLogTurns}
           live={liveInspect}

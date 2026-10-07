@@ -764,6 +764,8 @@ export function ProjectHarnessTab({
             )
             return {
               ...prev,
+              partialThinking: null,
+              partialText: null,
               stepCount: existingSteps.length,
               toolCallsCount: toolCalls,
               durationMs: event.durationMs || prev.durationMs,
@@ -778,6 +780,8 @@ export function ProjectHarnessTab({
             prev
               ? {
                   ...prev,
+                  partialThinking: null,
+                  partialText: null,
                   status: event.status,
                   durationMs: event.durationMs,
                   finalAnswer: event.finalAnswer ?? prev.finalAnswer,

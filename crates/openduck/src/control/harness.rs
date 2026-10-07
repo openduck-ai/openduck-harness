@@ -16,7 +16,8 @@ use openduck_harness::eval::{
 };
 use openduck_harness::policy::adapters::EchoPolicy;
 use openduck_harness::policy::{
-    AgentAction, AgentPolicy, HarnessContextView, MessageRole, StepTelemetry,
+    AgentAction, AgentPolicy, HarnessContextView, MessageRole, PartialGeneration,
+    PartialThinkingObserver, StepTelemetry,
 };
 use openduck_harness::replay::{Cassette, ReplayPolicy};
 use openduck_harness::runtime::AgentHarness;
@@ -124,6 +125,7 @@ pub struct GooseAgentPolicy {
     system_prompt: String,
     secondary_provider: Option<Arc<dyn Provider>>,
     secondary_model_config: Option<ModelConfig>,
+    partial_observer: Option<PartialThinkingObserver>,
 }
 
 impl GooseAgentPolicy {
@@ -149,6 +151,7 @@ impl GooseAgentPolicy {
 
             secondary_provider: None,
             secondary_model_config: None,
+            partial_observer: None,
         }
     }
 
@@ -255,6 +258,86 @@ struct ProviderStepResult {
     usage: Option<openduck_providers::conversation::token_usage::ProviderUsage>,
 }
 
+fn partial_publish_interval() -> std::time::Duration {
+    if cfg!(test) {
+        std::time::Duration::ZERO
+    } else {
+        std::time::Duration::from_millis(250)
+    }
+}
+
+fn partial_generation_from_message(message: &Message) -> PartialGeneration {
+    let mut thinking = String::new();
+    let mut text = String::new();
+    for item in &message.content {
+        match item {
+            MessageContent::Thinking(block) => {
+                if !thinking.is_empty() && !block.thinking.is_empty() {
+                    thinking.push('\n');
+                }
+                thinking.push_str(&block.thinking);
+            }
+            MessageContent::Text(block) => {
+                if !text.is_empty() && !block.text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&block.text);
+            }
+            _ => {}
+        }
+    }
+    PartialGeneration { thinking, text }
+}
+
+async fn stream_provider_completion(
+    provider: &Arc<dyn Provider>,
+    model_config: &ModelConfig,
+    system_prompt: &str,
+    messages: &[Message],
+    tools: &[Tool],
+    on_partial: &PartialThinkingObserver,
+) -> Result<
+    (
+        Message,
+        openduck_providers::conversation::token_usage::ProviderUsage,
+    ),
+    openduck_providers::errors::ProviderError,
+> {
+    let retry_config = provider.retry_config();
+    openduck_providers::retry::retry_operation(&retry_config, || async {
+        on_partial(PartialGeneration::default());
+        let stream = provider
+            .stream(model_config, system_prompt, messages, tools)
+            .await?;
+        let interval = partial_publish_interval();
+        let mut last_signature = String::new();
+        let mut last_emit = std::time::Instant::now() - interval;
+        let (message, usage) = openduck_providers::base::collect_stream_with(stream, |message| {
+            let partial = partial_generation_from_message(message);
+            if partial.thinking.trim().is_empty() {
+                return;
+            }
+            let signature = format!("{}\u{1}{}", partial.thinking, partial.text);
+            if signature == last_signature {
+                return;
+            }
+            if !last_signature.is_empty() && last_emit.elapsed() < interval {
+                return;
+            }
+            last_signature = signature;
+            last_emit = std::time::Instant::now();
+            on_partial(partial);
+        })
+        .await?;
+        let final_partial = partial_generation_from_message(&message);
+        if !final_partial.thinking.trim().is_empty() {
+            on_partial(final_partial);
+        }
+        Ok((message, usage))
+    })
+    .await
+}
+
 async fn complete_provider_with_retry(
     provider: &Arc<dyn Provider>,
     model_config: &ModelConfig,
@@ -264,6 +347,7 @@ async fn complete_provider_with_retry(
     policy_name: &str,
     is_secondary: bool,
     recorded_calls: &mut Vec<openduck_harness::telemetry::ProviderCallRecord>,
+    on_partial: Option<PartialThinkingObserver>,
 ) -> Result<ProviderStepResult> {
     let mut working_messages = messages.to_vec();
     let mut empty_retries: u32 = 0;
@@ -273,9 +357,24 @@ async fn complete_provider_with_retry(
 
     loop {
         let call_start = std::time::Instant::now();
-        let res = provider
-            .complete(model_config, system_prompt, &working_messages, tools)
-            .await;
+        let res = match &on_partial {
+            Some(observer) => {
+                stream_provider_completion(
+                    provider,
+                    model_config,
+                    system_prompt,
+                    &working_messages,
+                    tools,
+                    observer,
+                )
+                .await
+            }
+            None => {
+                provider
+                    .complete(model_config, system_prompt, &working_messages, tools)
+                    .await
+            }
+        };
         let latency_ms = call_start.elapsed().as_millis() as u64;
 
         let (reply, usage) = match res {
@@ -300,9 +399,24 @@ async fn complete_provider_with_retry(
                 );
                 let pruned = prune_messages_fallback(&working_messages);
                 let fallback_start = std::time::Instant::now();
-                let fallback_res = provider
-                    .complete(model_config, system_prompt, &pruned, tools)
-                    .await;
+                let fallback_res = match &on_partial {
+                    Some(observer) => {
+                        stream_provider_completion(
+                            provider,
+                            model_config,
+                            system_prompt,
+                            &pruned,
+                            tools,
+                            observer,
+                        )
+                        .await
+                    }
+                    None => {
+                        provider
+                            .complete(model_config, system_prompt, &pruned, tools)
+                            .await
+                    }
+                };
                 let fallback_latency = fallback_start.elapsed().as_millis() as u64;
                 match fallback_res {
                     Ok(fb_res) => fb_res,
@@ -464,6 +578,10 @@ impl AgentPolicy for GooseAgentPolicy {
         &self.name
     }
 
+    fn set_partial_observer(&mut self, observer: Option<PartialThinkingObserver>) {
+        self.partial_observer = observer;
+    }
+
     async fn step(
         &mut self,
         context: &HarnessContextView,
@@ -572,6 +690,7 @@ impl AgentPolicy for GooseAgentPolicy {
                 &self.name,
                 false,
                 &mut recorded_calls,
+                self.partial_observer.clone(),
             ),
         )
         .await;
@@ -612,6 +731,7 @@ impl AgentPolicy for GooseAgentPolicy {
                             &self.name,
                             true,
                             &mut recorded_calls,
+                            self.partial_observer.clone(),
                         ),
                     )
                     .await;
@@ -900,6 +1020,12 @@ pub struct HarnessRunResponseDto {
         alias = "providerStats"
     )]
     pub provider_stats: Option<openduck_harness::telemetry::TaskProviderStats>,
+    /// Thinking text from the model call that has not been recorded as a step yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_thinking: Option<String>,
+    /// Assistant prose from that same in-progress call. Present only with partial thinking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1252,7 +1378,44 @@ fn empty_live_snapshot(task_id: &str) -> HarnessRunResponseDto {
         continuation: None,
         project_slug: None,
         provider_stats: None,
+        partial_thinking: None,
+        partial_text: None,
     }
+}
+
+fn publish_live_snapshot(
+    job_id: &str,
+    task_id: &str,
+    policy_name: &str,
+    started_at: DateTime<Utc>,
+    steps: &[TrajectoryStep],
+    partial_thinking: Option<String>,
+    partial_text: Option<String>,
+    broadcast_step: bool,
+) {
+    let mut snapshot = live_snapshot_from_steps(job_id, task_id, policy_name, started_at, steps);
+    let thinking = partial_thinking.filter(|text| !text.trim().is_empty());
+    snapshot.partial_text = if thinking.is_some() {
+        partial_text.filter(|text| !text.trim().is_empty())
+    } else {
+        None
+    };
+    snapshot.partial_thinking = thinking;
+    upsert_live_snapshot(job_id, snapshot.clone());
+    if broadcast_step {
+        if let Some(last_step) = steps.last() {
+            broadcast_job_live_event(HarnessJobLiveEvent::StepUpdate {
+                job_id: job_id.to_string(),
+                step_index: steps.len().saturating_sub(1),
+                step: last_step.clone(),
+                duration_ms: snapshot.duration_ms,
+            });
+        }
+    }
+    broadcast_job_live_event(HarnessJobLiveEvent::Snapshot {
+        job_id: job_id.to_string(),
+        snapshot: Box::new(snapshot),
+    });
 }
 
 pub fn upsert_live_snapshot(job_id: &str, snapshot: HarnessRunResponseDto) {
@@ -1317,6 +1480,8 @@ fn live_snapshot_from_steps(
         )),
         project_slug: None,
         provider_stats: Some(provider_stats),
+        partial_thinking: None,
+        partial_text: None,
     }
 }
 
@@ -1333,22 +1498,46 @@ where
     let task_id = task_id.to_string();
     let policy_name = harness.policy_name().to_string();
     let started_at = Utc::now();
-    harness.with_step_observer(Arc::new(move |steps| {
-        let snapshot = live_snapshot_from_steps(&job_id, &task_id, &policy_name, started_at, steps);
-        upsert_live_snapshot(&job_id, snapshot.clone());
-        if let Some(last_step) = steps.last() {
-            broadcast_job_live_event(HarnessJobLiveEvent::StepUpdate {
-                job_id: job_id.clone(),
-                step_index: steps.len().saturating_sub(1),
-                step: last_step.clone(),
-                duration_ms: snapshot.duration_ms,
-            });
+    let completed_steps = Arc::new(std::sync::Mutex::new(Vec::<TrajectoryStep>::new()));
+    let steps_for_observer = completed_steps.clone();
+    let job_for_steps = job_id.clone();
+    let task_for_steps = task_id.clone();
+    let policy_for_steps = policy_name.clone();
+    let mut harness = harness.with_step_observer(Arc::new(move |steps| {
+        if let Ok(mut guard) = steps_for_observer.lock() {
+            *guard = steps.to_vec();
         }
-        broadcast_job_live_event(HarnessJobLiveEvent::Snapshot {
-            job_id: job_id.clone(),
-            snapshot: Box::new(snapshot),
-        });
-    }))
+        publish_live_snapshot(
+            &job_for_steps,
+            &task_for_steps,
+            &policy_for_steps,
+            started_at,
+            steps,
+            None,
+            None,
+            true,
+        );
+    }));
+    let job_for_partial = job_id;
+    let task_for_partial = task_id;
+    let policy_for_partial = policy_name;
+    harness.set_partial_observer(Some(Arc::new(move |partial| {
+        let steps = completed_steps
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        publish_live_snapshot(
+            &job_for_partial,
+            &task_for_partial,
+            &policy_for_partial,
+            started_at,
+            &steps,
+            Some(partial.thinking),
+            Some(partial.text),
+            false,
+        );
+    })));
+    harness
 }
 
 pub fn to_run_dto(
@@ -1377,6 +1566,8 @@ pub fn to_run_dto(
         continuation: res.continuation,
         project_slug: None,
         provider_stats,
+        partial_thinking: None,
+        partial_text: None,
     }
 }
 
@@ -1704,6 +1895,8 @@ pub fn failed_run_dto(
         s.final_answer = Some(error.to_string());
         s.trajectory.completed_at = Some(Utc::now());
         s.trajectory.success = false;
+        s.partial_thinking = None;
+        s.partial_text = None;
         s.continuation = Some(openduck_harness::checkpoint_from_trajectory(
             task_id,
             &s.trajectory.session_id,
@@ -1738,6 +1931,8 @@ pub fn failed_run_dto(
             continuation: None,
             project_slug: None,
             provider_stats: None,
+            partial_thinking: None,
+            partial_text: None,
         }
     }
 }
@@ -1768,6 +1963,8 @@ pub fn skipped_run_dto(task_id: &str, reason: &str) -> HarnessRunResponseDto {
         continuation: None,
         project_slug: None,
         provider_stats: None,
+        partial_thinking: None,
+        partial_text: None,
     }
 }
 
@@ -1781,6 +1978,8 @@ pub fn cancelled_run_dto(
         s.final_answer = Some(reason.to_string());
         s.trajectory.completed_at = Some(Utc::now());
         s.trajectory.success = false;
+        s.partial_thinking = None;
+        s.partial_text = None;
         s.continuation = Some(openduck_harness::checkpoint_from_trajectory(
             task_id,
             &s.trajectory.session_id,
@@ -1821,6 +2020,8 @@ pub fn cancelled_run_dto(
             )),
             project_slug: None,
             provider_stats: None,
+            partial_thinking: None,
+            partial_text: None,
         }
     }
 }
@@ -3022,6 +3223,61 @@ mod tests {
         assert!(err.to_string().contains("only thinking"));
     }
 
+    #[tokio::test]
+    async fn partial_observer_receives_thinking_before_the_answer() {
+        use openduck_providers::base::MessageStream;
+        use openduck_providers::errors::ProviderError;
+        use openduck_providers::model::ModelConfig;
+
+        struct ThinkingThenText;
+        #[async_trait]
+        impl Provider for ThinkingThenText {
+            fn get_name(&self) -> &str {
+                "thinking-then-text"
+            }
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[rmcp::model::Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                let stream = futures::stream::iter(vec![
+                    Ok((
+                        Some(Message::assistant().with_thinking("Clippy first", "")),
+                        None,
+                    )),
+                    Ok((Some(Message::assistant().with_text("Lint is clean.")), None)),
+                ]);
+                Ok(Box::pin(stream))
+            }
+        }
+
+        let mut policy = GooseAgentPolicy::new(
+            "partial-policy",
+            Arc::new(ThinkingThenText),
+            ModelConfig::new("partial-model"),
+        );
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<PartialGeneration>::new()));
+        let record = seen.clone();
+        policy.set_partial_observer(Some(Arc::new(move |partial| {
+            record.lock().expect("partial log").push(partial);
+        })));
+
+        let mut context = HarnessContextView::new("partial-session", std::path::PathBuf::from("."));
+        context.messages = vec![openduck_harness::policy::HarnessMessage::user("Fix clippy")];
+        let (action, _) = policy.step_detailed(&context, &[]).await.unwrap();
+        assert_eq!(action, AgentAction::FinalAnswer("Lint is clean.".into()));
+
+        let updates = seen.lock().expect("partial log");
+        assert!(updates.iter().any(|partial| {
+            partial.thinking.contains("Clippy first") && partial.text.trim().is_empty()
+        }));
+        let last = updates.last().expect("final partial");
+        assert!(last.thinking.contains("Clippy first"));
+        assert!(last.text.contains("Lint is clean."));
+    }
+
     #[test]
     fn action_from_empty_text_is_error() {
         let reply = Message::assistant().with_text("");
@@ -3055,6 +3311,8 @@ mod tests {
             continuation: None,
             project_slug: None,
             provider_stats: None,
+            partial_thinking: None,
+            partial_text: None,
         }
     }
 
