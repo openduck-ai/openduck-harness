@@ -7,6 +7,8 @@ use serde_yaml::Mapping;
 const EXTENSIONS_CONFIG_KEY: &str = "extensions";
 const PROVIDERS_CONFIG_KEY: &str = "providers";
 const ACTIVE_PROVIDER_KEY: &str = "active_provider";
+const SECONDARY_PROVIDER_KEY: &str = "secondary_provider";
+const PROVIDER_ROLES_MIGRATED_KEY: &str = "provider_roles_migrated";
 
 pub fn run_migrations(config: &mut Mapping) -> bool {
     let mut changed = false;
@@ -181,102 +183,252 @@ fn cleanup_legacy_provider_keys(config: &mut Mapping) -> bool {
 ///     configured: true
 /// ```
 ///
+fn get_legacy_mapping_str(cfg: &Mapping, k1: &str, k2: &str) -> Option<String> {
+    cfg.get(k1)
+        .or_else(|| cfg.get(k2))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Migrate flat provider keys to the structured `providers:` block and migrate roles.
 fn migrate_provider_config(config: &mut Mapping) -> bool {
     let providers_key = serde_yaml::Value::String(PROVIDERS_CONFIG_KEY.to_string());
+    let mut changed = false;
 
-    // If providers block already exists, backfill active_provider from the
-    // legacy flat key when missing, then clean up leftover flat keys.
     if config.contains_key(&providers_key) {
         let ap_key = serde_yaml::Value::String(ACTIVE_PROVIDER_KEY.to_string());
         if !config.contains_key(&ap_key) {
             if let Some(legacy) = config
-                .get(serde_yaml::Value::String("GOOSE_PROVIDER".to_string()))
+                .get("GOOSE_PROVIDER")
+                .or_else(|| config.get("OPENDUCK_PROVIDER"))
                 .and_then(|v| v.as_str())
             {
-                config.insert(ap_key, serde_yaml::Value::String(legacy.to_string()));
+                let trimmed = legacy.trim();
+                if !trimmed.is_empty() {
+                    config.insert(ap_key, serde_yaml::Value::String(trimmed.to_string()));
+                    changed = true;
+                }
             }
         }
-        return cleanup_legacy_provider_keys(config);
-    }
+    } else {
+        // Read the old flat keys, if present.
+        let active_provider = config
+            .get("GOOSE_PROVIDER")
+            .or_else(|| config.get("OPENDUCK_PROVIDER"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
-    // Read the old flat keys, if present.
-    let active_provider = config
-        .get(serde_yaml::Value::String("GOOSE_PROVIDER".to_string()))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        let active_model = config
+            .get("GOOSE_MODEL")
+            .or_else(|| config.get("OPENDUCK_MODEL"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
 
-    let active_model = config
-        .get(serde_yaml::Value::String("GOOSE_MODEL".to_string()))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_default();
-
-    // Scan for `*_configured` keys to discover all previously-used providers.
-    let configured_suffix = "_configured";
-    let mut discovered_providers: Vec<String> = config
-        .keys()
-        .filter_map(|k| {
-            k.as_str().and_then(|s| {
-                if s.ends_with(configured_suffix) {
-                    Some(s.trim_end_matches(configured_suffix).to_string())
-                } else {
-                    None
-                }
+        // Scan for `*_configured` keys to discover all previously-used providers.
+        let configured_suffix = "_configured";
+        let mut discovered_providers: Vec<String> = config
+            .keys()
+            .filter_map(|k| {
+                k.as_str().and_then(|s| {
+                    if s.ends_with(configured_suffix) {
+                        Some(s.trim_end_matches(configured_suffix).to_string())
+                    } else {
+                        None
+                    }
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    // Ensure the active provider is in the list even if no `*_configured`
-    // marker exists for it yet.
-    if let Some(ref ap) = active_provider {
-        if !discovered_providers.contains(ap) {
-            discovered_providers.push(ap.clone());
+        // Ensure the active provider is in the list even if no `*_configured`
+        // marker exists for it yet.
+        if let Some(ref ap) = active_provider {
+            if !discovered_providers.contains(ap) {
+                discovered_providers.push(ap.clone());
+            }
         }
-    }
 
-    // If there is nothing to migrate, bail out.
-    if discovered_providers.is_empty() && active_provider.is_none() {
-        return false;
-    }
+        let has_legacy_roles = get_legacy_mapping_str(
+            config,
+            "GOOSE_SECONDARY_PROVIDER",
+            "OPENDUCK_SECONDARY_PROVIDER",
+        )
+        .is_some()
+            || get_legacy_mapping_str(config, "GOOSE_FAST_MODEL", "OPENDUCK_FAST_MODEL").is_some();
 
-    // Build the providers mapping.
-    let mut providers_map = Mapping::new();
-    for name in &discovered_providers {
-        let is_active = active_provider.as_deref() == Some(name.as_str());
-        let model = if is_active {
-            active_model.clone()
-        } else {
-            String::new()
-        };
-        let entry = ProviderEntry {
-            enabled: true,
-            model,
-            configured: true,
-        };
-        if let Ok(value) = serde_yaml::to_value(&entry) {
-            providers_map.insert(serde_yaml::Value::String(name.clone()), value);
+        // If there is nothing to migrate, bail out.
+        if discovered_providers.is_empty() && active_provider.is_none() && !has_legacy_roles {
+            return false;
         }
-    }
 
-    config.insert(providers_key, serde_yaml::Value::Mapping(providers_map));
+        // Build the providers mapping.
+        let mut providers_map = Mapping::new();
+        for name in &discovered_providers {
+            let is_active = active_provider.as_deref() == Some(name.as_str());
+            let model = if is_active {
+                active_model.clone()
+            } else {
+                String::new()
+            };
+            let entry = ProviderEntry {
+                enabled: true,
+                model,
+                configured: true,
+                ..Default::default()
+            };
+            if let Ok(value) = serde_yaml::to_value(&entry) {
+                providers_map.insert(serde_yaml::Value::String(name.clone()), value);
+            }
+        }
 
-    // Write `active_provider` top-level key.
-    if let Some(ref ap) = active_provider {
         config.insert(
-            serde_yaml::Value::String(ACTIVE_PROVIDER_KEY.to_string()),
-            serde_yaml::Value::String(ap.clone()),
+            providers_key.clone(),
+            serde_yaml::Value::Mapping(providers_map),
         );
+        changed = true;
+
+        // Write `active_provider` top-level key.
+        if let Some(ref ap) = active_provider {
+            config.insert(
+                serde_yaml::Value::String(ACTIVE_PROVIDER_KEY.to_string()),
+                serde_yaml::Value::String(ap.clone()),
+            );
+        }
+
+        // Remove old flat keys.
+        config.shift_remove("GOOSE_PROVIDER");
+        config.shift_remove("OPENDUCK_PROVIDER");
+        config.shift_remove("GOOSE_MODEL");
+        config.shift_remove("OPENDUCK_MODEL");
+        for name in &discovered_providers {
+            let marker_key = format!("{}{}", name, configured_suffix);
+            config.shift_remove(marker_key.as_str());
+        }
     }
 
-    // Remove old flat keys.
-    config.shift_remove(serde_yaml::Value::String("GOOSE_PROVIDER".to_string()));
-    config.shift_remove(serde_yaml::Value::String("GOOSE_MODEL".to_string()));
-    for name in &discovered_providers {
-        let marker_key = serde_yaml::Value::String(format!("{}{}", name, configured_suffix));
-        config.shift_remove(&marker_key);
+    // Role migration: runs only when provider_roles_migrated is not already true.
+    let roles_migrated_key = serde_yaml::Value::String(PROVIDER_ROLES_MIGRATED_KEY.to_string());
+    let already_migrated = config
+        .get(PROVIDER_ROLES_MIGRATED_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !already_migrated {
+        let active_provider = config
+            .get(ACTIVE_PROVIDER_KEY)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let sec_key = serde_yaml::Value::String(SECONDARY_PROVIDER_KEY.to_string());
+        let mut secondary_written = false;
+        let mut secondary_name_opt = None;
+
+        // Step 1: If secondary_provider is absent, read non-blank legacy secondary provider.
+        if !config.contains_key(&sec_key) {
+            if let Some(sec_val) = get_legacy_mapping_str(
+                config,
+                "GOOSE_SECONDARY_PROVIDER",
+                "OPENDUCK_SECONDARY_PROVIDER",
+            ) {
+                if active_provider.as_deref() == Some(&sec_val) {
+                    tracing::warn!(
+                        provider = ?sec_val,
+                        "Legacy secondary provider equals active provider; skipping secondary provider migration"
+                    );
+                } else {
+                    config.insert(sec_key, serde_yaml::Value::String(sec_val.clone()));
+                    secondary_written = true;
+                    secondary_name_opt = Some(sec_val);
+                }
+            }
+        }
+
+        // Step 2 & 3: Ensure copied name has an entry, and migrate secondary model if entry model is empty.
+        if secondary_written {
+            if let Some(sec_name) = secondary_name_opt {
+                let sec_model_opt = get_legacy_mapping_str(
+                    config,
+                    "GOOSE_SECONDARY_MODEL",
+                    "OPENDUCK_SECONDARY_MODEL",
+                );
+                if let Some(serde_yaml::Value::Mapping(ref mut p_map)) =
+                    config.get_mut(&providers_key)
+                {
+                    let entry_key = serde_yaml::Value::String(sec_name.clone());
+                    let mut entry: ProviderEntry = p_map
+                        .get(&entry_key)
+                        .and_then(|v| serde_yaml::from_value(v.clone()).ok())
+                        .unwrap_or_else(|| ProviderEntry {
+                            enabled: true,
+                            configured: true,
+                            model: String::new(),
+                            ..Default::default()
+                        });
+
+                    if let Some(sec_model) = sec_model_opt {
+                        if entry.model.trim().is_empty() {
+                            entry.model = sec_model;
+                        } else if entry.model.trim() != sec_model {
+                            tracing::warn!(
+                                provider = ?sec_name,
+                                entry_model = ?entry.model,
+                                legacy_secondary_model = ?sec_model,
+                                "Secondary provider model conflict; keeping entry model"
+                            );
+                        }
+                    }
+
+                    entry.normalize();
+                    if let Ok(val) = serde_yaml::to_value(&entry) {
+                        p_map.insert(entry_key, val);
+                    }
+                }
+            }
+        }
+
+        // Step 4: If active provider entry exists and fast_model is absent/blank, copy legacy fast model.
+        if let Some(ref ap_name) = active_provider {
+            let fast_model_opt =
+                get_legacy_mapping_str(config, "GOOSE_FAST_MODEL", "OPENDUCK_FAST_MODEL");
+            if let Some(fast_model_val) = fast_model_opt {
+                if let Some(serde_yaml::Value::Mapping(ref mut p_map)) =
+                    config.get_mut(&providers_key)
+                {
+                    let entry_key = serde_yaml::Value::String(ap_name.clone());
+                    if let Some(raw_entry) = p_map.get(&entry_key) {
+                        if let Ok(mut entry) =
+                            serde_yaml::from_value::<ProviderEntry>(raw_entry.clone())
+                        {
+                            let needs_fast_model = entry
+                                .fast_model
+                                .as_ref()
+                                .map(|s| s.trim().is_empty())
+                                .unwrap_or(true);
+                            if needs_fast_model {
+                                entry.fast_model = Some(fast_model_val);
+                                entry.normalize();
+                                if let Ok(val) = serde_yaml::to_value(&entry) {
+                                    p_map.insert(entry_key, val);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 5: Set provider_roles_migrated to true.
+        config.insert(roles_migrated_key, serde_yaml::Value::Bool(true));
+        changed = true;
     }
 
-    true
+    // Step 6: cleanup_legacy_provider_keys removes GOOSE_PROVIDER, GOOSE_MODEL, and *_configured only.
+    changed |= cleanup_legacy_provider_keys(config);
+
+    changed
 }
 
 #[cfg(test)]
@@ -569,6 +721,7 @@ mod tests {
             enabled: true,
             model: "current".to_string(),
             configured: true,
+            ..Default::default()
         }) {
             providers_map.insert(serde_yaml::Value::String("claude-acp".to_string()), value);
         }
@@ -609,5 +762,446 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("lmstudio")
         );
+    }
+
+    #[test]
+    fn test_migrate_fast_model_onto_active_provider_when_empty() {
+        let mut config = Mapping::new();
+        config.insert(
+            serde_yaml::Value::String("GOOSE_PROVIDER".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_FAST_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o-mini".to_string()),
+        );
+        let changed = migrate_provider_config(&mut config);
+        assert!(changed);
+        let providers = config.get("providers").unwrap().as_mapping().unwrap();
+        let openai: ProviderEntry =
+            serde_yaml::from_value(providers.get("openai").unwrap().clone()).unwrap();
+        assert_eq!(openai.fast_model, Some("gpt-4o-mini".to_string()));
+        assert_eq!(
+            config
+                .get("provider_roles_migrated")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_migrate_fast_model_does_not_overwrite_existing() {
+        let mut config = Mapping::new();
+        let mut providers_map = Mapping::new();
+        providers_map.insert(
+            serde_yaml::Value::String("openai".to_string()),
+            serde_yaml::to_value(&ProviderEntry {
+                enabled: true,
+                model: "gpt-4o".to_string(),
+                configured: true,
+                fast_model: Some("existing-fast".to_string()),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        config.insert(
+            serde_yaml::Value::String("providers".to_string()),
+            serde_yaml::Value::Mapping(providers_map),
+        );
+        config.insert(
+            serde_yaml::Value::String("active_provider".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_FAST_MODEL".to_string()),
+            serde_yaml::Value::String("legacy-fast".to_string()),
+        );
+
+        migrate_provider_config(&mut config);
+        let providers = config.get("providers").unwrap().as_mapping().unwrap();
+        let openai: ProviderEntry =
+            serde_yaml::from_value(providers.get("openai").unwrap().clone()).unwrap();
+        assert_eq!(openai.fast_model, Some("existing-fast".to_string()));
+    }
+
+    #[test]
+    fn test_migrate_secondary_provider_key() {
+        let mut config = Mapping::new();
+        config.insert(
+            serde_yaml::Value::String("GOOSE_PROVIDER".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_PROVIDER".to_string()),
+            serde_yaml::Value::String("anthropic".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_MODEL".to_string()),
+            serde_yaml::Value::String("claude-sonnet".to_string()),
+        );
+
+        migrate_provider_config(&mut config);
+        assert_eq!(
+            config.get("secondary_provider").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
+        let providers = config.get("providers").unwrap().as_mapping().unwrap();
+        let anthropic: ProviderEntry =
+            serde_yaml::from_value(providers.get("anthropic").unwrap().clone()).unwrap();
+        assert_eq!(anthropic.model, "claude-sonnet");
+        assert!(anthropic.enabled);
+        assert!(anthropic.configured);
+    }
+
+    #[test]
+    fn test_migrate_secondary_equal_to_active_is_not_copied() {
+        let mut config = Mapping::new();
+        config.insert(
+            serde_yaml::Value::String("GOOSE_PROVIDER".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_PROVIDER".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o-mini".to_string()),
+        );
+
+        migrate_provider_config(&mut config);
+        assert!(!config.contains_key("secondary_provider"));
+        let providers = config.get("providers").unwrap().as_mapping().unwrap();
+        let openai: ProviderEntry =
+            serde_yaml::from_value(providers.get("openai").unwrap().clone()).unwrap();
+        assert_eq!(openai.model, "gpt-4o");
+        assert_eq!(
+            config
+                .get("provider_roles_migrated")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_migrate_secondary_model_fills_empty_entry_model() {
+        let mut config = Mapping::new();
+        let mut providers_map = Mapping::new();
+        providers_map.insert(
+            serde_yaml::Value::String("anthropic".to_string()),
+            serde_yaml::to_value(&ProviderEntry {
+                enabled: true,
+                model: "".to_string(),
+                configured: true,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        config.insert(
+            serde_yaml::Value::String("providers".to_string()),
+            serde_yaml::Value::Mapping(providers_map),
+        );
+        config.insert(
+            serde_yaml::Value::String("active_provider".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_PROVIDER".to_string()),
+            serde_yaml::Value::String("anthropic".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_MODEL".to_string()),
+            serde_yaml::Value::String("claude-sonnet".to_string()),
+        );
+
+        migrate_provider_config(&mut config);
+        let providers = config.get("providers").unwrap().as_mapping().unwrap();
+        let anthropic: ProviderEntry =
+            serde_yaml::from_value(providers.get("anthropic").unwrap().clone()).unwrap();
+        assert_eq!(anthropic.model, "claude-sonnet");
+    }
+
+    #[test]
+    fn test_migrate_secondary_model_keeps_entry_model_on_conflict() {
+        let mut config = Mapping::new();
+        let mut providers_map = Mapping::new();
+        providers_map.insert(
+            serde_yaml::Value::String("anthropic".to_string()),
+            serde_yaml::to_value(&ProviderEntry {
+                enabled: true,
+                model: "claude-opus".to_string(),
+                configured: true,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        config.insert(
+            serde_yaml::Value::String("providers".to_string()),
+            serde_yaml::Value::Mapping(providers_map),
+        );
+        config.insert(
+            serde_yaml::Value::String("active_provider".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_PROVIDER".to_string()),
+            serde_yaml::Value::String("anthropic".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_MODEL".to_string()),
+            serde_yaml::Value::String("claude-sonnet".to_string()),
+        );
+
+        migrate_provider_config(&mut config);
+        let providers = config.get("providers").unwrap().as_mapping().unwrap();
+        let anthropic: ProviderEntry =
+            serde_yaml::from_value(providers.get("anthropic").unwrap().clone()).unwrap();
+        assert_eq!(anthropic.model, "claude-opus");
+        assert_eq!(anthropic.secondary_model, None);
+    }
+
+    #[test]
+    fn test_migrate_does_not_copy_secondary_model_key_into_entry_secondary_model() {
+        let mut config = Mapping::new();
+        config.insert(
+            serde_yaml::Value::String("GOOSE_PROVIDER".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_PROVIDER".to_string()),
+            serde_yaml::Value::String("anthropic".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_MODEL".to_string()),
+            serde_yaml::Value::String("claude-sonnet".to_string()),
+        );
+
+        migrate_provider_config(&mut config);
+        let providers = config.get("providers").unwrap().as_mapping().unwrap();
+        let anthropic: ProviderEntry =
+            serde_yaml::from_value(providers.get("anthropic").unwrap().clone()).unwrap();
+        assert_eq!(anthropic.secondary_model, None);
+    }
+
+    #[test]
+    fn test_migrate_legacy_fast_and_secondary_keys_remain() {
+        let mut config = Mapping::new();
+        config.insert(
+            serde_yaml::Value::String("GOOSE_PROVIDER".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_FAST_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o-mini".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_PROVIDER".to_string()),
+            serde_yaml::Value::String("anthropic".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_MODEL".to_string()),
+            serde_yaml::Value::String("claude-sonnet".to_string()),
+        );
+
+        migrate_provider_config(&mut config);
+        assert!(config.contains_key("GOOSE_FAST_MODEL"));
+        assert!(config.contains_key("GOOSE_SECONDARY_PROVIDER"));
+        assert!(config.contains_key("GOOSE_SECONDARY_MODEL"));
+        assert!(!config.contains_key("GOOSE_PROVIDER"));
+        assert!(!config.contains_key("GOOSE_MODEL"));
+    }
+
+    #[test]
+    fn test_migrate_provider_model_roles_idempotent() {
+        let mut config = Mapping::new();
+        config.insert(
+            serde_yaml::Value::String("GOOSE_PROVIDER".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_FAST_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o-mini".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_PROVIDER".to_string()),
+            serde_yaml::Value::String("anthropic".to_string()),
+        );
+
+        let changed1 = migrate_provider_config(&mut config);
+        assert!(changed1);
+        let changed2 = migrate_provider_config(&mut config);
+        assert!(!changed2);
+    }
+
+    #[test]
+    fn test_migrate_runs_when_providers_map_already_exists() {
+        let mut config = Mapping::new();
+        let mut providers_map = Mapping::new();
+        providers_map.insert(
+            serde_yaml::Value::String("openai".to_string()),
+            serde_yaml::to_value(&ProviderEntry {
+                enabled: true,
+                model: "gpt-4o".to_string(),
+                configured: true,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        config.insert(
+            serde_yaml::Value::String("providers".to_string()),
+            serde_yaml::Value::Mapping(providers_map),
+        );
+        config.insert(
+            serde_yaml::Value::String("active_provider".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_FAST_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o-mini".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_PROVIDER".to_string()),
+            serde_yaml::Value::String("anthropic".to_string()),
+        );
+
+        let changed = migrate_provider_config(&mut config);
+        assert!(changed);
+        let providers = config.get("providers").unwrap().as_mapping().unwrap();
+        let openai: ProviderEntry =
+            serde_yaml::from_value(providers.get("openai").unwrap().clone()).unwrap();
+        assert_eq!(openai.fast_model, Some("gpt-4o-mini".to_string()));
+        assert_eq!(
+            config.get("secondary_provider").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
+    }
+
+    #[test]
+    fn test_second_migrate_does_not_restore_cleared_fast_model() {
+        let mut config = Mapping::new();
+        config.insert(
+            serde_yaml::Value::String("GOOSE_PROVIDER".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_FAST_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o-mini".to_string()),
+        );
+
+        migrate_provider_config(&mut config);
+        // Clear fast model on the entry
+        {
+            let providers_val = config.get_mut("providers").unwrap();
+            let p_map = providers_val.as_mapping_mut().unwrap();
+            let mut openai: ProviderEntry =
+                serde_yaml::from_value(p_map.get("openai").unwrap().clone()).unwrap();
+            openai.fast_model = None;
+            p_map.insert(
+                serde_yaml::Value::String("openai".to_string()),
+                serde_yaml::to_value(&openai).unwrap(),
+            );
+        }
+
+        // Run migration again; because provider_roles_migrated is true, it does not restore fast_model
+        migrate_provider_config(&mut config);
+        let providers = config.get("providers").unwrap().as_mapping().unwrap();
+        let openai: ProviderEntry =
+            serde_yaml::from_value(providers.get("openai").unwrap().clone()).unwrap();
+        assert_eq!(openai.fast_model, None);
+    }
+
+    #[test]
+    fn test_second_migrate_does_not_restore_cleared_secondary_provider() {
+        let mut config = Mapping::new();
+        config.insert(
+            serde_yaml::Value::String("GOOSE_PROVIDER".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_PROVIDER".to_string()),
+            serde_yaml::Value::String("anthropic".to_string()),
+        );
+
+        migrate_provider_config(&mut config);
+        // Clear secondary_provider
+        config.shift_remove("secondary_provider");
+
+        // Run migration again; because provider_roles_migrated is true, it does not recreate secondary_provider
+        migrate_provider_config(&mut config);
+        assert!(!config.contains_key("secondary_provider"));
+    }
+
+    #[test]
+    fn test_second_migrate_does_not_restore_cleared_secondary_entry_model() {
+        let mut config = Mapping::new();
+        config.insert(
+            serde_yaml::Value::String("GOOSE_PROVIDER".to_string()),
+            serde_yaml::Value::String("openai".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_MODEL".to_string()),
+            serde_yaml::Value::String("gpt-4o".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_PROVIDER".to_string()),
+            serde_yaml::Value::String("anthropic".to_string()),
+        );
+        config.insert(
+            serde_yaml::Value::String("GOOSE_SECONDARY_MODEL".to_string()),
+            serde_yaml::Value::String("claude-sonnet".to_string()),
+        );
+
+        migrate_provider_config(&mut config);
+        // Clear anthropic model
+        {
+            let providers_val = config.get_mut("providers").unwrap();
+            let p_map = providers_val.as_mapping_mut().unwrap();
+            let mut anthropic: ProviderEntry =
+                serde_yaml::from_value(p_map.get("anthropic").unwrap().clone()).unwrap();
+            anthropic.model = String::new();
+            p_map.insert(
+                serde_yaml::Value::String("anthropic".to_string()),
+                serde_yaml::to_value(&anthropic).unwrap(),
+            );
+        }
+
+        // Run migration again; because provider_roles_migrated is true, it does not restore model
+        migrate_provider_config(&mut config);
+        let providers = config.get("providers").unwrap().as_mapping().unwrap();
+        let anthropic: ProviderEntry =
+            serde_yaml::from_value(providers.get("anthropic").unwrap().clone()).unwrap();
+        assert_eq!(anthropic.model, "");
     }
 }

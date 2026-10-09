@@ -44,6 +44,8 @@ import type {
   ProjectTaskEstimateResponse,
   ProjectTaskRunRequest,
   ProjectTaskSummary,
+  ProviderConfigPutBody,
+  ProvidersConfigResponse,
   RenameFileInput,
   SessionSummary,
   HarnessProjectEvent,
@@ -139,6 +141,12 @@ export function createApi(baseUrl: string, secret = '') {
       ),
     createProject: (input: ProjectInput) => request<{ project: Project }>('/api/v1/projects', { method: 'POST', body: JSON.stringify(input) }),
     getAppConfig: () => request<AppConfigDocument>('/api/v1/config'),
+    getProvidersConfig: () => request<ProvidersConfigResponse>('/api/v1/config/providers'),
+    updateProvidersConfig: (body: ProviderConfigPutBody) =>
+      request<ProvidersConfigResponse>('/api/v1/config/providers', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
     upsertAppConfig: (key: string, value: ConfigScalar) =>
       request<AppConfigDocument>('/api/v1/config', {
         method: 'PUT',

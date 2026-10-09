@@ -78,30 +78,25 @@ fn materialize_model_config_inner(
     Ok(model)
 }
 
-fn configured_fast_model_name() -> Option<String> {
-    Config::global()
-        .get_param::<String>("GOOSE_FAST_MODEL")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-}
-
 /// Resolve the model config to use for lightweight "fast" tasks (session
 /// naming, tool-call labels, orchestrator routing). Resolution order:
-///   1. `GOOSE_FAST_MODEL` (user override)
-///   2. the provider's declared default fast model
-///   3. the supplied `model_config` (i.e. the main model)
-///
-/// The resulting config is materialized against the same provider so it picks
-/// up context limits, temperature, and other provider defaults.
+///   1. `FAST_MODEL` env (process override)
+///   2. `fast_model` in the provider entry
+///   3. legacy file key `GOOSE_FAST_MODEL` or `OPENDUCK_FAST_MODEL` (only when unmigrated)
+///   4. the supplied `model_config` (i.e. the caller's main model)
 pub async fn get_fast_model(
     provider_name: &str,
     model_config: &ModelConfig,
 ) -> Result<ModelConfig> {
-    let fast_model_name = match configured_fast_model_name() {
-        Some(name) => Some(name),
-        None => provider_default_fast_model(provider_name).await,
-    };
+    get_fast_model_with_config(Config::global(), provider_name, model_config).await
+}
+
+pub async fn get_fast_model_with_config(
+    config: &Config,
+    provider_name: &str,
+    model_config: &ModelConfig,
+) -> Result<ModelConfig> {
+    let fast_model_name = crate::config::resolve_provider_fast_model(config, provider_name);
 
     match fast_model_name {
         Some(name) if name != model_config.model_name => {
@@ -185,7 +180,7 @@ pub async fn complete_compaction(
     .await
 }
 
-async fn provider_default_fast_model(provider_name: &str) -> Option<String> {
+pub async fn suggested_fast_model_name(provider_name: &str) -> Option<String> {
     if provider_name == openduck_providers::openai::OPEN_AI_PROVIDER_NAME {
         return crate::providers::openai_def::live_fast_model();
     }
@@ -322,5 +317,118 @@ mod azure_foundry_tests {
 
         assert_eq!(config.model_name, "gpt-5-none");
         assert_eq!(config.thinking_effort(), None);
+    }
+}
+
+#[cfg(test)]
+mod fast_model_resolution_tests {
+    use super::*;
+    use crate::config::providers::{set_provider_entry, ProviderEntry};
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    static ENV_MUTEX: AsyncMutex<()> = AsyncMutex::const_new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, val);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(val) = &self.prev {
+                std::env::set_var(self.key, val);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn new_test_config() -> Config {
+        let config_file = NamedTempFile::new().unwrap();
+        let secrets_file = NamedTempFile::new().unwrap();
+        Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_get_fast_model_unset_uses_caller_model_not_registry() {
+        let _lock = ENV_MUTEX.lock().await;
+        let config = new_test_config();
+        let main_model = ModelConfig::new("claude-sonnet-4-5");
+        let resolved = get_fast_model_with_config(&config, "anthropic", &main_model)
+            .await
+            .unwrap();
+        assert_eq!(resolved.model_name, "claude-sonnet-4-5");
+    }
+
+    #[tokio::test]
+    async fn test_get_fast_model_uses_entry_fast_model() {
+        let _lock = ENV_MUTEX.lock().await;
+        let config = new_test_config();
+        let entry = ProviderEntry {
+            model: "gpt-4o".to_string(),
+            fast_model: Some("gpt-4o-mini".to_string()),
+            ..Default::default()
+        };
+        set_provider_entry(&config, "openai", &entry).unwrap();
+
+        let main_model = ModelConfig::new("gpt-4o");
+        let resolved = get_fast_model_with_config(&config, "openai", &main_model)
+            .await
+            .unwrap();
+        assert_eq!(resolved.model_name, "gpt-4o-mini");
+    }
+
+    #[tokio::test]
+    async fn test_get_fast_model_env_wins_over_entry() {
+        let _lock = ENV_MUTEX.lock().await;
+        let config = new_test_config();
+        let entry = ProviderEntry {
+            model: "gpt-4o".to_string(),
+            fast_model: Some("gpt-4o-mini".to_string()),
+            ..Default::default()
+        };
+        set_provider_entry(&config, "openai", &entry).unwrap();
+
+        let _guard = EnvGuard::set("OPENDUCK_FAST_MODEL", "gpt-4.1-mini");
+        let main_model = ModelConfig::new("gpt-4o");
+        let resolved = get_fast_model_with_config(&config, "openai", &main_model)
+            .await
+            .unwrap();
+        assert_eq!(resolved.model_name, "gpt-4.1-mini");
+    }
+
+    #[tokio::test]
+    async fn test_get_fast_model_ignores_file_key_when_marker_set() {
+        let _lock = ENV_MUTEX.lock().await;
+        let mut file = NamedTempFile::new().unwrap();
+        let secrets_file = NamedTempFile::new().unwrap();
+        let yaml = r#"
+active_provider: openai
+provider_roles_migrated: true
+GOOSE_FAST_MODEL: gpt-4o-mini
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#;
+        file.write_all(yaml.as_bytes()).unwrap();
+        let config = Config::new_with_file_secrets(file.path(), secrets_file.path()).unwrap();
+
+        let main_model = ModelConfig::new("gpt-4o");
+        let resolved = get_fast_model_with_config(&config, "openai", &main_model)
+            .await
+            .unwrap();
+        assert_eq!(resolved.model_name, "gpt-4o");
     }
 }

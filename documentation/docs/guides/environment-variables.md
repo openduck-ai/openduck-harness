@@ -33,7 +33,7 @@ These are the minimum required variables to get started with OpenDuck.
 |----------|---------|---------|---------|
 | `OPENDUCK_PROVIDER` | Specifies the LLM provider to use | [See available providers](/docs/getting-started/providers#available-providers) | None (must be [configured](/docs/getting-started/providers#configure-provider-and-model)) |
 | `OPENDUCK_MODEL` | Specifies which model to use from the provider | Model name (e.g., "gpt-4", "claude-sonnet-4-20250514") | None (must be [configured](/docs/getting-started/providers#configure-provider-and-model)) |
-| `OPENDUCK_FAST_MODEL` | Overrides the provider's default fast model used for auxiliary calls (tool-selection, classification, session titles) | Model name (e.g., "gpt-4o-mini", "google/gemini-2.5-flash") | Provider-specific default |
+| `OPENDUCK_FAST_MODEL` | Process override of every provider's fast model used for auxiliary calls (session naming, tool-call labels, orchestrator summary) | Model name (e.g., "gpt-4o-mini", "google/gemini-2.5-flash") | None (uses provider model) |
 | `OPENDUCK_TEMPERATURE` | Sets the [temperature](https://medium.com/@kelseyywang/a-comprehensive-guide-to-llm-temperature-%EF%B8%8F-363a40bbc91f) for model responses | Float between 0.0 and 1.0 | Model-specific default |
 | `OPENDUCK_MAX_TOKENS` | Sets the maximum number of tokens for each model response (truncates longer responses) | Positive integer (e.g., 4096, 8192) | Model-specific default |
 

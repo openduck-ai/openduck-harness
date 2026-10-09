@@ -1195,6 +1195,7 @@ mod tests {
                 enabled: true,
                 model: "gpt-5.4".to_string(),
                 configured: true,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1257,6 +1258,7 @@ mod tests {
                 enabled: true,
                 model: "configured-model".to_string(),
                 configured: true,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1291,6 +1293,7 @@ mod tests {
                 enabled: true,
                 model: "configured-model".to_string(),
                 configured: true,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1360,6 +1363,7 @@ mod tests {
                 enabled: true,
                 model: "openai-model".to_string(),
                 configured: true,
+                ..Default::default()
             },
         )
         .unwrap();

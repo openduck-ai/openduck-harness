@@ -117,6 +117,63 @@ pub struct AppConfigDocument {
     pub entries: Vec<ConfigEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSelectorField {
+    pub value: Option<String>,
+    pub file_value: Option<String>,
+    pub from_env: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDetail {
+    pub name: String,
+    pub enabled: bool,
+    pub configured: bool,
+    pub model: String,
+    pub model_env_value: Option<String>,
+    pub fast_model: Option<String>,
+    pub fast_model_env_value: Option<String>,
+    pub secondary_model: Option<String>,
+    pub secondary_model_env_value: Option<String>,
+    pub resolved_fast_model: String,
+    pub fast_model_uses_main: bool,
+    pub suggested_fast_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvidersConfigResponse {
+    pub major_provider: ProviderSelectorField,
+    pub secondary_provider: ProviderSelectorField,
+    pub model_from_env: bool,
+    pub fast_model_from_env: bool,
+    pub secondary_model_from_env: bool,
+    pub available_providers: Vec<String>,
+    pub providers: Vec<ProviderDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConfigPutBody {
+    pub major_provider: Option<String>,
+    pub secondary_provider: Option<String>,
+    pub providers: Vec<ProviderEntryPutItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderEntryPutItem {
+    pub name: String,
+    pub enabled: bool,
+    pub model: String,
+    pub fast_model: Option<String>,
+    pub secondary_model: Option<String>,
+}
+
 const KNOWN_JUDGE_POINTS: &[&str] = &[
     "turn.drift",
     "turn.completion",
@@ -133,6 +190,8 @@ const STRUCTURAL_KEYS: &[&str] = &[
     "notifications",
     "secrets",
     "active_provider",
+    "secondary_provider",
+    "provider_roles_migrated",
 ];
 
 const DEDICATED_KEYS: &[&str] = &[
@@ -143,6 +202,21 @@ const DEDICATED_KEYS: &[&str] = &[
     "GOOSE_MODE",
     "OPENDUCK_MODE",
 ];
+
+const LEGACY_PROVIDER_ROLE_KEYS: &[&str] = &[
+    "GOOSE_FAST_MODEL",
+    "OPENDUCK_FAST_MODEL",
+    "GOOSE_SECONDARY_PROVIDER",
+    "OPENDUCK_SECONDARY_PROVIDER",
+    "GOOSE_SECONDARY_MODEL",
+    "OPENDUCK_SECONDARY_MODEL",
+];
+
+fn is_legacy_provider_role_key(key: &str) -> bool {
+    LEGACY_PROVIDER_ROLE_KEYS
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(key))
+}
 
 const MAX_TURNS_ENV: &[&str] = &["OPENDUCK_MAX_TURNS", "HARNESS_MAX_TURNS", "GOOSE_MAX_TURNS"];
 const MAX_TURNS_FILE: &[&str] = &[
@@ -223,6 +297,9 @@ pub fn upsert_entry(
 ) -> Result<AppConfigDocument, AppConfigError> {
     let key = key.trim();
     validate_key(key)?;
+    if is_legacy_provider_role_key(key) {
+        return Err(AppConfigError::invalid("edit this on the provider"));
+    }
     if env_overrides_key(key) {
         return Err(AppConfigError::invalid(format!(
             "{key} is set by the environment and cannot be changed here"
@@ -248,6 +325,9 @@ pub fn upsert_entry(
 pub fn remove_entry(config: &Config, key: &str) -> Result<AppConfigDocument, AppConfigError> {
     let key = key.trim();
     validate_key(key)?;
+    if is_legacy_provider_role_key(key) {
+        return Err(AppConfigError::invalid("edit this on the provider"));
+    }
     if env_overrides_key(key) {
         return Err(AppConfigError::invalid(format!(
             "{key} is set by the environment and cannot be changed here"
@@ -335,7 +415,7 @@ pub fn update_harness(
             config.delete("harness")?;
         }
     } else {
-        config.set_param("harness", &Value::Object(map))?;
+        config.set_param("harness", Value::Object(map))?;
     }
 
     if !max_turns_env {
@@ -387,13 +467,514 @@ pub fn update_judge(
     );
     map.remove("fallbackOnError");
     map.insert("points".to_string(), Value::Object(points));
-    config.set_param("judge", &Value::Object(map))?;
+    config.set_param("judge", Value::Object(map))?;
     read_document(config)
 }
 
 pub fn remove_judge(config: &Config) -> Result<AppConfigDocument, AppConfigError> {
     config.delete("judge")?;
     read_document(config)
+}
+
+fn check_no_secret_keys(val: &Value) -> Result<(), AppConfigError> {
+    match val {
+        Value::Object(map) => {
+            for (key, child) in map {
+                let upper = key.to_ascii_uppercase();
+                if is_secret_key(key)
+                    || upper.contains("APIKEY")
+                    || upper.contains("API_KEY")
+                    || upper == "KEY"
+                    || upper == "TOKEN"
+                    || upper == "SECRET"
+                {
+                    return Err(AppConfigError::invalid(
+                        "API keys and tokens are not edited here",
+                    ));
+                }
+                check_no_secret_keys(child)?;
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                check_no_secret_keys(item)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub async fn get_providers_config(
+    config: &Config,
+) -> Result<ProvidersConfigResponse, AppConfigError> {
+    let major_file_value = config
+        .file_string("active_provider")
+        .or_else(|| config.file_string("GOOSE_PROVIDER"));
+    let major_env_val = crate::config::get_var("PROVIDER")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let (major_val, major_from_env) = if let Some(env_val) = major_env_val {
+        (Some(env_val), true)
+    } else {
+        (major_file_value.clone(), false)
+    };
+    let major_provider = ProviderSelectorField {
+        value: major_val,
+        file_value: major_file_value,
+        from_env: major_from_env,
+    };
+
+    let secondary_file_value =
+        if config.file_has_key(crate::config::providers::SECONDARY_PROVIDER_KEY) {
+            config.file_string(crate::config::providers::SECONDARY_PROVIDER_KEY)
+        } else if !crate::config::providers::provider_roles_migrated(config) {
+            config
+                .file_string("GOOSE_SECONDARY_PROVIDER")
+                .or_else(|| config.file_string("OPENDUCK_SECONDARY_PROVIDER"))
+        } else {
+            None
+        };
+    let secondary_env_val = crate::config::get_var("SECONDARY_PROVIDER")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let (secondary_val, secondary_from_env) = if let Some(env_val) = secondary_env_val {
+        (Some(env_val), true)
+    } else {
+        (secondary_file_value.clone(), false)
+    };
+    let secondary_provider = ProviderSelectorField {
+        value: secondary_val,
+        file_value: secondary_file_value,
+        from_env: secondary_from_env,
+    };
+
+    let model_from_env = crate::config::get_var("MODEL")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .is_some();
+    let fast_model_from_env = crate::config::get_var("FAST_MODEL")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .is_some();
+    let secondary_model_from_env = crate::config::get_var("SECONDARY_MODEL")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .is_some();
+
+    let _ = crate::providers::refresh_custom_providers().await;
+    let registry_list = crate::providers::providers().await;
+    let map = crate::config::providers::get_providers_map(config);
+
+    let mut available_providers: Vec<String> = registry_list
+        .iter()
+        .map(|(meta, _)| meta.name.clone())
+        .filter(|name| !map.contains_key(name))
+        .collect();
+    available_providers.sort();
+    available_providers.dedup();
+
+    let mut provider_details = Vec::new();
+    for (name, entry) in map.into_iter() {
+        let is_effective_major = major_provider.value.as_deref() == Some(&name);
+        let is_effective_secondary = secondary_provider.value.as_deref() == Some(&name);
+
+        let model_env_value = if model_from_env && is_effective_major {
+            crate::config::get_var("MODEL").filter(|s| !s.trim().is_empty())
+        } else {
+            None
+        };
+
+        let fast_model_env_value = if fast_model_from_env {
+            crate::config::get_var("FAST_MODEL").filter(|s| !s.trim().is_empty())
+        } else {
+            None
+        };
+
+        let secondary_model_env_value = if secondary_model_from_env && is_effective_secondary {
+            crate::config::get_var("SECONDARY_MODEL").filter(|s| !s.trim().is_empty())
+        } else {
+            None
+        };
+
+        let resolved_fast_model = if let Some(fm_env) =
+            crate::config::get_var("FAST_MODEL").filter(|s| !s.trim().is_empty())
+        {
+            fm_env
+        } else if let Some(fm) = entry.fast_model.as_deref().filter(|s| !s.trim().is_empty()) {
+            fm.to_string()
+        } else if !crate::config::providers::provider_roles_migrated(config) && is_effective_major {
+            config
+                .file_string("GOOSE_FAST_MODEL")
+                .or_else(|| config.file_string("OPENDUCK_FAST_MODEL"))
+                .unwrap_or_else(|| entry.model.clone())
+        } else {
+            entry.model.clone()
+        };
+
+        let fast_model_uses_main = resolved_fast_model == entry.model;
+        let suggested_fast_model = crate::model_config::suggested_fast_model_name(&name).await;
+
+        provider_details.push(ProviderDetail {
+            name,
+            enabled: entry.enabled,
+            configured: entry.configured,
+            model: entry.model,
+            model_env_value,
+            fast_model: entry.fast_model,
+            fast_model_env_value,
+            secondary_model: entry.secondary_model,
+            secondary_model_env_value,
+            resolved_fast_model,
+            fast_model_uses_main,
+            suggested_fast_model,
+        });
+    }
+
+    Ok(ProvidersConfigResponse {
+        major_provider,
+        secondary_provider,
+        model_from_env,
+        fast_model_from_env,
+        secondary_model_from_env,
+        available_providers,
+        providers: provider_details,
+    })
+}
+
+pub async fn update_providers_config(
+    config: &Config,
+    raw_body: Value,
+) -> Result<ProvidersConfigResponse, AppConfigError> {
+    check_no_secret_keys(&raw_body)?;
+
+    let raw_obj = raw_body
+        .as_object()
+        .ok_or_else(|| AppConfigError::invalid("request body must be a JSON object"))?;
+    if !raw_obj.contains_key("majorProvider") {
+        return Err(AppConfigError::invalid("majorProvider field is required"));
+    }
+    if !raw_obj.contains_key("secondaryProvider") {
+        return Err(AppConfigError::invalid(
+            "secondaryProvider field is required",
+        ));
+    }
+    let raw_providers = raw_obj
+        .get("providers")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            AppConfigError::invalid("providers field is required and must be an array")
+        })?;
+    for (idx, item) in raw_providers.iter().enumerate() {
+        let item_obj = item.as_object().ok_or_else(|| {
+            AppConfigError::invalid(format!("providers[{idx}] must be an object"))
+        })?;
+        if !item_obj.contains_key("name") {
+            return Err(AppConfigError::invalid(format!(
+                "providers[{idx}].name is required"
+            )));
+        }
+        if !item_obj.contains_key("enabled") {
+            return Err(AppConfigError::invalid(format!(
+                "providers[{idx}].enabled is required"
+            )));
+        }
+        if !item_obj.contains_key("model") {
+            return Err(AppConfigError::invalid(format!(
+                "providers[{idx}].model is required"
+            )));
+        }
+        if item_obj.get("model").map(|v| v.is_null()).unwrap_or(false) {
+            return Err(AppConfigError::invalid(format!(
+                "providers[{idx}].model cannot be null"
+            )));
+        }
+        if !item_obj.contains_key("fastModel") {
+            return Err(AppConfigError::invalid(format!(
+                "providers[{idx}].fastModel is required"
+            )));
+        }
+        if !item_obj.contains_key("secondaryModel") {
+            return Err(AppConfigError::invalid(format!(
+                "providers[{idx}].secondaryModel is required"
+            )));
+        }
+    }
+
+    let body: ProviderConfigPutBody =
+        serde_json::from_value(raw_body).map_err(|e| AppConfigError::invalid(e.to_string()))?;
+
+    let req_major = body
+        .major_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let req_secondary = body
+        .secondary_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    if let (Some(m), Some(s)) = (&req_major, &req_secondary) {
+        if m == s {
+            return Err(AppConfigError::invalid(
+                "Secondary provider cannot equal major provider",
+            ));
+        }
+    }
+
+    // 1. PROVIDER env lock
+    if crate::config::get_var("PROVIDER")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        let file_major = config
+            .file_string("active_provider")
+            .or_else(|| config.file_string("GOOSE_PROVIDER"));
+        if req_major != file_major {
+            return Err(AppConfigError::invalid(
+                "Major provider is locked by environment",
+            ));
+        }
+    }
+
+    // 2. SECONDARY_PROVIDER env lock
+    if crate::config::get_var("SECONDARY_PROVIDER")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        let file_secondary =
+            if config.file_has_key(crate::config::providers::SECONDARY_PROVIDER_KEY) {
+                config.file_string(crate::config::providers::SECONDARY_PROVIDER_KEY)
+            } else if !crate::config::providers::provider_roles_migrated(config) {
+                config
+                    .file_string("GOOSE_SECONDARY_PROVIDER")
+                    .or_else(|| config.file_string("OPENDUCK_SECONDARY_PROVIDER"))
+            } else {
+                None
+            };
+        if req_secondary != file_secondary {
+            return Err(AppConfigError::invalid(
+                "Secondary provider is locked by environment",
+            ));
+        }
+    }
+
+    let existing_map = crate::config::providers::get_providers_map(config);
+
+    // 3. MODEL env lock
+    if crate::config::get_var("MODEL")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        let file_major = config
+            .file_string("active_provider")
+            .or_else(|| config.file_string("GOOSE_PROVIDER"));
+        if let Some(major_name) = file_major {
+            let file_model = existing_map
+                .get(&major_name)
+                .map(|e| e.model.trim())
+                .unwrap_or("");
+            if let Some(sub_item) = body.providers.iter().find(|p| p.name.trim() == major_name) {
+                if sub_item.model.trim() != file_model {
+                    return Err(AppConfigError::invalid(
+                        "Model on major provider is locked by environment",
+                    ));
+                }
+            }
+        }
+    }
+
+    // 4. FAST_MODEL env lock
+    if crate::config::get_var("FAST_MODEL")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        for item in &body.providers {
+            let file_fast = existing_map
+                .get(item.name.trim())
+                .and_then(|e| e.fast_model.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let sub_fast = item
+                .fast_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != item.model.trim());
+            if file_fast != sub_fast {
+                return Err(AppConfigError::invalid(format!(
+                    "Fast model on {} is locked by environment",
+                    item.name
+                )));
+            }
+        }
+    }
+
+    // 5. SECONDARY_MODEL env lock
+    if crate::config::get_var("SECONDARY_MODEL")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        let file_secondary =
+            if config.file_has_key(crate::config::providers::SECONDARY_PROVIDER_KEY) {
+                config.file_string(crate::config::providers::SECONDARY_PROVIDER_KEY)
+            } else if !crate::config::providers::provider_roles_migrated(config) {
+                config
+                    .file_string("GOOSE_SECONDARY_PROVIDER")
+                    .or_else(|| config.file_string("OPENDUCK_SECONDARY_PROVIDER"))
+            } else {
+                None
+            };
+        if let Some(sec_name) = file_secondary {
+            let file_model = existing_map
+                .get(&sec_name)
+                .map(|e| e.model.trim())
+                .unwrap_or("");
+            if let Some(sub_item) = body.providers.iter().find(|p| p.name.trim() == sec_name) {
+                if sub_item.model.trim() != file_model {
+                    return Err(AppConfigError::invalid(
+                        "Secondary model is locked by environment",
+                    ));
+                }
+            }
+        }
+    }
+
+    let _ = crate::providers::refresh_custom_providers().await;
+    let registry_list = crate::providers::providers().await;
+    let registry_names: std::collections::HashSet<String> =
+        registry_list.into_iter().map(|(m, _)| m.name).collect();
+
+    for item in &body.providers {
+        let name = item.name.trim();
+        if !existing_map.contains_key(name) && !registry_names.contains(name) {
+            return Err(AppConfigError::invalid(format!(
+                "Provider '{name}' is not in available providers"
+            )));
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for item in &body.providers {
+        let name = require_token(&item.name, "Provider name")?;
+        if !seen.insert(name) {
+            return Err(AppConfigError::invalid(format!(
+                "Duplicate provider: {}",
+                item.name
+            )));
+        }
+    }
+
+    let mut new_map = indexmap::IndexMap::new();
+    for item in &body.providers {
+        let name = require_token(&item.name, "Provider name")?;
+        let is_major = req_major.as_deref() == Some(&name);
+        let is_secondary = req_secondary.as_deref() == Some(&name);
+
+        let model = item.model.trim();
+        let model = if model.is_empty() {
+            if is_major || is_secondary {
+                return Err(AppConfigError::invalid(format!(
+                    "Selected provider '{name}' cannot have an empty model"
+                )));
+            }
+            String::new()
+        } else {
+            require_token(model, "Model")?
+        };
+
+        let fast_model = item
+            .fast_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != model);
+        let fast_model = if let Some(fm) = fast_model {
+            Some(require_token(fm, "Fast model")?)
+        } else {
+            None
+        };
+
+        let secondary_model = item
+            .secondary_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let secondary_model = if let Some(sm) = secondary_model {
+            Some(require_token(sm, "Secondary model")?)
+        } else {
+            None
+        };
+
+        let is_live = registry_names.contains(&name);
+        let previously_configured = existing_map
+            .get(&name)
+            .map(|e| e.configured)
+            .unwrap_or(false);
+        let configured = !model.is_empty() && (is_live || previously_configured);
+
+        new_map.insert(
+            name,
+            crate::config::providers::ProviderEntry {
+                enabled: item.enabled,
+                configured,
+                model,
+                fast_model,
+                secondary_model,
+            },
+        );
+    }
+
+    if let Some(ref major) = req_major {
+        let entry = new_map.get(major).ok_or_else(|| {
+            AppConfigError::invalid(format!(
+                "Selected major provider '{major}' not found in providers"
+            ))
+        })?;
+        if !entry.enabled {
+            return Err(AppConfigError::invalid(format!(
+                "Selected major provider '{major}' is disabled"
+            )));
+        }
+        if !entry.configured {
+            return Err(AppConfigError::invalid(format!(
+                "Selected major provider '{major}' is not configured"
+            )));
+        }
+        if entry.model.trim().is_empty() {
+            return Err(AppConfigError::invalid(format!(
+                "Selected major provider '{major}' has an empty model"
+            )));
+        }
+    }
+
+    if let Some(ref sec) = req_secondary {
+        let entry = new_map.get(sec).ok_or_else(|| {
+            AppConfigError::invalid(format!(
+                "Selected secondary provider '{sec}' not found in providers"
+            ))
+        })?;
+        if !entry.enabled {
+            return Err(AppConfigError::invalid(format!(
+                "Selected secondary provider '{sec}' is disabled"
+            )));
+        }
+        if !entry.configured {
+            return Err(AppConfigError::invalid(format!(
+                "Selected secondary provider '{sec}' is not configured"
+            )));
+        }
+        if entry.model.trim().is_empty() {
+            return Err(AppConfigError::invalid(format!(
+                "Selected secondary provider '{sec}' has an empty model"
+            )));
+        }
+    }
+
+    config.save_provider_configuration(req_major.as_deref(), req_secondary.as_deref(), &new_map)?;
+
+    get_providers_config(config).await
 }
 
 enum SettingKind {
@@ -514,8 +1095,24 @@ fn write_provider(config: &Config, value: &Value) -> Result<(), AppConfigError> 
         return Ok(());
     }
     let name = require_token(&text, "Provider")?;
-    let model = crate::config::get_active_model(config).unwrap_or_default();
-    crate::config::set_active_provider(config, &name, &model)?;
+    let entry = crate::config::get_provider_entry(config, &name)
+        .ok_or_else(|| AppConfigError::invalid(format!("Provider '{name}' is not configured")))?;
+    if !entry.enabled {
+        return Err(AppConfigError::invalid(format!(
+            "Provider '{name}' is disabled"
+        )));
+    }
+    if !entry.configured {
+        return Err(AppConfigError::invalid(format!(
+            "Provider '{name}' is not configured"
+        )));
+    }
+    if entry.model.trim().is_empty() {
+        return Err(AppConfigError::invalid(format!(
+            "Provider '{name}' has an empty model"
+        )));
+    }
+    config.set_param(crate::config::providers::ACTIVE_PROVIDER_KEY, &name)?;
     Ok(())
 }
 
@@ -536,7 +1133,7 @@ fn write_model(config: &Config, value: &Value) -> Result<(), AppConfigError> {
 
 fn clear_model(config: &Config) -> Result<(), AppConfigError> {
     if let Some(provider) = crate::config::get_active_provider(config) {
-        crate::config::set_active_provider(config, &provider, "")?;
+        crate::config::clear_provider_model(config, &provider)?;
     }
     delete_keys(config, &["GOOSE_MODEL", "OPENDUCK_MODEL"])?;
     Ok(())
@@ -661,6 +1258,7 @@ fn read_entries(config: &Config) -> Result<Vec<ConfigEntry>, AppConfigError> {
             || is_structural_key(&key)
             || is_dedicated_key(&key)
             || is_harness_owned(&key)
+            || is_legacy_provider_role_key(&key)
         {
             continue;
         }
@@ -1093,6 +1691,15 @@ mod tests {
             ("GOOSE_JUDGE", None::<&str>),
             ("JUDGE", None::<&str>),
             ("HUB_EXAMPLE_FLAG", None::<&str>),
+            ("OPENDUCK_FAST_MODEL", None::<&str>),
+            ("GOOSE_FAST_MODEL", None::<&str>),
+            ("FAST_MODEL", None::<&str>),
+            ("OPENDUCK_SECONDARY_PROVIDER", None::<&str>),
+            ("GOOSE_SECONDARY_PROVIDER", None::<&str>),
+            ("SECONDARY_PROVIDER", None::<&str>),
+            ("OPENDUCK_SECONDARY_MODEL", None::<&str>),
+            ("GOOSE_SECONDARY_MODEL", None::<&str>),
+            ("SECONDARY_MODEL", None::<&str>),
         ])
     }
 
@@ -1137,7 +1744,15 @@ extensions:
     #[test]
     fn writes_provider_model_and_mode() {
         let _guard = quiet_env();
-        let fixture = fixture_with("{}\n");
+        let fixture = fixture_with(
+            r#"
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
         upsert_entry(
             &fixture.config,
             "GOOSE_PROVIDER",
@@ -1349,5 +1964,504 @@ judge:
         let cleared = remove_judge(&fixture.config).unwrap();
         assert!(!cleared.judge.configured);
         assert!(saved_yaml(&fixture).get("judge").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_provider_put_rejects_api_key_field() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
+        let body = serde_json::json!({
+            "majorProvider": "openai",
+            "secondaryProvider": null,
+            "apiKey": "secret-token",
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "fastModel": null,
+                    "secondaryModel": null
+                }
+            ]
+        });
+        let err = update_providers_config(&fixture.config, body)
+            .await
+            .unwrap_err();
+        match err {
+            AppConfigError::Invalid(msg) => {
+                assert!(
+                    msg.contains("API keys and tokens are not edited here")
+                        || msg.contains("apiKey")
+                );
+            }
+            _ => panic!("Expected Invalid error"),
+        }
+
+        let body_nested = serde_json::json!({
+            "majorProvider": "openai",
+            "secondaryProvider": null,
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "fastModel": null,
+                    "secondaryModel": null,
+                    "api_key": "secret-val"
+                }
+            ]
+        });
+        let err2 = update_providers_config(&fixture.config, body_nested)
+            .await
+            .unwrap_err();
+        match err2 {
+            AppConfigError::Invalid(msg) => {
+                assert!(
+                    msg.contains("API keys and tokens are not edited here")
+                        || msg.contains("api_key")
+                );
+            }
+            _ => panic!("Expected Invalid error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_provider_put_rejects_secondary_equal_major() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
+        let body = serde_json::json!({
+            "majorProvider": "openai",
+            "secondaryProvider": "openai",
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "fastModel": null,
+                    "secondaryModel": null
+                }
+            ]
+        });
+        let err = update_providers_config(&fixture.config, body)
+            .await
+            .unwrap_err();
+        match err {
+            AppConfigError::Invalid(msg) => {
+                assert!(msg.contains("Secondary provider cannot equal major provider"));
+            }
+            _ => panic!("Expected Invalid error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_provider_put_blank_fast_model_stores_absent() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+    fast_model: gpt-4o-mini
+"#,
+        );
+        let body = serde_json::json!({
+            "majorProvider": "openai",
+            "secondaryProvider": null,
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "fastModel": "",
+                    "secondaryModel": ""
+                }
+            ]
+        });
+        let resp = update_providers_config(&fixture.config, body)
+            .await
+            .unwrap();
+        let openai_entry = resp.providers.iter().find(|p| p.name == "openai").unwrap();
+        assert_eq!(openai_entry.fast_model, None);
+
+        let yaml = saved_yaml(&fixture);
+        assert!(yaml["providers"]["openai"].get("fast_model").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_provider_put_null_fast_model_stores_absent() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+    fast_model: gpt-4o-mini
+"#,
+        );
+        let body = serde_json::json!({
+            "majorProvider": "openai",
+            "secondaryProvider": null,
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "fastModel": null,
+                    "secondaryModel": null
+                }
+            ]
+        });
+        let resp = update_providers_config(&fixture.config, body)
+            .await
+            .unwrap();
+        let openai_entry = resp.providers.iter().find(|p| p.name == "openai").unwrap();
+        assert_eq!(openai_entry.fast_model, None);
+
+        let yaml = saved_yaml(&fixture);
+        assert!(yaml["providers"]["openai"].get("fast_model").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_provider_put_does_not_touch_unrelated_scalar() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+GOOSE_MODE: auto
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
+        let body = serde_json::json!({
+            "majorProvider": "openai",
+            "secondaryProvider": null,
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "fastModel": null,
+                    "secondaryModel": null
+                }
+            ]
+        });
+        update_providers_config(&fixture.config, body)
+            .await
+            .unwrap();
+        let yaml = saved_yaml(&fixture);
+        assert_eq!(yaml["GOOSE_MODE"].as_str(), Some("auto"));
+    }
+
+    #[tokio::test]
+    async fn test_provider_put_null_major_clears_active_provider() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
+        let body = serde_json::json!({
+            "majorProvider": null,
+            "secondaryProvider": null,
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "fastModel": null,
+                    "secondaryModel": null
+                }
+            ]
+        });
+        let resp = update_providers_config(&fixture.config, body)
+            .await
+            .unwrap();
+        assert_eq!(resp.major_provider.value, None);
+        assert_eq!(resp.major_provider.file_value, None);
+
+        let yaml = saved_yaml(&fixture);
+        assert!(yaml.get("active_provider").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_provider_put_env_lock_compares_to_file_not_env() {
+        let _guard = env_lock::lock_env([
+            ("OPENDUCK_FAST_MODEL", Some("gpt-4o-mini")),
+            ("GOOSE_FAST_MODEL", None::<&str>),
+            ("FAST_MODEL", None::<&str>),
+        ]);
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
+        // File has fast_model absent.
+        // Submitting null or "" matches file (absent) and succeeds even though env is "gpt-4o-mini".
+        let body_null = serde_json::json!({
+            "majorProvider": "openai",
+            "secondaryProvider": null,
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "fastModel": null,
+                    "secondaryModel": null
+                }
+            ]
+        });
+        let resp = update_providers_config(&fixture.config, body_null)
+            .await
+            .unwrap();
+        assert!(resp.fast_model_from_env);
+
+        let body_empty = serde_json::json!({
+            "majorProvider": "openai",
+            "secondaryProvider": null,
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "fastModel": "",
+                    "secondaryModel": ""
+                }
+            ]
+        });
+        update_providers_config(&fixture.config, body_empty)
+            .await
+            .unwrap();
+
+        // Submitting "gpt-4o-mini" (which matches the env, but differs from the file's absent value) is 400!
+        let body_diff = serde_json::json!({
+            "majorProvider": "openai",
+            "secondaryProvider": null,
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "fastModel": "gpt-4o-mini",
+                    "secondaryModel": null
+                }
+            ]
+        });
+        let err = update_providers_config(&fixture.config, body_diff)
+            .await
+            .unwrap_err();
+        match err {
+            AppConfigError::Invalid(msg) => {
+                assert!(msg.contains("Fast model on openai is locked by environment"));
+            }
+            _ => panic!("Expected Invalid error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_provider_put_missing_fast_model_is_400() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
+        // Omit the fastModel key entirely
+        let body = serde_json::json!({
+            "majorProvider": "openai",
+            "secondaryProvider": null,
+            "providers": [
+                {
+                    "name": "openai",
+                    "enabled": true,
+                    "model": "gpt-4o",
+                    "secondaryModel": null
+                }
+            ]
+        });
+        let err = update_providers_config(&fixture.config, body)
+            .await
+            .unwrap_err();
+        match err {
+            AppConfigError::Invalid(msg) => {
+                assert!(
+                    msg.contains("fastModel is required")
+                        || msg.contains("missing field `fastModel`")
+                );
+            }
+            _ => panic!("Expected Invalid error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_providers_hides_secrets() {
+        let _guard = quiet_env();
+        let config_file = NamedTempFile::new().unwrap();
+        let secrets_file = NamedTempFile::new().unwrap();
+        std::fs::write(
+            config_file.path(),
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            secrets_file.path(),
+            r#"
+OPENAI_API_KEY: sk-super-secret-12345
+"#,
+        )
+        .unwrap();
+        let config =
+            Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap();
+        let resp = get_providers_config(&config).await.unwrap();
+        let json_str = serde_json::to_string(&resp).unwrap();
+        assert!(!json_str.contains("sk-super-secret-12345"));
+        assert!(!json_str.contains("OPENAI_API_KEY"));
+        assert!(!json_str.contains("apiKey"));
+    }
+
+    #[tokio::test]
+    async fn test_get_providers_lists_live_registry_names_not_in_the_map() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
+        let resp = get_providers_config(&fixture.config).await.unwrap();
+        assert!(!resp.available_providers.contains(&"openai".to_string()));
+        assert!(!resp.available_providers.is_empty());
+    }
+
+    #[test]
+    fn test_scalar_provider_put_unchanged_until_editor() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+  anthropic:
+    enabled: true
+    configured: true
+    model: claude-3-5-sonnet
+"#,
+        );
+        let doc = upsert_entry(
+            &fixture.config,
+            "GOOSE_PROVIDER",
+            serde_json::Value::String("anthropic".to_string()),
+        )
+        .unwrap();
+        assert_eq!(doc.provider.value, Some("anthropic".to_string()));
+    }
+
+    #[test]
+    fn test_scalar_put_rejects_goose_fast_model() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
+        let err = upsert_entry(
+            &fixture.config,
+            "GOOSE_FAST_MODEL",
+            serde_json::Value::String("gpt-4o-mini".to_string()),
+        )
+        .unwrap_err();
+        match err {
+            AppConfigError::Invalid(msg) => {
+                assert!(msg.contains("edit this on the provider"));
+            }
+            _ => panic!("Expected Invalid error"),
+        }
+    }
+
+    #[test]
+    fn test_scalar_provider_put_rejects_unconfigured_name() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
+        let err = upsert_entry(
+            &fixture.config,
+            "GOOSE_PROVIDER",
+            serde_json::Value::String("unconfigured_provider".to_string()),
+        )
+        .unwrap_err();
+        match err {
+            AppConfigError::Invalid(msg) => {
+                assert!(msg.contains("not configured"));
+            }
+            _ => panic!("Expected Invalid error"),
+        }
     }
 }

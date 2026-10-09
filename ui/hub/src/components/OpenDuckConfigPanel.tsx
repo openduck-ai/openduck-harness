@@ -3,6 +3,14 @@ import type { createApi } from '@aaif/goose-hub-core'
 import type { AppConfigDocument } from '@aaif/goose-hub-core'
 import { Trash2 } from 'lucide-react'
 import {
+  draftFromResponse,
+  addProvider,
+  buildPutBody,
+  fastModelLabel,
+  secondaryModelLabel,
+  type ProviderConfigDraft,
+} from '../providerConfig'
+import {
   JUDGE_MODES,
   JUDGE_POINT_LABELS,
   MODE_OPTIONS,
@@ -25,6 +33,8 @@ type ConfigApi = Pick<
   | 'updateHarnessConfig'
   | 'updateJudgeConfig'
   | 'removeJudgeConfig'
+  | 'getProvidersConfig'
+  | 'updateProvidersConfig'
 >
 
 interface OpenDuckConfigPanelProps {
@@ -41,6 +51,8 @@ function messageFrom(error: unknown, fallback: string): string {
 export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelProps) {
   const [doc, setDoc] = useState<AppConfigDocument | null>(null)
   const [drafts, setDrafts] = useState<ConfigDrafts | null>(null)
+  const [providersDraft, setProvidersDraft] = useState<ProviderConfigDraft | null>(null)
+  const [newProviderSelect, setNewProviderSelect] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -58,16 +70,20 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
     if (!isConnected) {
       setDoc(null)
       setDrafts(null)
+      setProvidersDraft(null)
       return
     }
     let cancelled = false
     setLoading(true)
     setError('')
-    void api
-      .getAppConfig()
-      .then(next => {
+    void Promise.all([api.getAppConfig(), api.getProvidersConfig()])
+      .then(([nextConfig, nextProviders]) => {
         if (cancelled) return
-        applyDocument(next)
+        applyDocument(nextConfig)
+        setProvidersDraft(draftFromResponse(nextProviders))
+        if (nextProviders.availableProviders.length > 0) {
+          setNewProviderSelect(nextProviders.availableProviders[0] ?? '')
+        }
       })
       .catch(cause => {
         if (cancelled) return
@@ -81,35 +97,43 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
     }
   }, [api, isConnected])
 
-  const saveDefaults = async () => {
+  const saveProviders = async () => {
+    if (!providersDraft) return
+    setSaving('providers')
+    setError('')
+    setNotice('')
+    try {
+      const putBody = buildPutBody(providersDraft)
+      const saved = await api.updateProvidersConfig(putBody)
+      setProvidersDraft(draftFromResponse(saved))
+      if (saved.availableProviders.length > 0) {
+        setNewProviderSelect(saved.availableProviders[0] ?? '')
+      }
+      setNotice('Provider settings saved.')
+    } catch (cause) {
+      setError(messageFrom(cause, 'Failed to save provider settings'))
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  const saveMode = async () => {
     if (!doc || !drafts) return
-    setSaving('defaults')
+    setSaving('mode')
     setError('')
     setNotice('')
     try {
       let latest = doc
-      const provider = drafts.provider.trim()
-      const model = drafts.model.trim()
       const mode = drafts.mode.trim()
-      if (!doc.provider.fromEnv && provider !== (doc.provider.value ?? '')) {
-        latest = provider
-          ? await api.upsertAppConfig('GOOSE_PROVIDER', provider)
-          : await api.removeAppConfig('GOOSE_PROVIDER')
-      }
-      if (!latest.model.fromEnv && model !== (latest.model.value ?? '')) {
-        latest = model
-          ? await api.upsertAppConfig('GOOSE_MODEL', model)
-          : await api.removeAppConfig('GOOSE_MODEL')
-      }
       if (!latest.mode.fromEnv && mode !== (latest.mode.value ?? '')) {
         latest = mode
           ? await api.upsertAppConfig('GOOSE_MODE', mode)
           : await api.removeAppConfig('GOOSE_MODE')
       }
       applyDocument(latest)
-      setNotice(latest === doc ? 'No model changes to save.' : 'Model settings saved.')
+      setNotice('Tool mode saved.')
     } catch (cause) {
-      setError(messageFrom(cause, 'Failed to save model settings'))
+      setError(messageFrom(cause, 'Failed to save tool mode'))
     } finally {
       setSaving(null)
     }
@@ -257,37 +281,278 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       {notice && <div className="toast-inline config-banner">{notice}</div>}
       {loading && !drafts ? (
         <p className="muted">Loading configuration…</p>
-      ) : drafts && doc ? (
+      ) : drafts && doc && providersDraft ? (
         <>
           <section className="config-section">
-            <h4>Model</h4>
+            <h4>Providers</h4>
+            <p className="form-hint">
+              Configure primary and secondary fallback providers and models.
+            </p>
+
+            <div className="config-form-grid" style={{ marginBottom: '1rem' }}>
+              <label>
+                Major provider
+                {providersDraft.majorFromEnv && <span className="config-env-note">From environment</span>}
+                <select
+                  value={providersDraft.majorProvider ?? ''}
+                  disabled={providersDraft.majorFromEnv || saving === 'providers'}
+                  onChange={e => {
+                    const val = e.target.value || null
+                    setProvidersDraft({ ...providersDraft, majorProvider: val })
+                  }}
+                >
+                  <option value="">Unset (clear)</option>
+                  {providersDraft.providers
+                    .filter(p => p.enabled && p.model.trim())
+                    .map(p => (
+                      <option key={p.name} value={p.name}>
+                        {p.name}
+                      </option>
+                    ))}
+                  {providersDraft.majorProvider &&
+                    !providersDraft.providers.some(
+                      p => p.enabled && p.model.trim() && p.name === providersDraft.majorProvider,
+                    ) && (
+                      <option value={providersDraft.majorProvider}>
+                        {providersDraft.majorProvider}
+                      </option>
+                    )}
+                </select>
+              </label>
+
+              <label>
+                Secondary provider (fallback)
+                {providersDraft.secondaryFromEnv && <span className="config-env-note">From environment</span>}
+                <select
+                  value={providersDraft.secondaryProvider ?? ''}
+                  disabled={providersDraft.secondaryFromEnv || saving === 'providers'}
+                  onChange={e => {
+                    const val = e.target.value || null
+                    setProvidersDraft({ ...providersDraft, secondaryProvider: val })
+                  }}
+                >
+                  <option value="">None</option>
+                  {providersDraft.providers
+                    .filter(p => p.enabled && p.model.trim() && p.name !== providersDraft.majorProvider)
+                    .map(p => (
+                      <option key={p.name} value={p.name}>
+                        {p.name}
+                      </option>
+                    ))}
+                  {providersDraft.secondaryProvider &&
+                    !providersDraft.providers.some(
+                      p =>
+                        p.enabled &&
+                        p.model.trim() &&
+                        p.name !== providersDraft.majorProvider &&
+                        p.name === providersDraft.secondaryProvider,
+                    ) && (
+                      <option value={providersDraft.secondaryProvider}>
+                        {providersDraft.secondaryProvider}
+                      </option>
+                    )}
+                </select>
+              </label>
+            </div>
+
+            <div className="provider-table-wrapper" style={{ overflowX: 'auto', marginTop: '1rem' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <th style={{ padding: '0.5rem' }}>Name</th>
+                    <th style={{ padding: '0.5rem' }}>Enabled</th>
+                    <th style={{ padding: '0.5rem' }}>Model</th>
+                    <th style={{ padding: '0.5rem' }}>Fast model</th>
+                    <th style={{ padding: '0.5rem' }}>Secondary model</th>
+                    <th style={{ padding: '0.5rem', width: '2.5rem' }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {providersDraft.providers.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} style={{ padding: '1rem', textAlign: 'center' }} className="muted">
+                        No providers configured. Add one below.
+                      </td>
+                    </tr>
+                  ) : (
+                    providersDraft.providers.map((row, idx) => {
+                      const isMajorRow =
+                        (providersDraft.majorFromEnv
+                          ? providersDraft.majorFileValue
+                          : providersDraft.majorProvider) === row.name
+                      const isSecondaryRow =
+                        (providersDraft.secondaryFromEnv
+                          ? providersDraft.secondaryFileValue
+                          : providersDraft.secondaryProvider) === row.name
+                      const modelLocked =
+                        (providersDraft.modelFromEnv && isMajorRow) ||
+                        (providersDraft.secondaryModelFromEnv && isSecondaryRow)
+                      const fastModelLocked = providersDraft.fastModelFromEnv
+
+                      return (
+                        <tr key={row.name} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                          <td style={{ padding: '0.5rem', fontWeight: 600 }}>{row.name}</td>
+                          <td style={{ padding: '0.5rem' }}>
+                            <input
+                              type="checkbox"
+                              checked={row.enabled}
+                              disabled={saving === 'providers'}
+                              onChange={e => {
+                                const next = [...providersDraft.providers]
+                                next[idx] = { ...row, enabled: e.target.checked }
+                                setProvidersDraft({ ...providersDraft, providers: next })
+                              }}
+                            />
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
+                            <input
+                              value={
+                                modelLocked
+                                  ? ((isMajorRow ? row.modelEnvValue : row.secondaryModelEnvValue) ??
+                                    row.model)
+                                  : row.model
+                              }
+                              disabled={modelLocked || saving === 'providers'}
+                              onChange={e => {
+                                const next = [...providersDraft.providers]
+                                next[idx] = { ...row, model: e.target.value }
+                                setProvidersDraft({ ...providersDraft, providers: next })
+                              }}
+                              placeholder="e.g. gpt-4o"
+                              style={{ width: '100%', minWidth: '8rem' }}
+                            />
+                            {modelLocked && <div className="config-env-note">From env</div>}
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
+                            <input
+                              value={
+                                fastModelLocked
+                                  ? (row.fastModelEnvValue ?? row.fastModel)
+                                  : row.fastModel
+                              }
+                              disabled={fastModelLocked || saving === 'providers'}
+                              onChange={e => {
+                                const next = [...providersDraft.providers]
+                                next[idx] = { ...row, fastModel: e.target.value }
+                                setProvidersDraft({ ...providersDraft, providers: next })
+                              }}
+                              placeholder={
+                                row.suggestedFastModel
+                                  ? `Suggested: ${row.suggestedFastModel}`
+                                  : 'uses model'
+                              }
+                              style={{ width: '100%', minWidth: '8rem' }}
+                            />
+                            <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
+                              {fastModelLabel(row.fastModel, row.model)}
+                            </div>
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
+                            <input
+                              value={row.secondaryModel}
+                              disabled={saving === 'providers'}
+                              onChange={e => {
+                                const next = [...providersDraft.providers]
+                                next[idx] = { ...row, secondaryModel: e.target.value }
+                                setProvidersDraft({ ...providersDraft, providers: next })
+                              }}
+                              placeholder="no secondary model"
+                              style={{ width: '100%', minWidth: '8rem' }}
+                            />
+                            <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
+                              {secondaryModelLabel(row.secondaryModel)}
+                            </div>
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
+                            {row.name !== providersDraft.majorProvider &&
+                              row.name !== providersDraft.secondaryProvider && (
+                                <button
+                                  type="button"
+                                  className="btn-icon"
+                                  title={`Remove ${row.name}`}
+                                  disabled={saving === 'providers'}
+                                  onClick={() => {
+                                    const next = providersDraft.providers.filter((_, i) => i !== idx)
+                                    const available = [
+                                      ...providersDraft.availableProviders,
+                                      row.name,
+                                    ].sort()
+                                    setProvidersDraft({
+                                      ...providersDraft,
+                                      providers: next,
+                                      availableProviders: available,
+                                    })
+                                  }}
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              )}
+                          </td>
+                        </tr>
+                      )
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="config-add-row" style={{ marginTop: '1rem' }}>
+              <select
+                value={newProviderSelect}
+                disabled={providersDraft.availableProviders.length === 0 || saving === 'providers'}
+                onChange={e => setNewProviderSelect(e.target.value)}
+              >
+                {providersDraft.availableProviders.length === 0 ? (
+                  <option value="">No more providers in registry</option>
+                ) : (
+                  providersDraft.availableProviders.map(p => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))
+                )}
+              </select>
+              <div></div>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={
+                  providersDraft.availableProviders.length === 0 ||
+                  !newProviderSelect ||
+                  saving === 'providers'
+                }
+                onClick={() => {
+                  if (!newProviderSelect) return
+                  const next = addProvider(providersDraft, newProviderSelect)
+                  setProvidersDraft(next)
+                  setNewProviderSelect(next.availableProviders[0] ?? '')
+                }}
+              >
+                Add provider
+              </button>
+            </div>
+
+            <div className="settings-actions-row" style={{ marginTop: '1rem' }}>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={saving === 'providers'}
+                onClick={() => void saveProviders()}
+              >
+                {saving === 'providers' ? 'Saving…' : 'Save provider settings'}
+              </button>
+            </div>
+          </section>
+
+          <section className="config-section">
+            <h4>Tool mode</h4>
             <div className="config-form-grid">
               <label>
-                Provider
-                {doc.provider.fromEnv && <span className="config-env-note">From environment</span>}
-                <input
-                  value={drafts.provider}
-                  disabled={doc.provider.fromEnv || saving === 'defaults'}
-                  onChange={event => setDrafts({ ...drafts, provider: event.target.value })}
-                  placeholder="openai"
-                />
-              </label>
-              <label>
-                Model
-                {doc.model.fromEnv && <span className="config-env-note">From environment</span>}
-                <input
-                  value={drafts.model}
-                  disabled={doc.model.fromEnv || saving === 'defaults'}
-                  onChange={event => setDrafts({ ...drafts, model: event.target.value })}
-                  placeholder="gpt-4o"
-                />
-              </label>
-              <label>
-                Tool mode
+                Mode
                 {doc.mode.fromEnv && <span className="config-env-note">From environment</span>}
                 <select
                   value={drafts.mode}
-                  disabled={doc.mode.fromEnv || saving === 'defaults'}
+                  disabled={doc.mode.fromEnv || saving === 'mode'}
                   onChange={event => setDrafts({ ...drafts, mode: event.target.value })}
                 >
                   {MODE_OPTIONS.map(option => (
@@ -302,8 +567,13 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
               </label>
             </div>
             <div className="settings-actions-row">
-              <button type="button" className="btn-primary" disabled={saving === 'defaults'} onClick={() => void saveDefaults()}>
-                {saving === 'defaults' ? 'Saving…' : 'Save model settings'}
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={saving === 'mode'}
+                onClick={() => void saveMode()}
+              >
+                {saving === 'mode' ? 'Saving…' : 'Save tool mode'}
               </button>
             </div>
           </section>

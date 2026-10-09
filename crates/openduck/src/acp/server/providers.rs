@@ -986,17 +986,10 @@ impl GooseAcpAgent {
             .internal_err_ctx("Failed to save provider secret fields")?;
 
         if metadata.setup.as_ref().is_some_and(|setup| setup.acp) {
-            let model = crate::config::get_provider_entry(config, &req.provider_id)
-                .map(|entry| entry.model)
-                .unwrap_or_else(|| metadata.default_model.clone());
-            crate::config::set_provider_entry(
+            crate::config::providers::merge_acp_provider_entry(
                 config,
                 &req.provider_id,
-                &crate::config::ProviderEntry {
-                    enabled: true,
-                    model,
-                    configured: true,
-                },
+                &metadata.default_model,
             )
             .internal_err_ctx("Failed to enable ACP provider")?;
         }

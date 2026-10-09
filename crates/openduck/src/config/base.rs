@@ -502,6 +502,24 @@ impl Config {
         self.config_paths.iter().any(|p| p.exists())
     }
 
+    pub fn file_has_key(&self, key: &str) -> bool {
+        self.load().map(|v| v.contains_key(key)).unwrap_or(false)
+    }
+
+    pub fn file_string(&self, key: &str) -> Option<String> {
+        let values = self.load().ok()?;
+        values
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    pub fn file_bool(&self, key: &str) -> Option<bool> {
+        let values = self.load().ok()?;
+        values.get(key).and_then(|v| v.as_bool())
+    }
+
     pub fn clear(&self) -> Result<(), ConfigError> {
         Ok(std::fs::remove_file(self.write_path())?)
     }
@@ -847,6 +865,38 @@ impl Config {
         for (key, value) in updates {
             values.insert(serde_yaml::to_value(key)?, serde_yaml::to_value(value)?);
         }
+        self.save_values(&values)
+    }
+
+    /// Save the structured provider mapping and major/secondary selection keys in a single write.
+    pub fn save_provider_configuration(
+        &self,
+        major: Option<&str>,
+        secondary: Option<&str>,
+        providers: &indexmap::IndexMap<String, crate::config::providers::ProviderEntry>,
+    ) -> Result<(), ConfigError> {
+        let _guard = self.guard.lock().unwrap();
+        let mut values = self.load_write_config()?;
+        if let Some(m) = major {
+            values.insert(
+                serde_yaml::to_value(crate::config::providers::ACTIVE_PROVIDER_KEY)?,
+                serde_yaml::to_value(m)?,
+            );
+        } else {
+            values.shift_remove(crate::config::providers::ACTIVE_PROVIDER_KEY);
+        }
+        if let Some(s) = secondary {
+            values.insert(
+                serde_yaml::to_value(crate::config::providers::SECONDARY_PROVIDER_KEY)?,
+                serde_yaml::to_value(s)?,
+            );
+        } else {
+            values.shift_remove(crate::config::providers::SECONDARY_PROVIDER_KEY);
+        }
+        values.insert(
+            serde_yaml::to_value(crate::config::providers::PROVIDERS_CONFIG_KEY)?,
+            serde_yaml::to_value(providers)?,
+        );
         self.save_values(&values)
     }
 
@@ -1237,7 +1287,16 @@ impl Config {
         let model = crate::config::providers::get_provider_entry(self, &name)
             .map(|e| e.model)
             .unwrap_or_default();
-        crate::config::providers::set_active_provider(self, &name, &model)
+        if !model.trim().is_empty() {
+            crate::config::providers::set_active_provider(self, &name, &model)
+        } else {
+            self.set_param("active_provider", &name)?;
+            let mut entry =
+                crate::config::providers::get_provider_entry(self, &name).unwrap_or_default();
+            entry.enabled = true;
+            entry.configured = true;
+            crate::config::providers::set_provider_entry(self, &name, &entry)
+        }
     }
     pub fn get_goose_model(&self) -> Result<String, ConfigError> {
         crate::config::providers::get_active_model(self)
@@ -1251,28 +1310,33 @@ impl Config {
         Ok(())
     }
     pub fn get_goose_secondary_provider(&self) -> Result<String, ConfigError> {
-        let val = self
-            .get_param::<String>("GOOSE_SECONDARY_PROVIDER")
-            .or_else(|_| self.get_param::<String>("OPENDUCK_SECONDARY_PROVIDER"))?;
-        let trimmed = val.trim().to_string();
-        if trimmed.is_empty() {
-            Err(ConfigError::NotFound(
-                "GOOSE_SECONDARY_PROVIDER".to_string(),
-            ))
-        } else {
-            Ok(trimmed)
-        }
+        crate::config::providers::get_secondary_provider(self)
+            .ok_or_else(|| ConfigError::NotFound("secondary_provider".to_string()))
     }
     pub fn get_goose_secondary_model(&self) -> Result<String, ConfigError> {
-        let val = self
-            .get_param::<String>("GOOSE_SECONDARY_MODEL")
-            .or_else(|_| self.get_param::<String>("OPENDUCK_SECONDARY_MODEL"))?;
-        let trimmed = val.trim().to_string();
-        if trimmed.is_empty() {
-            Err(ConfigError::NotFound("GOOSE_SECONDARY_MODEL".to_string()))
-        } else {
-            Ok(trimmed)
+        if let Some(val) = openduck_env::get_var("SECONDARY_MODEL") {
+            let trimmed = val.trim().to_string();
+            if !trimmed.is_empty() {
+                return Ok(trimmed);
+            }
         }
+        if let Some(sec_p) = crate::config::providers::get_secondary_provider(self) {
+            if let Some(entry) = crate::config::providers::get_provider_entry(self, &sec_p) {
+                let trimmed = entry.model.trim().to_string();
+                if !trimmed.is_empty() {
+                    return Ok(trimmed);
+                }
+            }
+        }
+        if !crate::config::providers::provider_roles_migrated(self) {
+            if let Some(legacy) = self
+                .file_string("GOOSE_SECONDARY_MODEL")
+                .or_else(|| self.file_string("OPENDUCK_SECONDARY_MODEL"))
+            {
+                return Ok(legacy);
+            }
+        }
+        Err(ConfigError::NotFound("secondary_model".to_string()))
     }
 }
 config_value!(GOOSE_PROMPT_EDITOR, Option<String>);

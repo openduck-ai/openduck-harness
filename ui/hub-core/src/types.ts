@@ -173,6 +173,51 @@ export interface AppConfigDocument {
   entries: ConfigEntry[]
 }
 
+export interface ProviderSelectorField {
+  value: string | null
+  fileValue: string | null
+  fromEnv: boolean
+}
+
+export interface ProviderDetail {
+  name: string
+  enabled: boolean
+  configured: boolean
+  model: string
+  modelEnvValue: string | null
+  fastModel: string | null
+  fastModelEnvValue: string | null
+  secondaryModel: string | null
+  secondaryModelEnvValue: string | null
+  resolvedFastModel: string
+  fastModelUsesMain: boolean
+  suggestedFastModel: string | null
+}
+
+export interface ProvidersConfigResponse {
+  majorProvider: ProviderSelectorField
+  secondaryProvider: ProviderSelectorField
+  modelFromEnv: boolean
+  fastModelFromEnv: boolean
+  secondaryModelFromEnv: boolean
+  availableProviders: string[]
+  providers: ProviderDetail[]
+}
+
+export interface ProviderEntryPutItem {
+  name: string
+  enabled: boolean
+  model: string
+  fastModel: string | null
+  secondaryModel: string | null
+}
+
+export interface ProviderConfigPutBody {
+  majorProvider: string | null
+  secondaryProvider: string | null
+  providers: ProviderEntryPutItem[]
+}
+
 export interface Job {
   id: string
   source: string

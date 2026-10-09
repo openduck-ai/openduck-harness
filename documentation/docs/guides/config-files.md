@@ -48,7 +48,7 @@ Existing Goose config directories are migrated automatically. Override the confi
 
 ### Configuration Sections
 
-- **Default Provider & Models**: Defines active LLM provider, default model, and fast routing model.
+- **Providers & Models**: Defines active LLM provider, secondary fallback provider, and per-entry models and fast models.
 - **Provider Host Overrides**: Custom host endpoints and base paths for standard providers (e.g. OpenAI proxies, Anthropic proxies, local Ollama).
 - **Execution Mode**: `auto` (autonomous tool use), `chat` (conversational only, no tools), or `approve` (prompt before running tools).
 - **Extensions / MCP Servers**: Declares platform, builtin, and external stdio/SSE Model Context Protocol (MCP) servers.
@@ -64,9 +64,18 @@ Existing Goose config directories are migrated automatically. Override the confi
 # ------------------------------------------------------------------
 # 1. Provider & Model Configuration
 # ------------------------------------------------------------------
-OPENDUCK_PROVIDER: openai
-OPENDUCK_MODEL: "gpt-4o"
-OPENDUCK_FAST_MODEL: "gpt-4o-mini"
+active_provider: openai
+secondary_provider: anthropic
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: "gpt-4o"
+    fast_model: "gpt-4o-mini"
+  anthropic:
+    enabled: true
+    configured: true
+    model: "claude-sonnet-4-5"
 GOOSE_MODE: auto
 GOOSE_TELEMETRY_ENABLED: false
 

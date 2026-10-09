@@ -30,6 +30,7 @@ use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, Tool};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex};
 
+use crate::config::env as openduck_env;
 use crate::config::Config;
 use crate::conversation::message::{Message, MessageContent};
 use crate::model_config::model_config_from_user_config;
@@ -338,6 +339,7 @@ async fn stream_provider_completion(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn complete_provider_with_retry(
     provider: &Arc<dyn Provider>,
     model_config: &ModelConfig,
@@ -910,6 +912,88 @@ pub async fn resolve_harness_policy(
     resolve_harness_policy_with_secondary(provider_opt, model_opt, None, None).await
 }
 
+pub fn resolve_secondary_target(
+    config: &Config,
+    primary_provider: &str,
+    sec_provider_opt: Option<&str>,
+    sec_model_opt: Option<&str>,
+) -> Result<Option<(String, String)>> {
+    let primary_provider = primary_provider.trim();
+    if primary_provider.is_empty() {
+        return Err(anyhow!("Primary provider name cannot be empty"));
+    }
+
+    let sec_provider_name = match sec_provider_opt {
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            trimmed.to_string()
+        }
+        None => match crate::config::providers::get_secondary_provider(config) {
+            Some(p) => p,
+            None => return Ok(None),
+        },
+    };
+
+    if sec_provider_name == primary_provider {
+        return Err(anyhow!(
+            "Secondary provider '{sec_provider_name}' cannot be the same as primary provider '{primary_provider}'"
+        ));
+    }
+
+    let entry = crate::config::providers::get_provider_entry(config, &sec_provider_name);
+    let roles_migrated = crate::config::providers::provider_roles_migrated(config);
+
+    if roles_migrated || entry.is_some() {
+        let entry_ref = entry.as_ref().ok_or_else(|| {
+            anyhow!("Provider '{sec_provider_name}' not found in providers configuration")
+        })?;
+        if !entry_ref.enabled {
+            return Err(anyhow!(
+                "Secondary provider '{sec_provider_name}' is not enabled"
+            ));
+        }
+        if !entry_ref.configured {
+            return Err(anyhow!(
+                "Secondary provider '{sec_provider_name}' is not configured"
+            ));
+        }
+    }
+
+    let sec_model_name = if let Some(m) = sec_model_opt.map(|s| s.trim()).filter(|s| !s.is_empty())
+    {
+        m.to_string()
+    } else if let Some(val) = openduck_env::get_var("SECONDARY_MODEL")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        val
+    } else if let Some(entry) = entry.as_ref().filter(|e| !e.model.trim().is_empty()) {
+        entry.model.trim().to_string()
+    } else if !roles_migrated {
+        config
+            .file_string("GOOSE_SECONDARY_MODEL")
+            .or_else(|| config.file_string("OPENDUCK_SECONDARY_MODEL"))
+            .ok_or_else(|| {
+                anyhow!("No model configured for secondary provider '{sec_provider_name}'")
+            })?
+    } else {
+        return Err(anyhow!(
+            "No model configured for secondary provider '{sec_provider_name}'"
+        ));
+    };
+
+    if sec_model_name.trim().is_empty() {
+        return Err(anyhow!(
+            "No model configured for secondary provider '{sec_provider_name}'"
+        ));
+    }
+
+    Ok(Some((sec_provider_name, sec_model_name)))
+}
+
 pub async fn resolve_harness_policy_with_secondary(
     provider_opt: Option<&str>,
     model_opt: Option<&str>,
@@ -918,17 +1002,44 @@ pub async fn resolve_harness_policy_with_secondary(
 ) -> Result<GooseAgentPolicy> {
     let config = Config::global();
     let provider_name = match provider_opt {
-        Some(p) => p.to_string(),
+        Some(p) => {
+            let trimmed = p.trim();
+            if trimmed.is_empty() {
+                return Err(anyhow!("Primary provider name cannot be empty"));
+            }
+            trimmed.to_string()
+        }
         None => config.get_goose_provider().context(
             "No default provider configured. Use --provider <name> or run 'goose configure'",
         )?,
     };
 
-    let model_name = match model_opt {
+    let model_name = match model_opt.map(|s| s.trim()).filter(|s| !s.is_empty()) {
         Some(m) => m.to_string(),
-        None => config
-            .get_goose_model()
-            .unwrap_or_else(|_| "default".to_string()),
+        None => {
+            if let Some(entry) = crate::config::get_provider_entry(config, &provider_name) {
+                let m = entry.model.trim().to_string();
+                if !m.is_empty() {
+                    m
+                } else if provider_opt.is_some() {
+                    return Err(anyhow!(
+                        "No model configured for provider '{provider_name}'"
+                    ));
+                } else {
+                    config
+                        .get_goose_model()
+                        .context("No model configured for active provider")?
+                }
+            } else if provider_opt.is_some() {
+                return Err(anyhow!(
+                    "Provider '{provider_name}' not found in providers configuration"
+                ));
+            } else {
+                config
+                    .get_goose_model()
+                    .context("No model configured for active provider")?
+            }
+        }
     };
 
     let model_config = model_config_from_user_config(&provider_name, &model_name)?;
@@ -937,18 +1048,20 @@ pub async fn resolve_harness_policy_with_secondary(
     let policy_name = format!("{}:{}", provider_name, model_name);
     let mut policy = GooseAgentPolicy::new(policy_name, provider, model_config);
 
-    let sec_provider_name = sec_provider_opt
-        .map(|s| s.to_string())
-        .or_else(|| config.get_goose_secondary_provider().ok());
-
-    if let Some(sec_p) = sec_provider_name {
-        let sec_model_name = sec_model_opt
-            .map(|s| s.to_string())
-            .or_else(|| config.get_goose_secondary_model().ok())
-            .unwrap_or_else(|| "default".to_string());
-        if let Ok(sec_model_config) = model_config_from_user_config(&sec_p, &sec_model_name) {
-            if let Ok(sec_provider) = crate::providers::create(&sec_p, vec![]).await {
+    if let Some((sec_p, sec_model_name)) =
+        resolve_secondary_target(config, &provider_name, sec_provider_opt, sec_model_opt)?
+    {
+        let sec_model_config = model_config_from_user_config(&sec_p, &sec_model_name)?;
+        match crate::providers::create(&sec_p, vec![]).await {
+            Ok(sec_provider) => {
                 policy = policy.with_secondary_provider(sec_provider, sec_model_config);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %sec_p,
+                    error = %e,
+                    "Failed to create secondary provider; continuing with no fallback"
+                );
             }
         }
     }
@@ -1383,6 +1496,7 @@ fn empty_live_snapshot(task_id: &str) -> HarnessRunResponseDto {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish_live_snapshot(
     job_id: &str,
     task_id: &str,
@@ -3804,6 +3918,231 @@ mod tests {
             }
             other => panic!("Expected FinalAnswer, got {:?}", other),
         }
+    }
+
+    fn new_test_config() -> Config {
+        let config_file = tempfile::NamedTempFile::new().unwrap();
+        let secrets_file = tempfile::NamedTempFile::new().unwrap();
+        Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap()
+    }
+
+    #[test]
+    fn test_resolve_without_secondary_leaves_policy_without_secondary() {
+        let config = new_test_config();
+        let target = resolve_secondary_target(&config, "openai", None, None).unwrap();
+        assert!(target.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_primary_error_still_calls_secondary() {
+        use crate::config::providers::{set_provider_entry, set_secondary_provider, ProviderEntry};
+        use openduck_providers::base::MessageStream;
+        use openduck_providers::conversation::message::Message;
+        use openduck_providers::errors::ProviderError;
+        use openduck_providers::model::ModelConfig;
+        use rmcp::model::Tool;
+
+        let config = new_test_config();
+        set_secondary_provider(&config, Some("anthropic")).unwrap();
+        set_provider_entry(
+            &config,
+            "anthropic",
+            &ProviderEntry {
+                enabled: true,
+                configured: true,
+                model: "claude-sonnet-4-5".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (sec_name, sec_model) = resolve_secondary_target(&config, "openai", None, None)
+            .unwrap()
+            .expect("should resolve secondary");
+        assert_eq!(sec_name, "anthropic");
+        assert_eq!(sec_model, "claude-sonnet-4-5");
+        assert_ne!(sec_model, "default");
+
+        struct FailingPrimary;
+        #[async_trait]
+        impl Provider for FailingPrimary {
+            fn get_name(&self) -> &str {
+                "failing-primary"
+            }
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                let s = futures::stream::iter(vec![Err(ProviderError::stream_decode_error(
+                    "error decoding response body",
+                ))]);
+                Ok(Box::pin(s))
+            }
+        }
+
+        struct WorkingSecondary;
+        #[async_trait]
+        impl Provider for WorkingSecondary {
+            fn get_name(&self) -> &str {
+                "working-secondary"
+            }
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                let msg = Message::assistant().with_text("Secondary provider answer");
+                let s = futures::stream::iter(vec![Ok((Some(msg), None))]);
+                Ok(Box::pin(s))
+            }
+        }
+
+        let primary_model = ModelConfig::new("gpt-4o");
+        let secondary_model = ModelConfig::new(&sec_model);
+
+        let mut policy =
+            GooseAgentPolicy::new("test-policy", Arc::new(FailingPrimary), primary_model)
+                .with_secondary_provider(Arc::new(WorkingSecondary), secondary_model);
+
+        let mut context = HarnessContextView::new("test-session", std::path::PathBuf::from("."));
+        context.messages = vec![openduck_harness::policy::HarnessMessage::user("Solve task")];
+
+        let action = policy
+            .step(&context, &[])
+            .await
+            .expect("policy step should succeed via secondary provider");
+        match action {
+            AgentAction::FinalAnswer(answer) => {
+                assert_eq!(answer, "Secondary provider answer");
+            }
+            other => panic!("Expected FinalAnswer, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_missing_secondary_entry_model_is_config_error_not_default() {
+        use crate::config::providers::{set_provider_entry, set_secondary_provider, ProviderEntry};
+
+        let config = new_test_config();
+        set_secondary_provider(&config, Some("anthropic")).unwrap();
+        set_provider_entry(
+            &config,
+            "anthropic",
+            &ProviderEntry {
+                enabled: true,
+                configured: true,
+                model: "".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let err = resolve_secondary_target(&config, "openai", None, None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("No model configured for secondary provider 'anthropic'"));
+    }
+
+    #[test]
+    fn test_request_secondary_model_overrides_entry_model() {
+        use crate::config::providers::{set_provider_entry, set_secondary_provider, ProviderEntry};
+
+        let config = new_test_config();
+        set_secondary_provider(&config, Some("anthropic")).unwrap();
+        set_provider_entry(
+            &config,
+            "anthropic",
+            &ProviderEntry {
+                enabled: true,
+                configured: true,
+                model: "claude-sonnet-4-5".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (name, model) =
+            resolve_secondary_target(&config, "openai", None, Some("claude-opus-4-1"))
+                .unwrap()
+                .expect("should resolve secondary");
+        assert_eq!(name, "anthropic");
+        assert_eq!(model, "claude-opus-4-1");
+    }
+
+    #[test]
+    fn test_request_empty_secondary_provider_disables_fallback() {
+        use crate::config::providers::{set_provider_entry, set_secondary_provider, ProviderEntry};
+
+        let config = new_test_config();
+        set_secondary_provider(&config, Some("anthropic")).unwrap();
+        set_provider_entry(
+            &config,
+            "anthropic",
+            &ProviderEntry {
+                enabled: true,
+                configured: true,
+                model: "claude-sonnet-4-5".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let target1 = resolve_secondary_target(&config, "openai", Some(""), None).unwrap();
+        assert!(target1.is_none());
+
+        let target2 = resolve_secondary_target(&config, "openai", Some("   "), None).unwrap();
+        assert!(target2.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_request_empty_primary_provider_does_not_fall_through() {
+        let err1 = match resolve_harness_policy_with_secondary(Some(""), None, None, None).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected empty primary to error"),
+        };
+        assert_eq!(err1.to_string(), "Primary provider name cannot be empty");
+        assert!(!err1.to_string().contains("No default provider configured"));
+
+        let err2 = match resolve_harness_policy_with_secondary(Some("   "), None, None, None).await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("expected whitespace primary to error"),
+        };
+        assert_eq!(err2.to_string(), "Primary provider name cannot be empty");
+    }
+
+    #[test]
+    fn test_secondary_equal_primary_rejected_at_resolve() {
+        use crate::config::providers::{set_provider_entry, set_secondary_provider, ProviderEntry};
+
+        let config = new_test_config();
+        set_secondary_provider(&config, Some("openai")).unwrap();
+        set_provider_entry(
+            &config,
+            "openai",
+            &ProviderEntry {
+                enabled: true,
+                configured: true,
+                model: "gpt-4o".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let err1 = resolve_secondary_target(&config, "openai", None, None).unwrap_err();
+        assert!(err1.to_string().contains(
+            "Secondary provider 'openai' cannot be the same as primary provider 'openai'"
+        ));
+
+        let err2 = resolve_secondary_target(&config, "openai", Some("openai"), None).unwrap_err();
+        assert!(err2.to_string().contains(
+            "Secondary provider 'openai' cannot be the same as primary provider 'openai'"
+        ));
     }
 
     #[test]

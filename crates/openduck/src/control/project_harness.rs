@@ -1800,11 +1800,17 @@ async fn estimate_with_model(
         )?,
     };
 
-    let model_name = match config.policy.model.as_deref() {
+    let model_name = match config
+        .policy
+        .model
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         Some(m) => m.to_string(),
         None => global_config
             .get_goose_model()
-            .unwrap_or_else(|_| "default".to_string()),
+            .context("No model configured for active provider")?,
     };
 
     let model_config = model_config_from_user_config(&provider_name, &model_name)?;

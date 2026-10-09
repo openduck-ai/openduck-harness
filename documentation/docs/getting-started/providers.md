@@ -915,7 +915,7 @@ To set up SayGM with goose, follow these steps:
 
 ### Google Gemini
 
-Use Gemini models through the Gemini API with a key from [Google AI Studio](https://aistudio.google.com/apikey). The provider id is `google`; `gemini` is an accepted alias. Default model is `gemini-2.5-pro` (fast model `gemini-2.5-flash`).
+Use Gemini models through the Gemini API with a key from [Google AI Studio](https://aistudio.google.com/apikey). The provider id is `google`; `gemini` is an accepted alias. Default model is `gemini-2.5-pro` (suggested fast model `gemini-2.5-flash`; an unset fast model uses the provider's `model`).
 
 Set either `GEMINI_API_KEY` (the name Google documents) or `GOOGLE_API_KEY`. If both are set, `GOOGLE_API_KEY` wins. See the [Google Gemini guide](/docs/guides/google-gemini-provider) for models, thinking levels, Vertex vs API-key differences, and environment-only setup.
 

@@ -1418,6 +1418,23 @@ async fn remove_judge_config(
         .map_err(config_error)
 }
 
+async fn get_providers_config(
+) -> Result<Json<app_config::ProvidersConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::get_providers_config(crate::config::Config::global())
+        .await
+        .map(Json)
+        .map_err(config_error)
+}
+
+async fn update_providers_config(
+    Json(raw_body): Json<serde_json::Value>,
+) -> Result<Json<app_config::ProvidersConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::update_providers_config(crate::config::Config::global(), raw_body)
+        .await
+        .map(Json)
+        .map_err(config_error)
+}
+
 pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
     tokio::spawn(async {
         match super::task_scheduler::global().await {
@@ -1437,6 +1454,10 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
             get(get_app_config)
                 .put(upsert_app_config)
                 .delete(remove_app_config),
+        )
+        .route(
+            "/api/v1/config/providers",
+            get(get_providers_config).put(update_providers_config),
         )
         .route("/api/v1/config/harness", put(update_harness_config))
         .route(

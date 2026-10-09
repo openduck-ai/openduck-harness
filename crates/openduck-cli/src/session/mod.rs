@@ -1989,56 +1989,57 @@ impl CliSession {
             })
             .collect();
 
-        let mut cache = self.completion_cache.write().unwrap();
-        cache.prompts.clear();
-        cache.prompt_info.clear();
+        {
+            let mut cache = self.completion_cache.write().unwrap();
+            cache.prompts.clear();
+            cache.prompt_info.clear();
 
-        for (extension, prompt_list) in prompts {
-            let names: Vec<String> = prompt_list.iter().map(|p| p.name.clone()).collect();
-            cache.prompts.insert(extension.clone(), names);
+            for (extension, prompt_list) in prompts {
+                let names: Vec<String> = prompt_list.iter().map(|p| p.name.clone()).collect();
+                cache.prompts.insert(extension.clone(), names);
 
-            for prompt in prompt_list {
-                cache.prompt_info.insert(
-                    prompt.name.clone(),
-                    output::PromptInfo {
-                        name: prompt.name.clone(),
-                        description: prompt.description.clone(),
-                        arguments: prompt.arguments.clone(),
-                        extension: Some(extension.clone()),
-                    },
-                );
+                for prompt in prompt_list {
+                    cache.prompt_info.insert(
+                        prompt.name.clone(),
+                        output::PromptInfo {
+                            name: prompt.name.clone(),
+                            description: prompt.description.clone(),
+                            arguments: prompt.arguments.clone(),
+                            extension: Some(extension.clone()),
+                        },
+                    );
+                }
             }
-        }
 
-        cache.provider_names = all_providers.iter().map(|(m, _)| m.name.clone()).collect();
-        cache.current_session_provider = session_provider;
-        cache.provider_models.clear();
-        for (metadata, _) in &all_providers {
-            let mut models: Vec<String> = metadata
-                .known_models
-                .iter()
-                .map(|m| m.name.clone())
-                .collect();
+            cache.provider_names = all_providers.iter().map(|(m, _)| m.name.clone()).collect();
+            cache.current_session_provider = session_provider;
+            cache.provider_models.clear();
+            for (metadata, _) in &all_providers {
+                let mut models: Vec<String> = metadata
+                    .known_models
+                    .iter()
+                    .map(|m| m.name.clone())
+                    .collect();
 
-            if let Some(inv_models) = inventory_models.get(&metadata.name) {
-                for model_id in inv_models {
-                    if !models.contains(model_id) {
-                        models.push(model_id.clone());
+                if let Some(inv_models) = inventory_models.get(&metadata.name) {
+                    for model_id in inv_models {
+                        if !models.contains(model_id) {
+                            models.push(model_id.clone());
+                        }
                     }
                 }
-            }
 
-            if let Some(model) = configured_models.get(&metadata.name) {
-                if !models.contains(model) {
-                    models.push(model.clone());
+                if let Some(model) = configured_models.get(&metadata.name) {
+                    if !models.contains(model) {
+                        models.push(model.clone());
+                    }
                 }
+
+                cache.provider_models.insert(metadata.name.clone(), models);
             }
 
-            cache.provider_models.insert(metadata.name.clone(), models);
+            cache.last_updated = Instant::now();
         }
-
-        cache.last_updated = Instant::now();
-        drop(cache);
 
         self.refresh_resume_completions().await;
         Ok(())

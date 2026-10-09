@@ -305,7 +305,7 @@ your configuration.
 > At the moment, we are still updating some of the CLI configuration to make sure this is
 > respected.
 
-You can change the provider OpenDuck points to via the `OPENDUCK_PROVIDER` env var (legacy `GOOSE_PROVIDER` still works). If you already
+You can change the provider OpenDuck points to via the `OPENDUCK_PROVIDER` env var (legacy `GOOSE_PROVIDER` still works). `OPENDUCK_SECONDARY_PROVIDER` (legacy `GOOSE_SECONDARY_PROVIDER`) selects the fallback provider and the fallback model is that provider's configured model unless `OPENDUCK_SECONDARY_MODEL` is set. If you already
 have a credential for that provider in your keychain from previously setting up, it should
 reuse it. For things like automations or to test without doing official setup, you can also
 set the relevant env vars for that provider. For example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,

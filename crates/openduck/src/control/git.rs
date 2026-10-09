@@ -906,9 +906,7 @@ async fn generate_with_model(diff: &str) -> Result<String> {
 
     let config = Config::global();
     let provider_name = config.get_goose_provider()?;
-    let model_name = config
-        .get_goose_model()
-        .unwrap_or_else(|_| "default".to_string());
+    let model_name = config.get_goose_model()?;
     let model_config = model_config_from_user_config(&provider_name, &model_name)?;
     let provider = crate::providers::create(&provider_name, vec![]).await?;
     let system = "You write concise git commit messages. Prefer conventional commits (feat, fix, docs, refactor, test, chore) when they fit. First line at most 72 characters. Optional body after a blank line. Output only the commit message.";

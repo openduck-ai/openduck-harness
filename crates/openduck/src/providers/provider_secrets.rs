@@ -617,6 +617,7 @@ mod tests {
                 enabled: true,
                 model: "Qwen/Qwen3-Coder-480B-A35B-Instruct".to_string(),
                 configured: true,
+                ..Default::default()
             },
         )
         .unwrap();

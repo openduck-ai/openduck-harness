@@ -128,16 +128,17 @@ OpenDuck lists known Gemini models and can also fetch the live catalog from the 
 | Model | Notes |
 |---|---|
 | `gemini-2.5-pro` | Default model |
-| `gemini-2.5-flash` | Default fast model (titles, classification, and similar auxiliary calls) |
+| `gemini-2.5-flash` | Suggested fast model (session titles, tool-call labels, orchestrator summary; unset uses the configured model) |
 | `gemini-2.5-flash-lite` | Lower-latency Flash variant |
 | `gemini-2.0-flash` | Gemini 2.0 Flash |
 | `gemini-3-pro-preview` | Gemini 3 Pro preview |
 | `gemini-3.5-flash` | Gemini 3.5 Flash |
+| `gemini-3.8-flash` | Gemini 3.8 Flash |
 | `gemini-3.6-flash` | Gemini 3.6 Flash |
 
 See Google's [model list](https://ai.google.dev/gemini-api/docs/models) for current names and limits.
 
-Override the fast model with `OPENDUCK_FAST_MODEL` (legacy `GOOSE_FAST_MODEL`) if you want a different auxiliary model.
+Override the fast model with `OPENDUCK_FAST_MODEL` (legacy `GOOSE_FAST_MODEL`) if you want a process-wide auxiliary model override.
 
 ## Thinking
 

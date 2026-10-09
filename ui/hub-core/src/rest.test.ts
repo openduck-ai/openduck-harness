@@ -391,6 +391,20 @@ test('REST client reads and updates OpenDuck config', async () => {
   try {
     const api = createApi('http://host', 'secret')
     await api.getAppConfig()
+    await api.getProvidersConfig()
+    await api.updateProvidersConfig({
+      majorProvider: 'openai',
+      secondaryProvider: null,
+      providers: [
+        {
+          name: 'openai',
+          enabled: true,
+          model: 'gpt-4o',
+          fastModel: null,
+          secondaryModel: null,
+        },
+      ],
+    })
     await api.upsertAppConfig('OLLAMA_HOST', 'http://127.0.0.1:11434')
     await api.updateHarnessConfig({
       maxTurns: 40,
@@ -412,6 +426,8 @@ test('REST client reads and updates OpenDuck config', async () => {
       calls.map(call => `${call.method} ${call.url}`),
       [
         'GET http://host/api/v1/config',
+        'GET http://host/api/v1/config/providers',
+        'PUT http://host/api/v1/config/providers',
         'PUT http://host/api/v1/config',
         'PUT http://host/api/v1/config/harness',
         'PUT http://host/api/v1/config/judge',
@@ -419,8 +435,9 @@ test('REST client reads and updates OpenDuck config', async () => {
         'DELETE http://host/api/v1/config/judge',
       ],
     )
-    assert.equal(calls[1]?.body, JSON.stringify({ key: 'OLLAMA_HOST', value: 'http://127.0.0.1:11434' }))
-    assert.equal(JSON.parse(calls[2]?.body ?? '{}').maxTurns, 40)
+    assert.equal(JSON.parse(calls[2]?.body ?? '{}').majorProvider, 'openai')
+    assert.equal(calls[3]?.body, JSON.stringify({ key: 'OLLAMA_HOST', value: 'http://127.0.0.1:11434' }))
+    assert.equal(JSON.parse(calls[4]?.body ?? '{}').maxTurns, 40)
   } finally {
     globalThis.fetch = originalFetch
   }

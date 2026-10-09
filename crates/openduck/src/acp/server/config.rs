@@ -150,7 +150,7 @@ impl GooseAcpAgent {
             config.delete("GOOSE_PROVIDER").internal_err()?;
         } else if req.key == "GOOSE_MODEL" {
             if let Ok(provider) = config.get_goose_provider() {
-                crate::config::set_active_provider(config, &provider, "").internal_err()?;
+                crate::config::clear_provider_model(config, &provider).internal_err()?;
             }
             config.delete("GOOSE_MODEL").internal_err()?;
         } else {
