@@ -953,11 +953,12 @@ pub fn from_declarative_config(
         Some(key) if !key.is_empty() => AuthMethod::BearerToken(key),
         _ => AuthMethod::NoAuth,
     };
-    let mut api_client = ApiClient::with_timeout_and_tls(
+    let mut api_client = ApiClient::with_timeout_tls_and_proxy(
         host,
         auth,
         std::time::Duration::from_secs(timeout_secs),
         tls_config,
+        config.proxy.clone(),
     )?;
 
     if let Some(query) = url.query() {
@@ -1420,6 +1421,7 @@ mod tests {
             preserves_thinking: false,
             emit_clear_thinking: false,
             setup: None,
+            proxy: None,
         }
     }
 

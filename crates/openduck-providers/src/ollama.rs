@@ -332,8 +332,13 @@ pub fn from_declarative_config(
         _ => AuthMethod::NoAuth,
     };
 
-    let mut api_client =
-        ApiClient::with_timeout_and_tls(base_url.to_string(), auth, timeout, tls_config)?;
+    let mut api_client = ApiClient::with_timeout_tls_and_proxy(
+        base_url.to_string(),
+        auth,
+        timeout,
+        tls_config,
+        config.proxy.clone(),
+    )?;
 
     if let Some(headers) = &config.headers {
         let mut header_map = reqwest::header::HeaderMap::new();
@@ -575,6 +580,7 @@ mod tests {
             preserves_thinking: false,
             emit_clear_thinking: false,
             setup: None,
+            proxy: None,
         }
     }
 

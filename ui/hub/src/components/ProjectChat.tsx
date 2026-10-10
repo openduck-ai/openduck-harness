@@ -25,6 +25,7 @@ import {
   ChevronRight,
   Terminal,
   Folder,
+  Cpu,
 } from 'lucide-react'
 import {
   MentionPopover,
@@ -50,6 +51,11 @@ interface ProjectChatProps {
   secret: string
   api?: ReturnType<typeof createApi>
   selectedSessionId?: string | null
+  currentProviderModel?: {
+    provider: string
+    model: string
+    isOverride?: boolean
+  } | null
 }
 
 export function ProjectChat({
@@ -58,6 +64,7 @@ export function ProjectChat({
   secret,
   api,
   selectedSessionId,
+  currentProviderModel,
 }: ProjectChatProps) {
   const [prompt, setPrompt] = useState('')
   const [copiedSessionId, setCopiedSessionId] = useState(false)
@@ -359,6 +366,18 @@ export function ProjectChat({
             <Folder size={12} />
             <span>{detail.project.slug}</span>
           </div>
+
+          {currentProviderModel && (currentProviderModel.provider || currentProviderModel.model) && (
+            <div
+              className="chat-model-badge"
+              title={`Active Model: ${currentProviderModel.provider} / ${currentProviderModel.model}`}
+            >
+              <Cpu size={12} className="chat-model-icon" />
+              <span className="chat-model-provider">{currentProviderModel.provider}</span>
+              <span className="chat-model-separator">/</span>
+              <span className="chat-model-name">{currentProviderModel.model}</span>
+            </div>
+          )}
 
           {session.sessionId && (
             <button

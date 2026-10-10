@@ -436,11 +436,12 @@ pub fn from_declarative_config(
     let timeout_secs = config
         .timeout_seconds
         .unwrap_or(DEFAULT_ANTHROPIC_TIMEOUT_SECONDS);
-    let mut api_client = ApiClient::with_timeout_and_tls(
+    let mut api_client = ApiClient::with_timeout_tls_and_proxy(
         config.base_url,
         auth,
         std::time::Duration::from_secs(timeout_secs),
         tls_config,
+        config.proxy.clone(),
     )?;
 
     if let Some(headers) = &config.headers {

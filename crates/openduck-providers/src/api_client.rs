@@ -32,6 +32,7 @@ pub struct ApiClient {
     tls_config: Option<TlsConfig>,
     request_builder: Option<RequestBuilderDecorator>,
     transport_policy: TransportPolicy,
+    proxy: Option<String>,
 }
 
 #[derive(Clone)]
@@ -276,7 +277,23 @@ impl ApiClient {
         timeout: Duration,
         tls_config: Option<TlsConfig>,
     ) -> Result<Self> {
+        Self::with_timeout_tls_and_proxy(host, auth, timeout, tls_config, None)
+    }
+
+    pub fn with_timeout_tls_and_proxy(
+        host: String,
+        auth: AuthMethod,
+        timeout: Duration,
+        tls_config: Option<TlsConfig>,
+        proxy: Option<String>,
+    ) -> Result<Self> {
+        let proxy_clean = proxy.filter(|p| !p.trim().is_empty());
         let mut client_builder = Self::client_builder(timeout);
+
+        if let Some(ref proxy_url) = proxy_clean {
+            let req_proxy = reqwest::Proxy::all(proxy_url.trim())?;
+            client_builder = client_builder.proxy(req_proxy);
+        }
 
         if let Some(ref config) = tls_config {
             client_builder = Self::configure_tls(client_builder, config)?;
@@ -294,7 +311,18 @@ impl ApiClient {
             tls_config,
             request_builder: None,
             transport_policy: TransportPolicy::Default,
+            proxy: proxy_clean,
         })
+    }
+
+    pub fn with_proxy(mut self, proxy: Option<String>) -> Result<Self> {
+        self.proxy = proxy.filter(|p| !p.trim().is_empty());
+        self.rebuild_client()?;
+        Ok(self)
+    }
+
+    pub fn proxy(&self) -> Option<&str> {
+        self.proxy.as_deref()
     }
 
     pub fn host(&self) -> &str {
@@ -316,6 +344,11 @@ impl ApiClient {
         let mut client_builder =
             Self::client_builder(self.timeout).default_headers(self.default_headers.clone());
         client_builder = Self::configure_transport(client_builder, &self.transport_policy);
+
+        if let Some(ref proxy_url) = self.proxy {
+            let proxy = reqwest::Proxy::all(proxy_url.trim())?;
+            client_builder = client_builder.proxy(proxy);
+        }
 
         // Configure TLS if needed
         if let Some(ref tls_config) = self.tls_config {

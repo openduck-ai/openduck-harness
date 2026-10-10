@@ -22,6 +22,8 @@ pub struct ProviderEntry {
     pub fast_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secondary_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
 }
 
 impl ProviderEntry {
@@ -40,6 +42,14 @@ impl ProviderEntry {
                 self.secondary_model = None;
             } else if trimmed != sm {
                 self.secondary_model = Some(trimmed.to_string());
+            }
+        }
+        if let Some(proxy) = &self.proxy {
+            let trimmed = proxy.trim();
+            if trimmed.is_empty() {
+                self.proxy = None;
+            } else if trimmed != proxy {
+                self.proxy = Some(trimmed.to_string());
             }
         }
     }
@@ -303,6 +313,68 @@ pub fn upsert_provider_models(
     set_provider_entry(config, name_trimmed, &entry)
 }
 
+pub fn get_provider_proxy(config: &Config, name: &str) -> Option<String> {
+    let name_trimmed = name.trim();
+    let upper = name_trimmed.to_ascii_uppercase().replace('-', "_");
+
+    let resolve_proxy_value = |raw: &str| -> Option<String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if let Some(proxy_entry) = crate::config::proxies::get_proxy_entry(config, trimmed) {
+            if !proxy_entry.url.trim().is_empty() {
+                return Some(proxy_entry.url.trim().to_string());
+            }
+        }
+        Some(trimmed.to_string())
+    };
+
+    if let Some(val) = openduck_env::get_var(&format!("OPENDUCK_PROVIDER_{upper}_PROXY")) {
+        if let Some(resolved) = resolve_proxy_value(&val) {
+            return Some(resolved);
+        }
+    }
+    if let Some(val) = openduck_env::get_var(&format!("GOOSE_PROVIDER_{upper}_PROXY")) {
+        if let Some(resolved) = resolve_proxy_value(&val) {
+            return Some(resolved);
+        }
+    }
+    if let Some(val) = openduck_env::get_var(&format!("{upper}_PROXY")) {
+        if let Some(resolved) = resolve_proxy_value(&val) {
+            return Some(resolved);
+        }
+    }
+    if let Ok(val) = config.get_param::<String>(&format!("{upper}_PROXY")) {
+        if let Some(resolved) = resolve_proxy_value(&val) {
+            return Some(resolved);
+        }
+    }
+    get_provider_entry(config, name_trimmed)
+        .and_then(|entry| entry.proxy.and_then(|p| resolve_proxy_value(&p)))
+}
+
+pub fn set_provider_proxy(
+    config: &Config,
+    name: &str,
+    proxy: Option<String>,
+) -> Result<(), ConfigError> {
+    let name_trimmed = name.trim();
+    if let Some(mut entry) = get_provider_entry(config, name_trimmed) {
+        entry.proxy = proxy;
+        entry.normalize();
+        set_provider_entry(config, name_trimmed, &entry)?;
+    } else if let Some(proxy) = proxy {
+        let mut entry = ProviderEntry {
+            proxy: Some(proxy),
+            ..Default::default()
+        };
+        entry.normalize();
+        set_provider_entry(config, name_trimmed, &entry)?;
+    }
+    Ok(())
+}
+
 pub fn validate_selection(
     config: &Config,
     major: Option<&str>,
@@ -495,6 +567,7 @@ mod tests {
             configured: true,
             fast_model: None,
             secondary_model: None,
+            proxy: None,
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
         assert_eq!(get_provider_fast_model_name(&config, "openai"), None);
@@ -509,6 +582,7 @@ mod tests {
             configured: true,
             fast_model: Some("   ".to_string()),
             secondary_model: None,
+            proxy: None,
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
         let loaded = get_provider_entry(&config, "openai").unwrap();
@@ -525,6 +599,7 @@ mod tests {
             configured: true,
             fast_model: None,
             secondary_model: None,
+            proxy: None,
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
         assert_eq!(get_provider_secondary_model(&config, "openai"), None);
@@ -539,6 +614,7 @@ mod tests {
             configured: true,
             fast_model: None,
             secondary_model: Some("  ".to_string()),
+            proxy: None,
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
         let loaded = get_provider_entry(&config, "openai").unwrap();
@@ -555,6 +631,7 @@ mod tests {
             configured: true,
             fast_model: None,
             secondary_model: None,
+            proxy: None,
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
         assert_eq!(get_provider_secondary_model(&config, "openai"), None);
@@ -569,6 +646,7 @@ mod tests {
             configured: true,
             fast_model: Some("gpt-4o-mini".to_string()),
             secondary_model: Some("gpt-4.1".to_string()),
+            proxy: None,
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
 
@@ -596,6 +674,7 @@ mod tests {
             configured: true,
             fast_model: Some("gpt-4o-mini".to_string()),
             secondary_model: Some("gpt-4.1".to_string()),
+            proxy: None,
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
 
@@ -616,6 +695,7 @@ mod tests {
             configured: false,
             fast_model: Some("fast-m".to_string()),
             secondary_model: Some("sec-m".to_string()),
+            proxy: None,
         };
         set_provider_entry(&config, "acp-provider", &entry).unwrap();
 
@@ -785,6 +865,7 @@ providers:
             configured: true,
             fast_model: Some("entry-fast".to_string()),
             secondary_model: None,
+            proxy: None,
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
 
@@ -792,6 +873,47 @@ providers:
         assert_eq!(
             resolve_provider_fast_model(&config, "openai"),
             Some("env-fast".to_string())
+        );
+    }
+
+    #[test]
+    fn test_provider_proxy_config_and_env() {
+        let config = new_test_config();
+        assert_eq!(get_provider_proxy(&config, "google"), None);
+
+        // Entry proxy
+        set_provider_proxy(&config, "google", Some("http://127.0.0.1:2087".to_string())).unwrap();
+        assert_eq!(
+            get_provider_proxy(&config, "google"),
+            Some("http://127.0.0.1:2087".to_string())
+        );
+
+        // Direct <NAME>_PROXY overrides entry proxy
+        let _guard1 = EnvGuard::set("GOOGLE_PROXY", "socks5://127.0.0.1:1088");
+        assert_eq!(
+            get_provider_proxy(&config, "google"),
+            Some("socks5://127.0.0.1:1088".to_string())
+        );
+
+        // OPENDUCK_PROVIDER_<NAME>_PROXY takes precedence
+        let _guard2 = EnvGuard::set("OPENDUCK_PROVIDER_GOOGLE_PROXY", "http://127.0.0.1:8888");
+        assert_eq!(
+            get_provider_proxy(&config, "google"),
+            Some("http://127.0.0.1:8888".to_string())
+        );
+        drop(_guard2);
+        drop(_guard1);
+
+        // Pre-configured proxy resolution
+        let proxy_entry = crate::config::proxies::ProxyEntry::new(
+            "http://127.0.0.1:7890",
+            Some("Clash".to_string()),
+        );
+        crate::config::proxies::set_proxy_entry(&config, "clash", &proxy_entry).unwrap();
+        set_provider_proxy(&config, "google", Some("clash".to_string())).unwrap();
+        assert_eq!(
+            get_provider_proxy(&config, "google"),
+            Some("http://127.0.0.1:7890".to_string())
         );
     }
 }

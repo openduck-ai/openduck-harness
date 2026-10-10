@@ -156,6 +156,8 @@ pub struct DeclarativeProviderConfig {
     pub emit_clear_thinking: bool,
     #[serde(default)]
     pub setup: Option<openduck_provider_types::canonical::catalog::ProviderSetupMetadata>,
+    #[serde(default, deserialize_with = "deserialize_non_empty_string")]
+    pub proxy: Option<String>,
 }
 
 fn default_requires_auth() -> bool {
@@ -247,6 +249,10 @@ fn resolve_config(config: &mut DeclarativeProviderConfig) -> Result<()> {
     if let Some(env_vars) = &config.env_vars {
         config.base_url = expand_env_vars(&config.base_url, env_vars)?;
 
+        if let Some(proxy) = &config.proxy {
+            config.proxy = Some(expand_env_vars(proxy, env_vars)?);
+        }
+
         for var in env_vars {
             if var.name.ends_with("_STREAMING") {
                 let value = std::env::var(&var.name)
@@ -257,6 +263,25 @@ fn resolve_config(config: &mut DeclarativeProviderConfig) -> Result<()> {
                     config.supports_streaming = Some(value);
                 }
             }
+        }
+    }
+
+    if config.proxy.is_none() {
+        let upper = config.name.to_ascii_uppercase().replace('-', "_");
+        let proxy_val = std::env::var(format!("OPENDUCK_PROVIDER_{upper}_PROXY"))
+            .or_else(|_| std::env::var(format!("GOOSE_PROVIDER_{upper}_PROXY")))
+            .or_else(|_| std::env::var(format!("{upper}_PROXY")))
+            .ok()
+            .and_then(|v| {
+                let trimmed = v.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            });
+        if proxy_val.is_some() {
+            config.proxy = proxy_val;
         }
     }
 

@@ -6,10 +6,15 @@ import {
   buildPutBody,
   draftFromResponse,
   fastModelLabel,
+  findMatchingProxyId,
   normalizeFastModel,
+  normalizeProxy,
   normalizeSecondaryModel,
+  resolveProxyLabel,
   secondaryModelLabel,
   validateDraft,
+  validateProxyId,
+  validateProxyUrl,
 } from './providerConfig.ts'
 
 const sampleResponse: ProvidersConfigResponse = {
@@ -217,3 +222,75 @@ test('an empty provider list still renders the add control from availableProvide
   assert.equal(withFirst.providers.length, 1)
   assert.equal(withFirst.providers[0]?.name, 'openai')
 })
+
+test('blank proxy normalizes to absent', () => {
+  assert.equal(normalizeProxy(''), null)
+  assert.equal(normalizeProxy('   '), null)
+  assert.equal(normalizeProxy(null), null)
+  assert.equal(normalizeProxy('http://127.0.0.1:2087'), 'http://127.0.0.1:2087')
+  assert.equal(normalizeProxy('  socks5://127.0.0.1:1088  '), 'socks5://127.0.0.1:1088')
+})
+
+test('proxy is preserved in buildPutBody', () => {
+  const resp: ProvidersConfigResponse = {
+    ...sampleResponse,
+    providers: [
+      {
+        ...sampleResponse.providers[0]!,
+        proxy: 'http://127.0.0.1:2087',
+      },
+    ],
+  }
+  const draft = draftFromResponse(resp)
+  assert.equal(draft.providers[0]?.proxy, 'http://127.0.0.1:2087')
+
+  const putBody = buildPutBody(draft)
+  assert.equal(putBody.providers[0]?.proxy, 'http://127.0.0.1:2087')
+})
+
+test('proxies list is loaded in draftFromResponse', () => {
+  const resp: ProvidersConfigResponse = {
+    ...sampleResponse,
+    proxies: [
+      { id: 'clash', url: 'http://127.0.0.1:7890', description: 'Clash proxy' },
+    ],
+  }
+  const draft = draftFromResponse(resp)
+  assert.equal(draft.proxies.length, 1)
+  assert.equal(draft.proxies[0]?.id, 'clash')
+  assert.equal(draft.proxies[0]?.url, 'http://127.0.0.1:7890')
+})
+
+test('validateProxyUrl checks protocol and non-empty', () => {
+  assert.equal(validateProxyUrl(''), 'Proxy URL cannot be empty')
+  assert.equal(validateProxyUrl('ftp://localhost'), 'Proxy URL must start with http://, https://, or socks5://')
+  assert.equal(validateProxyUrl('http://127.0.0.1:7890'), null)
+  assert.equal(validateProxyUrl('https://proxy.corp:8443'), null)
+  assert.equal(validateProxyUrl('socks5://127.0.0.1:1088'), null)
+})
+
+test('validateProxyId checks characters and uniqueness', () => {
+  const existing = [{ id: 'clash', url: 'http://127.0.0.1:7890' }]
+  assert.equal(validateProxyId('', existing), 'Proxy ID cannot be empty')
+  assert.equal(validateProxyId('clash/bad', existing), 'Proxy ID can only contain letters, numbers, underscores, and dashes')
+  assert.equal(validateProxyId('clash', existing), 'Proxy ID "clash" already exists')
+  assert.equal(validateProxyId('clash', existing, 'clash'), null)
+  assert.equal(validateProxyId('socks_proxy-1', existing), null)
+})
+
+test('resolveProxyLabel and findMatchingProxyId resolve aliases', () => {
+  const proxies = [
+    { id: 'clash', url: 'http://127.0.0.1:7890' },
+    { id: 'socks', url: 'socks5://127.0.0.1:1088' },
+  ]
+  assert.equal(resolveProxyLabel(null, proxies), 'no proxy')
+  assert.equal(resolveProxyLabel('', proxies), 'no proxy')
+  assert.equal(resolveProxyLabel('clash', proxies), 'clash (http://127.0.0.1:7890)')
+  assert.equal(resolveProxyLabel('http://127.0.0.1:7890', proxies), 'clash (http://127.0.0.1:7890)')
+  assert.equal(resolveProxyLabel('http://custom:1234', proxies), 'http://custom:1234')
+
+  assert.equal(findMatchingProxyId('clash', proxies), 'clash')
+  assert.equal(findMatchingProxyId('http://127.0.0.1:7890', proxies), 'clash')
+  assert.equal(findMatchingProxyId('http://custom:1234', proxies), null)
+})
+

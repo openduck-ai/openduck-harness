@@ -12,6 +12,7 @@ import {
   Folder,
   Code2,
   ScrollText,
+  Cpu,
 } from 'lucide-react'
 import { TabSkeleton, ProjectDetailHeaderSkeleton } from './Skeletons'
 
@@ -126,6 +127,76 @@ export function ProjectDetail({
     }
   }, [selectedSessionId, onTabChange])
 
+  const [providerModel, setProviderModel] = useState<{
+    provider: string
+    model: string
+    isOverride?: boolean
+  } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadProviderAndModel() {
+      try {
+        const [appConfig, harnessConfig, providersConfig] = await Promise.all([
+          api.getAppConfig().catch(() => null),
+          api.getProjectHarnessConfig?.(detail.project.slug).catch(() => null),
+          api.getProvidersConfig().catch(() => null),
+        ])
+        if (cancelled) return
+
+        const harnessProvider = harnessConfig?.policy?.provider?.trim()
+        const harnessModel = harnessConfig?.policy?.model?.trim()
+
+        if (harnessProvider || harnessModel) {
+          const provider =
+            harnessProvider ||
+            appConfig?.provider?.value ||
+            providersConfig?.majorProvider?.value ||
+            ''
+          let model = harnessModel || ''
+          if (!model && providersConfig && provider) {
+            model =
+              providersConfig.providers.find(p => p.name === provider)?.model || ''
+          }
+          if (!model) {
+            model = appConfig?.model?.value || ''
+          }
+          setProviderModel({
+            provider: provider || 'Unknown',
+            model: model || 'Default',
+            isOverride: true,
+          })
+          return
+        }
+
+        const globalProvider =
+          appConfig?.provider?.value ||
+          providersConfig?.majorProvider?.value ||
+          ''
+        let globalModel = appConfig?.model?.value || ''
+        if (!globalModel && providersConfig && globalProvider) {
+          globalModel =
+            providersConfig.providers.find(p => p.name === globalProvider)?.model || ''
+        }
+
+        if (globalProvider || globalModel) {
+          setProviderModel({
+            provider: globalProvider || 'Unknown',
+            model: globalModel || 'Default',
+            isOverride: false,
+          })
+        }
+      } catch (err) {
+        console.debug('Failed to load project provider/model:', err)
+      }
+    }
+
+    void loadProviderAndModel()
+    return () => {
+      cancelled = true
+    }
+  }, [api, detail.project.slug])
+
   const handleSelectTab = (tab: ProjectSubTab) => {
     setActiveTab(tab)
     onTabChange?.(tab)
@@ -164,6 +235,28 @@ export function ProjectDetail({
                 <span className="meta-chip lang-chip">
                   <Code2 size={12} />
                   <span>{detail.project.language}</span>
+                </span>
+              )}
+              {providerModel && (providerModel.provider || providerModel.model) && (
+                <span
+                  className="meta-chip model-chip"
+                  title={
+                    providerModel.isOverride
+                      ? `Project Policy: ${providerModel.provider} / ${providerModel.model}`
+                      : `Active Provider & Model: ${providerModel.provider} / ${providerModel.model}`
+                  }
+                >
+                  <Cpu size={12} className="meta-chip-icon" />
+                  <span className="provider-name">{providerModel.provider}</span>
+                  {providerModel.model && (
+                    <>
+                      <span className="chip-separator">/</span>
+                      <span className="model-name">{providerModel.model}</span>
+                    </>
+                  )}
+                  {providerModel.isOverride && (
+                    <span className="override-badge">custom</span>
+                  )}
                 </span>
               )}
             </div>
@@ -279,6 +372,7 @@ export function ProjectDetail({
                 secret={secret}
                 api={api}
                 selectedSessionId={selectedSessionId}
+                currentProviderModel={providerModel}
               />
             </div>
           )}

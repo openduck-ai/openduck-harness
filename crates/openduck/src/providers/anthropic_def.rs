@@ -53,11 +53,13 @@ async fn from_env(
         key: api_key,
     };
 
-    let api_client = ApiClient::with_timeout_and_tls(
+    let proxy = crate::config::providers::get_provider_proxy(config, "anthropic");
+    let api_client = ApiClient::with_timeout_tls_and_proxy(
         host,
         auth,
         std::time::Duration::from_secs(timeout_secs),
         tls_config,
+        proxy,
     )?
     .with_request_builder(crate::session_context::session_id_request_builder())
     .with_header("anthropic-version", ANTHROPIC_API_VERSION)?;
@@ -135,6 +137,7 @@ mod tests {
             preserves_thinking: false,
             emit_clear_thinking: false,
             setup: None,
+            proxy: None,
         }
     }
 

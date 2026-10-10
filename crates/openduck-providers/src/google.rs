@@ -97,6 +97,11 @@ impl GoogleProvider {
         })
     }
 
+    pub fn with_proxy(mut self, proxy: Option<String>) -> Result<Self> {
+        self.api_client = self.api_client.with_proxy(proxy)?;
+        Ok(self)
+    }
+
     async fn post_stream(
         &self,
         model_config: &ModelConfig,
@@ -130,6 +135,8 @@ impl crate::base::ProviderDescriptor for GoogleProvider {
                 ConfigKey::new(GOOGLE_API_KEY_ENV, true, true, None, true)
                     .with_env_aliases(&[GEMINI_API_KEY_ENV]),
                 ConfigKey::new("GOOGLE_HOST", false, false, Some(GOOGLE_API_HOST), false),
+                ConfigKey::new("GOOGLE_PROXY", false, false, None, false)
+                    .with_env_aliases(&["GEMINI_PROXY"]),
             ],
         )
         .with_fast_model(GOOGLE_DEFAULT_FAST_MODEL)

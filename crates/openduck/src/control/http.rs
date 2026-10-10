@@ -1435,6 +1435,21 @@ async fn update_providers_config(
         .map_err(config_error)
 }
 
+async fn get_proxies_config(
+) -> Result<Json<app_config::ProxiesConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::get_proxies_config(crate::config::Config::global())
+        .map(Json)
+        .map_err(config_error)
+}
+
+async fn update_proxies_config(
+    Json(raw_body): Json<serde_json::Value>,
+) -> Result<Json<app_config::ProxiesConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::update_proxies_config(crate::config::Config::global(), raw_body)
+        .map(Json)
+        .map_err(config_error)
+}
+
 pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
     tokio::spawn(async {
         match super::task_scheduler::global().await {
@@ -1458,6 +1473,10 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
         .route(
             "/api/v1/config/providers",
             get(get_providers_config).put(update_providers_config),
+        )
+        .route(
+            "/api/v1/config/proxies",
+            get(get_proxies_config).put(update_proxies_config),
         )
         .route("/api/v1/config/harness", put(update_harness_config))
         .route(

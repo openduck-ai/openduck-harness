@@ -405,6 +405,12 @@ test('REST client reads and updates OpenDuck config', async () => {
         },
       ],
     })
+    await api.getProxiesConfig()
+    await api.updateProxiesConfig({
+      proxies: [
+        { id: 'clash', url: 'http://127.0.0.1:7890', description: 'Clash proxy' },
+      ],
+    })
     await api.upsertAppConfig('OLLAMA_HOST', 'http://127.0.0.1:11434')
     await api.updateHarnessConfig({
       maxTurns: 40,
@@ -428,6 +434,8 @@ test('REST client reads and updates OpenDuck config', async () => {
         'GET http://host/api/v1/config',
         'GET http://host/api/v1/config/providers',
         'PUT http://host/api/v1/config/providers',
+        'GET http://host/api/v1/config/proxies',
+        'PUT http://host/api/v1/config/proxies',
         'PUT http://host/api/v1/config',
         'PUT http://host/api/v1/config/harness',
         'PUT http://host/api/v1/config/judge',
@@ -436,8 +444,9 @@ test('REST client reads and updates OpenDuck config', async () => {
       ],
     )
     assert.equal(JSON.parse(calls[2]?.body ?? '{}').majorProvider, 'openai')
-    assert.equal(calls[3]?.body, JSON.stringify({ key: 'OLLAMA_HOST', value: 'http://127.0.0.1:11434' }))
-    assert.equal(JSON.parse(calls[4]?.body ?? '{}').maxTurns, 40)
+    assert.equal(JSON.parse(calls[4]?.body ?? '{}').proxies[0].id, 'clash')
+    assert.equal(calls[5]?.body, JSON.stringify({ key: 'OLLAMA_HOST', value: 'http://127.0.0.1:11434' }))
+    assert.equal(JSON.parse(calls[6]?.body ?? '{}').maxTurns, 40)
   } finally {
     globalThis.fetch = originalFetch
   }

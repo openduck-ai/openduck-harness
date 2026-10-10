@@ -42,6 +42,7 @@ This provider is **not** Vertex AI, Gemini CLI, or Gemini OAuth:
 | `GOOGLE_HOST` | No | Gemini API host. Defaults to `https://generativelanguage.googleapis.com` |
 | `GEMINI3_THINKING_LEVEL` | No | Thinking level for Gemini 3 models: `low` (default) or `high` |
 | `GEMINI25_THINKING_BUDGET` | No | Optional thinking token budget for Gemini 2.5 models |
+| `GOOGLE_PROXY` or `GEMINI_PROXY` | No | Provider-specific HTTP, HTTPS, or SOCKS5 proxy URL (e.g. `http://127.0.0.1:2087`, `socks5://127.0.0.1:1088`) |
 
 <Tabs groupId="interface">
   <TabItem value="env" label="Environment" default>

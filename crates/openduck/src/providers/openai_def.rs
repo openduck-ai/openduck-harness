@@ -122,11 +122,13 @@ pub async fn from_env(
         Some(key) if !key.is_empty() => AuthMethod::BearerToken(key),
         _ => AuthMethod::NoAuth,
     };
-    let mut api_client = ApiClient::with_timeout_and_tls(
+    let proxy = crate::config::providers::get_provider_proxy(config, "openai");
+    let mut api_client = ApiClient::with_timeout_tls_and_proxy(
         parsed.host,
         auth,
         std::time::Duration::from_secs(timeout_secs),
         tls_config,
+        proxy,
     )?
     .with_request_builder(crate::session_context::session_id_request_builder());
 

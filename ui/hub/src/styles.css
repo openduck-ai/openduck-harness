@@ -1450,6 +1450,81 @@ textarea {
   color: var(--text-secondary);
 }
 
+.meta-chip.model-chip {
+  background: rgba(56, 189, 248, 0.08);
+  border-color: rgba(56, 189, 248, 0.28);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.meta-chip.model-chip .meta-chip-icon {
+  color: var(--accent-sky);
+  flex-shrink: 0;
+}
+
+.meta-chip.model-chip .provider-name {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.meta-chip.model-chip .chip-separator {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.meta-chip.model-chip .model-name {
+  font-family: var(--font-mono);
+  color: var(--accent-sky);
+  font-weight: 600;
+}
+
+.meta-chip.model-chip .override-badge {
+  font-size: 0.65rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  background: var(--accent-amber-tint);
+  border: 1px solid var(--accent-amber-border);
+  color: var(--accent-amber);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: 0.2rem;
+}
+
+.chat-model-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.25rem 0.55rem;
+  border-radius: 4px;
+}
+
+.chat-model-badge .chat-model-icon {
+  color: var(--accent-sky);
+  flex-shrink: 0;
+}
+
+.chat-model-badge .chat-model-provider {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.chat-model-badge .chat-model-separator {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.chat-model-badge .chat-model-name {
+  font-family: var(--font-mono);
+  color: var(--accent-sky);
+  font-weight: 600;
+}
+
 .project-subtabs {
   display: flex;
   align-items: center;

@@ -1,6 +1,7 @@
 import type {
   ProviderConfigPutBody,
   ProvidersConfigResponse,
+  ProxyItem,
 } from '@aaif/goose-hub-core'
 
 export interface ProviderRowDraft {
@@ -10,6 +11,7 @@ export interface ProviderRowDraft {
   model: string
   fastModel: string
   secondaryModel: string
+  proxy: string
   modelEnvValue: string | null
   fastModelEnvValue: string | null
   secondaryModelEnvValue: string | null
@@ -19,6 +21,7 @@ export interface ProviderRowDraft {
   fileModel: string
   fileFastModel: string | null
   fileSecondaryModel: string | null
+  fileProxy: string | null
 }
 
 export interface ProviderConfigDraft {
@@ -33,6 +36,7 @@ export interface ProviderConfigDraft {
   secondaryModelFromEnv: boolean
   availableProviders: string[]
   providers: ProviderRowDraft[]
+  proxies: ProxyItem[]
 }
 
 export function normalizeFastModel(fastModel: string | null | undefined, model: string): string | null {
@@ -47,6 +51,67 @@ export function normalizeSecondaryModel(secondaryModel: string | null | undefine
   const trimmed = secondaryModel.trim()
   if (!trimmed) return null
   return trimmed
+}
+
+export function normalizeProxy(proxy: string | null | undefined): string | null {
+  if (!proxy) return null
+  const trimmed = proxy.trim()
+  return trimmed ? trimmed : null
+}
+
+export function validateProxyUrl(url: string): string | null {
+  const trimmed = url.trim()
+  if (!trimmed) return 'Proxy URL cannot be empty'
+  if (
+    !trimmed.startsWith('http://') &&
+    !trimmed.startsWith('https://') &&
+    !trimmed.startsWith('socks5://') &&
+    !trimmed.startsWith('socks5h://')
+  ) {
+    return 'Proxy URL must start with http://, https://, or socks5://'
+  }
+  return null
+}
+
+export function validateProxyId(
+  id: string,
+  existingProxies: ProxyItem[],
+  currentId?: string,
+): string | null {
+  const trimmed = id.trim()
+  if (!trimmed) return 'Proxy ID cannot be empty'
+  if (/[^a-zA-Z0-9_-]/.test(trimmed)) {
+    return 'Proxy ID can only contain letters, numbers, underscores, and dashes'
+  }
+  if (existingProxies.some(p => p.id === trimmed && p.id !== currentId)) {
+    return `Proxy ID "${trimmed}" already exists`
+  }
+  return null
+}
+
+export function resolveProxyLabel(
+  proxyValue: string | null | undefined,
+  proxies: ProxyItem[],
+): string {
+  if (!proxyValue) return 'no proxy'
+  const trimmed = proxyValue.trim()
+  if (!trimmed) return 'no proxy'
+  const match = proxies.find(p => p.id === trimmed || p.url === trimmed)
+  if (match) {
+    return `${match.id} (${match.url})`
+  }
+  return trimmed
+}
+
+export function findMatchingProxyId(
+  proxyValue: string | null | undefined,
+  proxies: ProxyItem[],
+): string | null {
+  if (!proxyValue) return null
+  const trimmed = proxyValue.trim()
+  if (!trimmed) return null
+  const match = proxies.find(p => p.id === trimmed || p.url === trimmed)
+  return match ? match.id : null
 }
 
 export function fastModelLabel(fastModel: string | null | undefined, model: string): string {
@@ -71,6 +136,7 @@ export function draftFromResponse(resp: ProvidersConfigResponse): ProviderConfig
     fastModelFromEnv: resp.fastModelFromEnv,
     secondaryModelFromEnv: resp.secondaryModelFromEnv,
     availableProviders: [...resp.availableProviders],
+    proxies: resp.proxies ? resp.proxies.map(p => ({ id: p.id, url: p.url, description: p.description ?? null })) : [],
     providers: resp.providers.map(p => ({
       name: p.name,
       enabled: p.enabled,
@@ -78,6 +144,7 @@ export function draftFromResponse(resp: ProvidersConfigResponse): ProviderConfig
       model: p.model,
       fastModel: p.fastModel ?? '',
       secondaryModel: p.secondaryModel ?? '',
+      proxy: p.proxy ?? '',
       modelEnvValue: p.modelEnvValue,
       fastModelEnvValue: p.fastModelEnvValue,
       secondaryModelEnvValue: p.secondaryModelEnvValue,
@@ -87,6 +154,7 @@ export function draftFromResponse(resp: ProvidersConfigResponse): ProviderConfig
       fileModel: p.model,
       fileFastModel: p.fastModel,
       fileSecondaryModel: p.secondaryModel,
+      fileProxy: p.proxy ?? null,
     })),
   }
 }
@@ -102,6 +170,7 @@ export function addProvider(draft: ProviderConfigDraft, name: string): ProviderC
     model: '',
     fastModel: '',
     secondaryModel: '',
+    proxy: '',
     modelEnvValue: null,
     fastModelEnvValue: null,
     secondaryModelEnvValue: null,
@@ -111,6 +180,7 @@ export function addProvider(draft: ProviderConfigDraft, name: string): ProviderC
     fileModel: '',
     fileFastModel: null,
     fileSecondaryModel: null,
+    fileProxy: null,
   }
   return {
     ...draft,
@@ -187,6 +257,7 @@ export function buildPutBody(draft: ProviderConfigDraft): ProviderConfigPutBody 
     }
 
     let secondaryModel: string | null = normalizeSecondaryModel(p.secondaryModel)
+    let proxy: string | null = normalizeProxy(p.proxy)
 
     return {
       name: p.name.trim(),
@@ -194,6 +265,7 @@ export function buildPutBody(draft: ProviderConfigDraft): ProviderConfigPutBody 
       model,
       fastModel,
       secondaryModel,
+      proxy,
     }
   })
 

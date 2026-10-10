@@ -192,6 +192,21 @@ export interface ProviderDetail {
   resolvedFastModel: string
   fastModelUsesMain: boolean
   suggestedFastModel: string | null
+  proxy?: string | null
+}
+
+export interface ProxyItem {
+  id: string
+  url: string
+  description?: string | null
+}
+
+export interface ProxiesConfigResponse {
+  proxies: ProxyItem[]
+}
+
+export interface ProxiesConfigPutBody {
+  proxies: ProxyItem[]
 }
 
 export interface ProvidersConfigResponse {
@@ -202,6 +217,7 @@ export interface ProvidersConfigResponse {
   secondaryModelFromEnv: boolean
   availableProviders: string[]
   providers: ProviderDetail[]
+  proxies?: ProxyItem[]
 }
 
 export interface ProviderEntryPutItem {
@@ -210,6 +226,7 @@ export interface ProviderEntryPutItem {
   model: string
   fastModel: string | null
   secondaryModel: string | null
+  proxy?: string | null
 }
 
 export interface ProviderConfigPutBody {

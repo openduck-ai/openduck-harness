@@ -140,6 +140,30 @@ pub struct ProviderDetail {
     pub resolved_fast_model: String,
     pub fast_model_uses_main: bool,
     pub suggested_fast_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyItem {
+    pub id: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxiesConfigResponse {
+    pub proxies: Vec<ProxyItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxiesConfigPutBody {
+    pub proxies: Vec<ProxyItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,6 +176,8 @@ pub struct ProvidersConfigResponse {
     pub secondary_model_from_env: bool,
     pub available_providers: Vec<String>,
     pub providers: Vec<ProviderDetail>,
+    #[serde(default)]
+    pub proxies: Vec<ProxyItem>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +198,8 @@ pub struct ProviderEntryPutItem {
     pub model: String,
     pub fast_model: Option<String>,
     pub secondary_model: Option<String>,
+    #[serde(default)]
+    pub proxy: Option<String>,
 }
 
 const KNOWN_JUDGE_POINTS: &[&str] = &[
@@ -184,6 +212,7 @@ const KNOWN_JUDGE_POINTS: &[&str] = &[
 const STRUCTURAL_KEYS: &[&str] = &[
     "extensions",
     "providers",
+    "proxies",
     "harness",
     "judge",
     "advisors",
@@ -628,8 +657,19 @@ pub async fn get_providers_config(
             resolved_fast_model,
             fast_model_uses_main,
             suggested_fast_model,
+            proxy: entry.proxy,
         });
     }
+
+    let proxies_map = crate::config::proxies::get_proxies_map(config);
+    let proxies: Vec<ProxyItem> = proxies_map
+        .into_iter()
+        .map(|(id, entry)| ProxyItem {
+            id,
+            url: entry.url,
+            description: entry.description,
+        })
+        .collect();
 
     Ok(ProvidersConfigResponse {
         major_provider,
@@ -639,6 +679,7 @@ pub async fn get_providers_config(
         secondary_model_from_env,
         available_providers,
         providers: provider_details,
+        proxies,
     })
 }
 
@@ -914,6 +955,13 @@ pub async fn update_providers_config(
             .unwrap_or(false);
         let configured = !model.is_empty() && (is_live || previously_configured);
 
+        let proxy = item
+            .proxy
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
         new_map.insert(
             name,
             crate::config::providers::ProviderEntry {
@@ -922,6 +970,7 @@ pub async fn update_providers_config(
                 model,
                 fast_model,
                 secondary_model,
+                proxy,
             },
         );
     }
@@ -975,6 +1024,75 @@ pub async fn update_providers_config(
     config.save_provider_configuration(req_major.as_deref(), req_secondary.as_deref(), &new_map)?;
 
     get_providers_config(config).await
+}
+
+pub fn get_proxies_config(config: &Config) -> Result<ProxiesConfigResponse, AppConfigError> {
+    let map = crate::config::proxies::get_proxies_map(config);
+    let proxies = map
+        .into_iter()
+        .map(|(id, entry)| ProxyItem {
+            id,
+            url: entry.url,
+            description: entry.description,
+        })
+        .collect();
+    Ok(ProxiesConfigResponse { proxies })
+}
+
+pub fn update_proxies_config(
+    config: &Config,
+    raw_body: Value,
+) -> Result<ProxiesConfigResponse, AppConfigError> {
+    check_no_secret_keys(&raw_body)?;
+    let body: ProxiesConfigPutBody = serde_json::from_value(raw_body)
+        .map_err(|e| AppConfigError::invalid(format!("Invalid proxies payload: {e}")))?;
+
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut clean_map = indexmap::IndexMap::new();
+
+    for item in body.proxies {
+        let id = require_token(&item.id, "Proxy ID")?;
+        if id.contains(':') || id.contains('/') || id.contains('\\') {
+            return Err(AppConfigError::invalid(format!(
+                "Proxy ID '{id}' contains invalid characters"
+            )));
+        }
+        if !seen_ids.insert(id.clone()) {
+            return Err(AppConfigError::invalid(format!("Duplicate proxy ID: {id}")));
+        }
+        let url = item.url.trim();
+        if url.is_empty() {
+            return Err(AppConfigError::invalid(format!(
+                "Proxy '{id}' has an empty URL"
+            )));
+        }
+        if !url.starts_with("http://")
+            && !url.starts_with("https://")
+            && !url.starts_with("socks5://")
+            && !url.starts_with("socks5h://")
+        {
+            return Err(AppConfigError::invalid(format!(
+                "Proxy '{id}' URL must start with http://, https://, or socks5://"
+            )));
+        }
+
+        let description = item.description.and_then(|d| {
+            let trimmed = d.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+
+        clean_map.insert(
+            id,
+            crate::config::proxies::ProxyEntry::new(url, description),
+        );
+    }
+
+    crate::config::proxies::set_proxies_map(config, &clean_map)?;
+    get_proxies_config(config)
 }
 
 enum SettingKind {
@@ -2463,5 +2581,72 @@ providers:
             }
             _ => panic!("Expected Invalid error"),
         }
+    }
+
+    #[test]
+    fn test_proxies_get_and_update() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+active_provider: openai
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: gpt-4o
+"#,
+        );
+        let resp = get_proxies_config(&fixture.config).unwrap();
+        assert!(resp.proxies.is_empty());
+
+        let put_val = serde_json::json!({
+            "proxies": [
+                {
+                    "id": "clash",
+                    "url": "http://127.0.0.1:7890",
+                    "description": "Clash proxy"
+                },
+                {
+                    "id": "socks",
+                    "url": "socks5://127.0.0.1:1088"
+                }
+            ]
+        });
+        let updated = update_proxies_config(&fixture.config, put_val).unwrap();
+        assert_eq!(updated.proxies.len(), 2);
+        assert_eq!(updated.proxies[0].id, "clash");
+        assert_eq!(updated.proxies[0].url, "http://127.0.0.1:7890");
+        assert_eq!(
+            updated.proxies[0].description.as_deref(),
+            Some("Clash proxy")
+        );
+        assert_eq!(updated.proxies[1].id, "socks");
+        assert_eq!(updated.proxies[1].url, "socks5://127.0.0.1:1088");
+
+        // Reject invalid URL protocol
+        let invalid_url = serde_json::json!({
+            "proxies": [
+                {
+                    "id": "bad",
+                    "url": "ftp://127.0.0.1:21"
+                }
+            ]
+        });
+        assert!(update_proxies_config(&fixture.config, invalid_url).is_err());
+
+        // Reject duplicate id
+        let dup_id = serde_json::json!({
+            "proxies": [
+                {
+                    "id": "clash",
+                    "url": "http://127.0.0.1:7890"
+                },
+                {
+                    "id": "clash",
+                    "url": "http://127.0.0.1:7891"
+                }
+            ]
+        });
+        assert!(update_proxies_config(&fixture.config, dup_id).is_err());
     }
 }

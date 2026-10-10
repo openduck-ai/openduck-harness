@@ -44,6 +44,8 @@ import type {
   ProjectTaskEstimateResponse,
   ProjectTaskRunRequest,
   ProjectTaskSummary,
+  ProxiesConfigPutBody,
+  ProxiesConfigResponse,
   ProviderConfigPutBody,
   ProvidersConfigResponse,
   RenameFileInput,
@@ -144,6 +146,12 @@ export function createApi(baseUrl: string, secret = '') {
     getProvidersConfig: () => request<ProvidersConfigResponse>('/api/v1/config/providers'),
     updateProvidersConfig: (body: ProviderConfigPutBody) =>
       request<ProvidersConfigResponse>('/api/v1/config/providers', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    getProxiesConfig: () => request<ProxiesConfigResponse>('/api/v1/config/proxies'),
+    updateProxiesConfig: (body: ProxiesConfigPutBody) =>
+      request<ProxiesConfigResponse>('/api/v1/config/proxies', {
         method: 'PUT',
         body: JSON.stringify(body),
       }),

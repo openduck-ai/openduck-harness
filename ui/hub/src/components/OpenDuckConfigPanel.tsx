@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
-import type { createApi } from '@aaif/goose-hub-core'
-import type { AppConfigDocument } from '@aaif/goose-hub-core'
-import { Trash2 } from 'lucide-react'
+import type { AppConfigDocument, ProxyItem, createApi } from '@aaif/goose-hub-core'
+import { Check, Edit2, Trash2, X } from 'lucide-react'
 import {
   draftFromResponse,
   addProvider,
   buildPutBody,
   fastModelLabel,
   secondaryModelLabel,
+  findMatchingProxyId,
+  validateProxyId,
+  validateProxyUrl,
   type ProviderConfigDraft,
 } from '../providerConfig'
 import {
@@ -35,6 +37,8 @@ type ConfigApi = Pick<
   | 'removeJudgeConfig'
   | 'getProvidersConfig'
   | 'updateProvidersConfig'
+  | 'getProxiesConfig'
+  | 'updateProxiesConfig'
 >
 
 interface OpenDuckConfigPanelProps {
@@ -52,6 +56,14 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
   const [doc, setDoc] = useState<AppConfigDocument | null>(null)
   const [drafts, setDrafts] = useState<ConfigDrafts | null>(null)
   const [providersDraft, setProvidersDraft] = useState<ProviderConfigDraft | null>(null)
+  const [proxiesDraft, setProxiesDraft] = useState<ProxyItem[]>([])
+  const [newProxyId, setNewProxyId] = useState('')
+  const [newProxyUrl, setNewProxyUrl] = useState('')
+  const [newProxyDesc, setNewProxyDesc] = useState('')
+  const [proxyFormError, setProxyFormError] = useState('')
+  const [editingProxyId, setEditingProxyId] = useState<string | null>(null)
+  const [editProxyUrl, setEditProxyUrl] = useState('')
+  const [editProxyDesc, setEditProxyDesc] = useState('')
   const [newProviderSelect, setNewProviderSelect] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -71,16 +83,26 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       setDoc(null)
       setDrafts(null)
       setProvidersDraft(null)
+      setProxiesDraft([])
       return
     }
     let cancelled = false
     setLoading(true)
     setError('')
-    void Promise.all([api.getAppConfig(), api.getProvidersConfig()])
-      .then(([nextConfig, nextProviders]) => {
+    void Promise.all([
+      api.getAppConfig(),
+      api.getProvidersConfig(),
+      api.getProxiesConfig ? api.getProxiesConfig() : Promise.resolve(null),
+    ])
+      .then(([nextConfig, nextProviders, nextProxies]) => {
         if (cancelled) return
         applyDocument(nextConfig)
         setProvidersDraft(draftFromResponse(nextProviders))
+        const loadedProxies =
+          nextProxies && nextProxies.proxies
+            ? nextProxies.proxies
+            : nextProviders.proxies ?? []
+        setProxiesDraft(loadedProxies)
         if (nextProviders.availableProviders.length > 0) {
           setNewProviderSelect(nextProviders.availableProviders[0] ?? '')
         }
@@ -106,6 +128,9 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       const putBody = buildPutBody(providersDraft)
       const saved = await api.updateProvidersConfig(putBody)
       setProvidersDraft(draftFromResponse(saved))
+      if (saved.proxies) {
+        setProxiesDraft(saved.proxies)
+      }
       if (saved.availableProviders.length > 0) {
         setNewProviderSelect(saved.availableProviders[0] ?? '')
       }
@@ -115,6 +140,88 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
     } finally {
       setSaving(null)
     }
+  }
+
+  const saveProxies = async () => {
+    setSaving('proxies')
+    setError('')
+    setNotice('')
+    try {
+      const saved = await api.updateProxiesConfig({ proxies: proxiesDraft })
+      setProxiesDraft(saved.proxies)
+      if (providersDraft) {
+        setProvidersDraft({ ...providersDraft, proxies: saved.proxies })
+      }
+      setNotice('Network proxy settings saved.')
+    } catch (cause) {
+      setError(messageFrom(cause, 'Failed to save network proxies'))
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  const handleAddProxy = () => {
+    setProxyFormError('')
+    const idErr = validateProxyId(newProxyId, proxiesDraft)
+    if (idErr) {
+      setProxyFormError(idErr)
+      return
+    }
+    const urlErr = validateProxyUrl(newProxyUrl)
+    if (urlErr) {
+      setProxyFormError(urlErr)
+      return
+    }
+    const newItem: ProxyItem = {
+      id: newProxyId.trim(),
+      url: newProxyUrl.trim(),
+      description: newProxyDesc.trim() || null,
+    }
+    const nextProxies = [...proxiesDraft, newItem]
+    setProxiesDraft(nextProxies)
+    if (providersDraft) {
+      setProvidersDraft({ ...providersDraft, proxies: nextProxies })
+    }
+    setNewProxyId('')
+    setNewProxyUrl('')
+    setNewProxyDesc('')
+  }
+
+  const handleDeleteProxy = (id: string) => {
+    const nextProxies = proxiesDraft.filter(p => p.id !== id)
+    setProxiesDraft(nextProxies)
+    if (providersDraft) {
+      setProvidersDraft({ ...providersDraft, proxies: nextProxies })
+    }
+    if (editingProxyId === id) {
+      setEditingProxyId(null)
+    }
+  }
+
+  const handleStartEditProxy = (proxy: ProxyItem) => {
+    setEditingProxyId(proxy.id)
+    setEditProxyUrl(proxy.url)
+    setEditProxyDesc(proxy.description ?? '')
+    setProxyFormError('')
+  }
+
+  const handleSaveEditProxy = (id: string) => {
+    const urlErr = validateProxyUrl(editProxyUrl)
+    if (urlErr) {
+      setProxyFormError(urlErr)
+      return
+    }
+    const nextProxies = proxiesDraft.map(p =>
+      p.id === id
+        ? { ...p, url: editProxyUrl.trim(), description: editProxyDesc.trim() || null }
+        : p,
+    )
+    setProxiesDraft(nextProxies)
+    if (providersDraft) {
+      setProvidersDraft({ ...providersDraft, proxies: nextProxies })
+    }
+    setEditingProxyId(null)
+    setProxyFormError('')
   }
 
   const saveMode = async () => {
@@ -364,13 +471,14 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                     <th style={{ padding: '0.5rem' }}>Model</th>
                     <th style={{ padding: '0.5rem' }}>Fast model</th>
                     <th style={{ padding: '0.5rem' }}>Secondary model</th>
+                    <th style={{ padding: '0.5rem' }}>Proxy</th>
                     <th style={{ padding: '0.5rem', width: '2.5rem' }}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {providersDraft.providers.length === 0 ? (
                     <tr>
-                      <td colSpan={6} style={{ padding: '1rem', textAlign: 'center' }} className="muted">
+                      <td colSpan={7} style={{ padding: '1rem', textAlign: 'center' }} className="muted">
                         No providers configured. Add one below.
                       </td>
                     </tr>
@@ -464,6 +572,72 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                             </div>
                           </td>
                           <td style={{ padding: '0.5rem' }}>
+                            {(() => {
+                              const matchedProxyId = findMatchingProxyId(row.proxy, proxiesDraft)
+                              const isCustom = Boolean(row.proxy.trim() && !matchedProxyId)
+                              const selectVal = matchedProxyId ? matchedProxyId : isCustom ? '__custom__' : ''
+
+                              return (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                                  <select
+                                    value={selectVal}
+                                    disabled={saving === 'providers'}
+                                    style={{ width: '100%', minWidth: '9.5rem' }}
+                                    onChange={e => {
+                                      const val = e.target.value
+                                      const next = [...providersDraft.providers]
+                                      if (val === '') {
+                                        next[idx] = { ...row, proxy: '' }
+                                      } else if (val === '__custom__') {
+                                        const customVal = isCustom ? row.proxy : 'http://'
+                                        next[idx] = { ...row, proxy: customVal }
+                                      } else {
+                                        next[idx] = { ...row, proxy: val }
+                                      }
+                                      setProvidersDraft({ ...providersDraft, providers: next })
+                                    }}
+                                  >
+                                    <option value="">None (direct)</option>
+                                    {proxiesDraft.map(p => (
+                                      <option key={p.id} value={p.id}>
+                                        {p.id} ({p.url})
+                                      </option>
+                                    ))}
+                                    <option value="__custom__">Custom URL…</option>
+                                  </select>
+
+                                  {selectVal === '__custom__' && (
+                                    <input
+                                      value={row.proxy}
+                                      disabled={saving === 'providers'}
+                                      onChange={e => {
+                                        const next = [...providersDraft.providers]
+                                        next[idx] = { ...row, proxy: e.target.value }
+                                        setProvidersDraft({ ...providersDraft, providers: next })
+                                      }}
+                                      placeholder="http://127.0.0.1:8080"
+                                      style={{ width: '100%', minWidth: '9.5rem', marginTop: '0.2rem' }}
+                                    />
+                                  )}
+
+                                  <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.15rem' }}>
+                                    {row.proxy.trim() ? (
+                                      matchedProxyId ? (
+                                        <span title={`Resolved to ${proxiesDraft.find(p => p.id === matchedProxyId)?.url}`}>
+                                          Using {matchedProxyId}
+                                        </span>
+                                      ) : (
+                                        <span>Custom proxy</span>
+                                      )
+                                    ) : (
+                                      'direct'
+                                    )}
+                                  </div>
+                                </div>
+                              )
+                            })()}
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
                             {row.name !== providersDraft.majorProvider &&
                               row.name !== providersDraft.secondaryProvider && (
                                 <button
@@ -540,6 +714,226 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                 onClick={() => void saveProviders()}
               >
                 {saving === 'providers' ? 'Saving…' : 'Save provider settings'}
+              </button>
+            </div>
+          </section>
+
+          <section className="config-section">
+            <h4>Network Proxies</h4>
+            <p className="form-hint">
+              Pre-configure reusable HTTP, HTTPS, or SOCKS5 proxies to easily assign to model providers.
+            </p>
+
+            <div className="provider-table-wrapper" style={{ overflowX: 'auto', marginTop: '0.75rem' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <th style={{ padding: '0.5rem' }}>Proxy ID</th>
+                    <th style={{ padding: '0.5rem' }}>Proxy URL</th>
+                    <th style={{ padding: '0.5rem' }}>Description</th>
+                    <th style={{ padding: '0.5rem' }}>Used By</th>
+                    <th style={{ padding: '0.5rem', width: '5.5rem' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {proxiesDraft.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} style={{ padding: '1rem', textAlign: 'center' }} className="muted">
+                        No proxies configured yet. Add one below to use with providers.
+                      </td>
+                    </tr>
+                  ) : (
+                    proxiesDraft.map(p => {
+                      const isEditing = editingProxyId === p.id
+                      const providersUsing = (providersDraft?.providers ?? [])
+                        .filter(row => row.proxy.trim() === p.id || row.proxy.trim() === p.url)
+                        .map(row => row.name)
+
+                      return (
+                        <tr key={p.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                          <td style={{ padding: '0.5rem', fontWeight: 600 }}>
+                            <span className="badge" style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}>
+                              {p.id}
+                            </span>
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
+                            {isEditing ? (
+                              <input
+                                value={editProxyUrl}
+                                onChange={e => setEditProxyUrl(e.target.value)}
+                                placeholder="e.g. http://127.0.0.1:7890"
+                                style={{ width: '100%', minWidth: '12rem' }}
+                              />
+                            ) : (
+                              <span style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}>{p.url}</span>
+                            )}
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
+                            {isEditing ? (
+                              <input
+                                value={editProxyDesc}
+                                onChange={e => setEditProxyDesc(e.target.value)}
+                                placeholder="Optional description"
+                                style={{ width: '100%', minWidth: '10rem' }}
+                              />
+                            ) : (
+                              <span className="muted" style={{ fontSize: '0.85rem' }}>
+                                {p.description || '—'}
+                              </span>
+                            )}
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
+                            {providersUsing.length > 0 ? (
+                              <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
+                                {providersUsing.map(pName => (
+                                  <span key={pName} className="badge" style={{ fontSize: '0.7rem' }}>
+                                    {pName}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="muted" style={{ fontSize: '0.8rem' }}>none</span>
+                            )}
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
+                            <div style={{ display: 'flex', gap: '0.35rem' }}>
+                              {isEditing ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="btn-icon"
+                                    title="Save proxy"
+                                    onClick={() => handleSaveEditProxy(p.id)}
+                                  >
+                                    <Check size={16} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-icon"
+                                    title="Cancel"
+                                    onClick={() => {
+                                      setEditingProxyId(null)
+                                      setProxyFormError('')
+                                    }}
+                                  >
+                                    <X size={16} />
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="btn-icon"
+                                    title="Edit proxy"
+                                    disabled={saving === 'proxies'}
+                                    onClick={() => handleStartEditProxy(p)}
+                                  >
+                                    <Edit2 size={15} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-icon"
+                                    title={`Delete proxy ${p.id}`}
+                                    disabled={saving === 'proxies'}
+                                    onClick={() => handleDeleteProxy(p.id)}
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div
+              style={{
+                marginTop: '1rem',
+                padding: '0.85rem',
+                background: 'var(--color-bg-secondary, rgba(255,255,255,0.03))',
+                borderRadius: '6px',
+                border: '1px solid var(--border-subtle)',
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.5rem' }}>
+                Add New Proxy
+              </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr)) auto',
+                  gap: '0.6rem',
+                  alignItems: 'start',
+                }}
+              >
+                <div>
+                  <input
+                    value={newProxyId}
+                    placeholder="ID (e.g. clash)"
+                    onChange={e => {
+                      setNewProxyId(e.target.value)
+                      setProxyFormError('')
+                    }}
+                    disabled={saving === 'proxies'}
+                    style={{ width: '100%' }}
+                  />
+                  <div className="form-hint" style={{ fontSize: '0.7rem' }}>Identifier</div>
+                </div>
+                <div>
+                  <input
+                    value={newProxyUrl}
+                    placeholder="URL (e.g. http://127.0.0.1:7890)"
+                    onChange={e => {
+                      setNewProxyUrl(e.target.value)
+                      setProxyFormError('')
+                    }}
+                    disabled={saving === 'proxies'}
+                    style={{ width: '100%' }}
+                  />
+                  <div className="form-hint" style={{ fontSize: '0.7rem' }}>http://, https://, socks5://</div>
+                </div>
+                <div>
+                  <input
+                    value={newProxyDesc}
+                    placeholder="Description (optional)"
+                    onChange={e => setNewProxyDesc(e.target.value)}
+                    disabled={saving === 'proxies'}
+                    style={{ width: '100%' }}
+                  />
+                  <div className="form-hint" style={{ fontSize: '0.7rem' }}>Optional label</div>
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={handleAddProxy}
+                    disabled={saving === 'proxies' || !newProxyId.trim() || !newProxyUrl.trim()}
+                    style={{ whiteSpace: 'nowrap', marginTop: '1px' }}
+                  >
+                    Add Proxy
+                  </button>
+                </div>
+              </div>
+              {proxyFormError && (
+                <div style={{ color: 'var(--color-danger, #ef4444)', fontSize: '0.8rem', marginTop: '0.4rem' }}>
+                  {proxyFormError}
+                </div>
+              )}
+            </div>
+
+            <div className="settings-actions-row" style={{ marginTop: '1rem' }}>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={saving === 'proxies'}
+                onClick={() => void saveProxies()}
+              >
+                {saving === 'proxies' ? 'Saving…' : 'Save proxies'}
               </button>
             </div>
           </section>

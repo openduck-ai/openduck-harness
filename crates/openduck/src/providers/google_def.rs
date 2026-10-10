@@ -54,13 +54,24 @@ pub async fn from_env(tls_config: Option<TlsConfig>) -> Result<GoogleProvider> {
 
     let thinking_budget = config.get_param("GEMINI25_THINKING_BUDGET").ok();
 
-    GoogleProvider::new(
+    let proxy = crate::config::providers::get_provider_proxy(config, "google")
+        .or_else(|| crate::config::providers::get_provider_proxy(config, "gemini"))
+        .or_else(|| config.get_param("GOOGLE_PROXY").ok())
+        .or_else(|| config.get_param("GEMINI_PROXY").ok());
+
+    let mut provider = GoogleProvider::new(
         host,
         api_key,
         tls_config,
         Some(crate::session_context::session_id_request_builder()),
         thinking_budget,
-    )
+    )?;
+
+    if let Some(proxy) = proxy {
+        provider = provider.with_proxy(Some(proxy))?;
+    }
+
+    Ok(provider)
 }
 
 #[cfg(test)]

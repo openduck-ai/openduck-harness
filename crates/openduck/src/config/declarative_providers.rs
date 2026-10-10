@@ -217,6 +217,7 @@ pub fn create_custom_provider(
         preserves_thinking,
         emit_clear_thinking: false,
         setup: None,
+        proxy: None,
     };
 
     let custom_providers_dir = custom_providers_dir();
@@ -306,6 +307,7 @@ pub fn update_custom_provider(params: UpdateCustomProviderParams) -> Result<()> 
             preserves_thinking,
             emit_clear_thinking: existing_config.emit_clear_thinking,
             setup: existing_config.setup,
+            proxy: existing_config.proxy,
         };
 
         let file_path = custom_provider_file_path(&updated_config.name)?;
@@ -378,13 +380,18 @@ pub fn register_declarative_providers(
 /// runtime overrides from env_vars. Called lazily (at provider instantiation)
 /// so values configured through the UI after startup are picked up.
 fn resolve_config(config: &mut DeclarativeProviderConfig) -> Result<()> {
+    let global_config = Config::global();
+
     if let Some(ref env_vars) = config.env_vars {
         config.base_url = expand_env_vars(&config.base_url, env_vars)?;
+
+        if let Some(ref proxy) = config.proxy {
+            config.proxy = Some(expand_env_vars(proxy, env_vars)?);
+        }
 
         // Check for streaming override via env_vars.
         // Config/env may store the value as a string ("true") or a native bool,
         // so try String first, then fall back to bool.
-        let global_config = Config::global();
         for var in env_vars {
             if var.name.ends_with("_STREAMING") {
                 let val: Option<bool> = global_config
@@ -399,6 +406,13 @@ fn resolve_config(config: &mut DeclarativeProviderConfig) -> Result<()> {
             }
         }
     }
+
+    if config.proxy.is_none() {
+        if let Some(p) = crate::config::providers::get_provider_proxy(global_config, &config.name) {
+            config.proxy = Some(p);
+        }
+    }
+
     Ok(())
 }
 
@@ -578,6 +592,7 @@ mod tests {
             preserves_thinking: true,
             emit_clear_thinking: false,
             setup: None,
+            proxy: None,
         }
     }
 
