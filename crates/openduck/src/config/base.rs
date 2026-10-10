@@ -231,6 +231,9 @@ impl Default for Config {
 
         let keyring_disabled = openduck_env::get_var_os("DISABLE_KEYRING").is_some()
             || no_secrets_config
+                .get_param::<serde_yaml::Value>("OPENDUCK_DISABLE_KEYRING")
+                .is_ok_and(|v| keyring_disabled_value(&v))
+            || no_secrets_config
                 .get_param::<serde_yaml::Value>("GOOSE_DISABLE_KEYRING")
                 .is_ok_and(|v| keyring_disabled_value(&v));
         let secrets = secret_storage(&config_dir, keyring_disabled, default_keyring_service());
@@ -392,7 +395,11 @@ fn keyring_disabled_in_config(config_path: &Path) -> bool {
     std::fs::read_to_string(config_path)
         .ok()
         .and_then(|s| parse_yaml_content(&s).ok())
-        .and_then(|m| m.get("GOOSE_DISABLE_KEYRING").map(keyring_disabled_value))
+        .and_then(|m| {
+            m.get("OPENDUCK_DISABLE_KEYRING")
+                .or_else(|| m.get("GOOSE_DISABLE_KEYRING"))
+                .map(keyring_disabled_value)
+        })
         .unwrap_or(false)
 }
 
@@ -986,7 +993,15 @@ impl Config {
                     self.handle_keyring_operation(|entry| entry.get_password(), service, None);
 
                 match result {
-                    Ok(content) => Ok(serde_json::from_str(&content)?),
+                    Ok(content) => {
+                        let mut secrets: HashMap<String, Value> = serde_json::from_str(&content)?;
+                        if let Ok(file_secrets) = self.fallback_to_file_storage() {
+                            for (k, v) in file_secrets {
+                                secrets.insert(k, v);
+                            }
+                        }
+                        Ok(secrets)
+                    }
                     Err(ConfigError::FallbackToFileStorage) => self.fallback_to_file_storage(),
                     Err(ConfigError::KeyringError(msg))
                         if msg.contains("No entry found")
