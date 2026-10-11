@@ -29,7 +29,18 @@ pub fn metadata_with_signature(signature: &str) -> ProviderMetadata {
 pub fn get_thought_signature(metadata: &Option<ProviderMetadata>) -> Option<&str> {
     metadata
         .as_ref()
-        .and_then(|m| m.get(THOUGHT_SIGNATURE_KEY))
+        .and_then(|m| {
+            m.get(THOUGHT_SIGNATURE_KEY)
+                .or_else(|| m.get("thought_signature"))
+                .or_else(|| {
+                    m.get("extra_content")
+                        .and_then(|ec| ec.get("google"))
+                        .and_then(|g| {
+                            g.get("thought_signature")
+                                .or_else(|| g.get(THOUGHT_SIGNATURE_KEY))
+                        })
+                })
+        })
         .and_then(|v| v.as_str())
 }
 
@@ -118,16 +129,18 @@ pub fn format_messages(messages: &[Message], nested_function_response_media: boo
                 "model"
             };
             let include_signature = active_loop_start_idx.is_none_or(|start_idx| idx >= start_idx);
-            // Only the first model tool call in a turn is guaranteed to carry
-            // a signature for loop continuity.
-            let mut needs_synthetic_for_first_model_tool_call =
-                include_signature && message.role != Role::User;
+            let mut last_sig_in_message = None;
             let mut parts = Vec::new();
             for message_content in message.content.iter() {
                 match message_content {
                     MessageContentBlock::Text(text) => {
                         if !text.text.is_empty() {
                             parts.push(json!({"text": text.text}));
+                        }
+                    }
+                    MessageContentBlock::Thinking(thinking) => {
+                        if !thinking.signature.is_empty() {
+                            last_sig_in_message = Some(thinking.signature.as_str());
                         }
                     }
                     MessageContentBlock::ToolRequest(request) => match &request.tool_call {
@@ -149,17 +162,14 @@ pub fn format_messages(messages: &[Message], nested_function_response_media: boo
                             let mut part = Map::new();
                             part.insert("functionCall".to_string(), json!(function_call_part));
 
-                            if include_signature {
-                                if let Some(signature) = get_thought_signature(&request.metadata) {
-                                    insert_thought_signature(&mut part, signature);
-                                } else if needs_synthetic_for_first_model_tool_call {
-                                    insert_thought_signature(
-                                        &mut part,
-                                        SYNTHETIC_THOUGHT_SIGNATURE,
-                                    );
-                                }
+                            if let Some(signature) = get_thought_signature(&request.metadata) {
+                                last_sig_in_message = Some(signature);
+                                insert_thought_signature(&mut part, signature);
+                            } else if let Some(sig) = last_sig_in_message {
+                                insert_thought_signature(&mut part, sig);
+                            } else if message.role != Role::User {
+                                insert_thought_signature(&mut part, SYNTHETIC_THOUGHT_SIGNATURE);
                             }
-                            needs_synthetic_for_first_model_tool_call = false;
 
                             parts.push(json!(part));
                         }
@@ -294,7 +304,16 @@ fn process_response_part_impl(
     part: &Value,
     last_signature: &mut Option<String>,
 ) -> Option<MessageContentBlock> {
-    let signature = part.get(THOUGHT_SIGNATURE_KEY).and_then(|v| v.as_str());
+    let signature = part
+        .get(THOUGHT_SIGNATURE_KEY)
+        .or_else(|| part.get("thought_signature"))
+        .or_else(|| {
+            part.get("functionCall").and_then(|fc| {
+                fc.get(THOUGHT_SIGNATURE_KEY)
+                    .or_else(|| fc.get("thought_signature"))
+            })
+        })
+        .and_then(|v| v.as_str());
     let is_thought = part
         .get("thought")
         .and_then(|value| value.as_bool())
@@ -1381,6 +1400,35 @@ mod tests {
         let formatted = format_messages(&[user_prompt, assistant_tool], false);
         assert_eq!(
             formatted[1]["parts"][0][THOUGHT_SIGNATURE_KEY],
+            SYNTHETIC_THOUGHT_SIGNATURE
+        );
+    }
+
+    #[test]
+    fn test_multiple_model_tool_calls_without_signatures_all_receive_synthetic_signature() {
+        let user_prompt = set_up_text_message("Do multiple tasks", Role::User);
+        let assistant_tools = Message::new(
+            Role::Assistant,
+            0,
+            vec![
+                MessageContentBlock::tool_request(
+                    "call_1".to_string(),
+                    Ok(CallToolRequestParams::new("read_file".to_string())),
+                ),
+                MessageContentBlock::tool_request(
+                    "call_2".to_string(),
+                    Ok(CallToolRequestParams::new("default_api:shell".to_string())),
+                ),
+            ],
+        );
+
+        let formatted = format_messages(&[user_prompt, assistant_tools], false);
+        assert_eq!(
+            formatted[1]["parts"][0][THOUGHT_SIGNATURE_KEY],
+            SYNTHETIC_THOUGHT_SIGNATURE
+        );
+        assert_eq!(
+            formatted[1]["parts"][1][THOUGHT_SIGNATURE_KEY],
             SYNTHETIC_THOUGHT_SIGNATURE
         );
     }
