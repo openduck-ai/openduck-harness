@@ -93,3 +93,25 @@ pub fn is_continuable_status(status: RunStatus) -> bool {
         RunStatus::Failure | RunStatus::Cancelled | RunStatus::Timeout
     )
 }
+
+/// Finished and cancelled runs can be continued by replaying their conversation
+/// and appending a new prompt. Incomplete failure and timeout runs stay on the
+/// summary continuation path.
+pub fn is_history_follow_up_status(status: RunStatus) -> bool {
+    matches!(status, RunStatus::Success | RunStatus::Cancelled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_follow_up_is_finished_or_cancelled() {
+        assert!(is_history_follow_up_status(RunStatus::Success));
+        assert!(is_history_follow_up_status(RunStatus::Cancelled));
+        assert!(!is_history_follow_up_status(RunStatus::Failure));
+        assert!(!is_history_follow_up_status(RunStatus::Timeout));
+        assert!(!is_history_follow_up_status(RunStatus::Running));
+        assert!(!is_history_follow_up_status(RunStatus::Skipped));
+    }
+}

@@ -11,8 +11,8 @@ use axum::{
 };
 use chrono::Utc;
 use openduck_harness::eval::{
-    is_continuable_status, ContinuationCheckpoint, EvalRunner, EvalRunnerConfig, EvaluationReport,
-    TaskSpec,
+    is_continuable_status, is_history_follow_up_status, ContinuationCheckpoint, EvalRunner,
+    EvalRunnerConfig, EvaluationReport, TaskSpec,
 };
 use openduck_harness::policy::adapters::EchoPolicy;
 use openduck_harness::project::{
@@ -20,7 +20,7 @@ use openduck_harness::project::{
     ProjectTaskSummary,
 };
 use openduck_harness::replay::{Cassette, ReplayPolicy};
-use openduck_harness::runtime::AgentHarness;
+use openduck_harness::runtime::{AgentHarness, HistoryFollowUp};
 use openduck_harness::sandbox::local::LocalSandbox;
 use openduck_harness::sandbox::SandboxDriver;
 use openduck_sdk_types::custom_requests::SourceEntry;
@@ -127,7 +127,11 @@ pub struct ProjectTaskRunRequest {
     pub record_path: Option<String>,
     pub continue_from_run_id: Option<String>,
     pub extra_turns: Option<usize>,
-    /// One-run instructions appended to the saved prompt. Requires `dynamicPrompt` on the task.
+    /// One-run instructions.
+    ///
+    /// A fresh run appends this to the saved prompt and requires `dynamicPrompt`.
+    /// With `continueFromRunId` on a finished or cancelled run, this is the follow-up
+    /// prompt: the new run replays that conversation and does not require `dynamicPrompt`.
     #[serde(default)]
     pub extra_prompt: Option<String>,
 }
@@ -549,11 +553,16 @@ pub async fn launch_project_task(
     let tasks_dir = config.resolve_tasks_dir(&root);
 
     let mut task_def = ProjectTaskStore::get_task(&tasks_dir, task_id).await?;
-    let prompt = compose_dynamic_run_prompt(
-        &task_def.prompt,
-        task_def.dynamic_prompt,
-        req.extra_prompt.as_deref(),
-    )?;
+    let (continuation, history_follow_up) = resolve_continuation_checkpoint(&root, task_id, &req)?;
+    let prompt = if history_follow_up.is_some() {
+        task_def.prompt.clone()
+    } else {
+        compose_dynamic_run_prompt(
+            &task_def.prompt,
+            task_def.dynamic_prompt,
+            req.extra_prompt.as_deref(),
+        )?
+    };
     task_def.prompt = prompt;
 
     let benchmark_item = ProjectTaskStore::to_benchmark_item(&task_def, None);
@@ -615,6 +624,8 @@ pub async fn launch_project_task(
             max_turns,
             cassette_path,
             spawn_job_id.clone(),
+            continuation,
+            history_follow_up,
         )
         .await;
 
@@ -737,9 +748,9 @@ fn resolve_continuation_checkpoint(
     root: &std::path::Path,
     task_id: &str,
     req: &ProjectTaskRunRequest,
-) -> Result<Option<ContinuationCheckpoint>> {
+) -> Result<(Option<ContinuationCheckpoint>, Option<HistoryFollowUp>)> {
     let Some(run_id) = req.continue_from_run_id.as_deref() else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let runs_dir = project_runs_dir(root);
     let history = read_history_run(run_id, &[root, runs_dir.as_path()])?;
@@ -749,7 +760,31 @@ fn resolve_continuation_checkpoint(
             history.task_id
         ));
     }
+
+    let follow_up_prompt = req
+        .extra_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    if let Some(prompt) = follow_up_prompt {
+        if is_history_follow_up_status(history.status) {
+            return Ok((
+                history.continuation,
+                Some(HistoryFollowUp {
+                    steps: history.trajectory.steps,
+                    prompt,
+                }),
+            ));
+        }
+    }
+
     if !is_continuable_status(history.status) {
+        if history.status == openduck_harness::types::RunStatus::Success {
+            return Err(anyhow!(
+                "Continuing finished run '{run_id}' requires a new prompt"
+            ));
+        }
         return Err(anyhow!(
             "Cannot continue run '{run_id}' with status {:?}",
             history.status
@@ -775,7 +810,7 @@ fn resolve_continuation_checkpoint(
         history.final_answer.as_deref(),
         &history.trajectory.steps,
     );
-    Ok(Some(checkpoint))
+    Ok((Some(checkpoint), None))
 }
 
 fn build_project_task_system_prompt(
@@ -804,10 +839,11 @@ async fn execute_project_task(
     max_turns: usize,
     cassette_path: Option<PathBuf>,
     job_id: String,
+    continuation: Option<ContinuationCheckpoint>,
+    history_follow_up: Option<HistoryFollowUp>,
 ) -> Result<HarnessRunResponseDto> {
-    let continuation = resolve_continuation_checkpoint(&root, &task_spec.id, &req)?;
     let extra_turns = req.extra_turns;
-    if continuation.is_none() {
+    if continuation.is_none() && history_follow_up.is_none() {
         clean_stale_task_scratchpad(&root, &task_spec.id);
     }
     let mut sandbox = LocalSandbox::new(root);
@@ -826,8 +862,9 @@ async fn execute_project_task(
             None,
             Some(&config.execution),
             Some(&config.judge),
-            continuation,
+            continuation.clone(),
             extra_turns,
+            history_follow_up.clone(),
         )
         .await;
     }
@@ -886,6 +923,7 @@ async fn execute_project_task(
         Some(&config.judge),
         continuation,
         extra_turns,
+        history_follow_up,
     )
     .await
 }
@@ -904,6 +942,7 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy>(
     judge_config: Option<&openduck_harness::project::JudgeConfig>,
     continuation: Option<ContinuationCheckpoint>,
     extra_turns: Option<usize>,
+    history_follow_up: Option<HistoryFollowUp>,
 ) -> Result<HarnessRunResponseDto> {
     if let Some(c_path) = cassette_path {
         let mut cas_obj = Cassette::new(&task_spec.id);
@@ -915,6 +954,7 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy>(
             .with_system_prompt(system_prompt.clone())
             .with_active_rules(active_rules.clone())
             .with_continuation(continuation.clone())
+            .with_history_follow_up(history_follow_up.clone())
             .with_extra_turns(extra_turns);
         if let Some(exec) = execution_config {
             if let Some(threshold) = exec.stagnation_threshold {
@@ -956,6 +996,7 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy>(
             .with_system_prompt(system_prompt.clone())
             .with_active_rules(active_rules.clone())
             .with_continuation(continuation)
+            .with_history_follow_up(history_follow_up)
             .with_extra_turns(extra_turns);
         if let Some(exec) = execution_config {
             if let Some(threshold) = exec.stagnation_threshold {

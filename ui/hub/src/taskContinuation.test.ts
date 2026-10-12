@@ -92,6 +92,15 @@ test('isContinuableStatus covers cancelled, failure, and timeout', async () => {
   assert.equal(isContinuableStatus('success'), false)
 })
 
+test('isHistoryFollowUpStatus covers finished and cancelled runs', async () => {
+  const { isHistoryFollowUpStatus } = await import('./taskContinuation.ts')
+  assert.equal(isHistoryFollowUpStatus('success'), true)
+  assert.equal(isHistoryFollowUpStatus('Success'), true)
+  assert.equal(isHistoryFollowUpStatus('cancelled'), true)
+  assert.equal(isHistoryFollowUpStatus('failure'), false)
+  assert.equal(isHistoryFollowUpStatus('timeout'), false)
+})
+
 test('extraTurnsForContinue uses +N for additional and remainder for total', async () => {
   const { extraTurnsForContinue } = await import('./taskContinuation.ts')
   assert.equal(

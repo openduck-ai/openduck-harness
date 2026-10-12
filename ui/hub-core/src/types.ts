@@ -856,7 +856,11 @@ export interface ProjectTaskRunRequest {
   recordPath?: string
   continueFromRunId?: string
   extraTurns?: number
-  /** One-run instructions. The task must have dynamicPrompt enabled. */
+  /**
+   * One-run instructions. A fresh run requires dynamicPrompt on the task.
+   * With continueFromRunId on a finished or cancelled run, this is the follow-up
+   * prompt and the new run keeps that conversation.
+   */
   extraPrompt?: string
 }
 

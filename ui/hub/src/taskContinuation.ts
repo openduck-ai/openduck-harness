@@ -5,6 +5,12 @@ export function isContinuableStatus(status: string | undefined | null): boolean 
   return normalized === 'cancelled' || normalized === 'failure' || normalized === 'timeout'
 }
 
+/** Finished or cancelled runs can be continued with their conversation and a new prompt. */
+export function isHistoryFollowUpStatus(status: string | undefined | null): boolean {
+  const normalized = String(status ?? '').toLowerCase()
+  return normalized === 'success' || normalized === 'cancelled'
+}
+
 export interface ContinueTurnCalculationOptions {
   previousSteps: number
   mode: ContinueTurnsMode

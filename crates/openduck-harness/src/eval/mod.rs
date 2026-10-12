@@ -6,7 +6,10 @@ pub mod runner;
 pub mod subtask;
 pub mod task;
 
-pub use continuation::{is_continuable_status, ContinuationCheckpoint, ContinuationStopReason};
+pub use continuation::{
+    is_continuable_status, is_history_follow_up_status, ContinuationCheckpoint,
+    ContinuationStopReason,
+};
 pub use datasets::{load_jsonl_dataset, load_recipe_task, BenchmarkItem, JsonlTaskEntry};
 pub use metrics::{EvalMetrics, EvaluationReport, TaskResult};
 pub use progress_summary::run_progress_summary_from_steps;

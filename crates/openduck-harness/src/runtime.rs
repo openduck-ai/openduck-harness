@@ -33,6 +33,13 @@ pub struct TaskExecutionResult {
 
 pub type StepObserver = Arc<dyn Fn(&[TrajectoryStep]) + Send + Sync>;
 
+/// Prior conversation to replay, plus the prompt that starts the new run.
+#[derive(Debug, Clone)]
+pub struct HistoryFollowUp {
+    pub steps: Vec<TrajectoryStep>,
+    pub prompt: String,
+}
+
 pub struct AgentHarness<P: AgentPolicy, S: SandboxDriver> {
     policy: P,
     sandbox: S,
@@ -56,6 +63,7 @@ pub struct AgentHarness<P: AgentPolicy, S: SandboxDriver> {
     system_prompt: Option<String>,
     active_rules: Option<Vec<crate::telemetry::ActiveRuleSummary>>,
     continuation: Option<crate::eval::ContinuationCheckpoint>,
+    history_follow_up: Option<HistoryFollowUp>,
     extra_turns: Option<usize>,
     advisor_sessions: HashMap<String, HashMap<String, String>>,
     current_advisor_scope: String,
@@ -100,6 +108,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             system_prompt: None,
             active_rules: None,
             continuation: None,
+            history_follow_up: None,
             extra_turns: None,
             advisor_sessions: HashMap::new(),
             current_advisor_scope: String::new(),
@@ -314,6 +323,11 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         continuation: Option<crate::eval::ContinuationCheckpoint>,
     ) -> Self {
         self.continuation = continuation;
+        self
+    }
+
+    pub fn with_history_follow_up(mut self, follow_up: Option<HistoryFollowUp>) -> Self {
+        self.history_follow_up = follow_up;
         self
     }
 
@@ -1050,6 +1064,14 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             }
         }
 
+        // A follow-up replays the saved conversation in one session. Subtask
+        // resume would drop that transcript and start from a summary instead.
+        if self.history_follow_up.is_some() {
+            return self
+                .run_single_task_session(task, &session_id, started_at, start_time)
+                .await;
+        }
+
         // Step 1: Decompose task into subtasks if explicitly configured or complex
         let subtasks = if let Some(plan) = self
             .continuation
@@ -1099,32 +1121,44 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         } else {
             task.problem_statement.clone()
         };
-        self.seed_continuation_workspace().await;
-        if let Some(checkpoint) = &self.continuation {
-            initial_user_prompt = format!(
-                "{}\n\n{}",
-                checkpoint.prior_progress_prompt(),
-                initial_user_prompt
-            );
+        let has_follow_up = self.history_follow_up.is_some();
+        if !has_follow_up {
+            self.seed_continuation_workspace().await;
+            if let Some(checkpoint) = &self.continuation {
+                initial_user_prompt = format!(
+                    "{}\n\n{}",
+                    checkpoint.prior_progress_prompt(),
+                    initial_user_prompt
+                );
+            }
         }
 
         let max_steps = task
             .max_turns
             .unwrap_or(self.max_turns)
             .saturating_add(self.extra_turns.unwrap_or(0));
-        let (status, final_answer, steps, total_tool_calls, _modified) = self
+        let prior_steps = self
+            .history_follow_up
+            .as_ref()
+            .map(|follow_up| follow_up.steps.clone())
+            .unwrap_or_default();
+        let (status, final_answer, new_steps, new_tool_calls, _modified) = self
             .run_session_loop(
                 session_id,
                 &task.id,
                 &initial_user_prompt,
                 max_steps,
                 effective_budget,
-                &[],
+                &prior_steps,
             )
             .await?;
+        let provider_stats = TaskProviderStats::from_steps(&new_steps, Some(self.policy.name()));
+        let prior_tool_calls = tool_call_count(&prior_steps);
+        let mut steps = prior_steps;
+        steps.extend(new_steps);
+        let total_tool_calls = prior_tool_calls + new_tool_calls;
 
         let duration_ms = start_time.elapsed().as_millis();
-        let provider_stats = TaskProviderStats::from_steps(&steps, Some(self.policy.name()));
         let trajectory = TrajectoryRecord {
             session_id: session_id.to_string(),
             task_id: task.id.clone(),
@@ -1360,6 +1394,26 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         context
             .messages
             .push(HarnessMessage::user(user_prompt.to_string()));
+        if let Some(follow_up) = &self.history_follow_up {
+            context
+                .messages
+                .extend(prior_history_messages(&follow_up.steps, user_prompt));
+            let prompt = follow_up.prompt.trim();
+            if !prompt.is_empty() {
+                context
+                    .messages
+                    .push(HarnessMessage::user(prompt.to_string()));
+            }
+            compact_context_messages(
+                &mut context.messages,
+                self.max_context_messages,
+                self.max_context_tokens,
+                self.compaction_threshold,
+            );
+            if !step_prefix.is_empty() {
+                self.notify_step_observer(step_prefix);
+            }
+        }
 
         let mut steps = Vec::new();
         let mut total_tool_calls = 0;
@@ -1370,6 +1424,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         for step_idx in 0..max_steps {
             context.step_count = step_idx + 1;
             let step_start = Instant::now();
+            let step_number = step_prefix.len() + step_idx + 1;
 
             let (action, step_telemetry) =
                 match self.policy.step_detailed(&context, &self.tools).await {
@@ -1389,7 +1444,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                             step_task_id
                         ));
                         steps.push(TrajectoryStep {
-                            step_number: step_prefix.len() + step_idx + 1,
+                            step_number,
                             timestamp: Utc::now(),
                             action: AgentAction::YieldControl {
                                 reason: YieldReason::Interrupted,
@@ -1470,7 +1525,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                             "Verification required before declaring completion. Run tests, compiler checks, or inspect diffs to confirm changes work as intended."
                         ));
                         steps.push(TrajectoryStep {
-                            step_number: step_idx + 1,
+                            step_number,
                             timestamp: Utc::now(),
                             action: action.clone(),
                             tool_results: None,
@@ -1490,7 +1545,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                         .messages
                         .push(HarnessMessage::assistant(ans.clone()));
                     steps.push(TrajectoryStep {
-                        step_number: step_idx + 1,
+                        step_number,
                         timestamp: Utc::now(),
                         action: action.clone(),
                         tool_results: None,
@@ -1518,7 +1573,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                         })
                     });
                     steps.push(TrajectoryStep {
-                        step_number: step_idx + 1,
+                        step_number,
                         timestamp: Utc::now(),
                         action: action.clone(),
                         tool_results: None,
@@ -1549,7 +1604,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                         })
                     });
                     steps.push(TrajectoryStep {
-                        step_number: step_idx + 1,
+                        step_number,
                         timestamp: Utc::now(),
                         action: action.clone(),
                         tool_results: None,
@@ -1577,7 +1632,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                     });
                     let mut preview_steps = steps.clone();
                     preview_steps.push(TrajectoryStep {
-                        step_number: step_idx + 1,
+                        step_number,
                         timestamp: Utc::now(),
                         action: action.clone(),
                         tool_results: None,
@@ -1690,7 +1745,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                     }
 
                     steps.push(TrajectoryStep {
-                        step_number: step_idx + 1,
+                        step_number,
                         timestamp: Utc::now(),
                         action: action.clone(),
                         tool_results: Some(responses),
@@ -1923,6 +1978,118 @@ pub struct ExtractedContextFacts {
     pub nudges_and_notes: Vec<String>,
     pub advisor_consultations: Vec<(String, String)>,
     pub planned_steps: Vec<String>,
+}
+
+fn tool_call_count(steps: &[TrajectoryStep]) -> usize {
+    steps
+        .iter()
+        .map(|step| match &step.action {
+            AgentAction::CallTools(calls) => calls.len(),
+            _ => 0,
+        })
+        .sum()
+}
+
+fn task_goal_body(prompt: &str) -> &str {
+    prompt
+        .rsplit_once("## Task Goal:\n")
+        .map(|(_, body)| body.trim())
+        .unwrap_or_else(|| prompt.trim())
+}
+
+fn is_recorded_opening(text: &str, opening: &str) -> bool {
+    let text = text.trim();
+    let opening = opening.trim();
+    if text.is_empty() || opening.is_empty() {
+        return false;
+    }
+    text == opening || task_goal_body(text) == task_goal_body(opening)
+}
+
+fn plain_user_text(message: &serde_json::Value) -> Option<String> {
+    let role = message
+        .get("role")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if !role.eq_ignore_ascii_case("user") {
+        return None;
+    }
+    match message.get("content")? {
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        serde_json::Value::Array(blocks) => {
+            let mut text = String::new();
+            for block in blocks {
+                if let Some(line) = block.as_str() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(line);
+                    continue;
+                }
+                let kind = block
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                if kind.eq_ignore_ascii_case("text") {
+                    if let Some(line) = block.get("text").and_then(|value| value.as_str()) {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(line);
+                    }
+                    continue;
+                }
+                return None;
+            }
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Messages to insert after the original task prompt and before a new follow-up.
+///
+/// Assistant and tool messages come from each step. A user follow-up is taken
+/// from the step's recorded prompt the first time it appears, so a later
+/// continuation keeps prompts from earlier follow-ups.
+pub fn prior_history_messages(
+    steps: &[TrajectoryStep],
+    opening_user_prompt: &str,
+) -> Vec<HarnessMessage> {
+    let mut messages = Vec::new();
+    let mut seen_user = Vec::new();
+    for step in steps {
+        if let Some(request) = &step.llm_request {
+            if let Some(list) = request.get("messages").and_then(|value| value.as_array()) {
+                for message in list {
+                    let Some(text) = plain_user_text(message) else {
+                        continue;
+                    };
+                    if is_recorded_opening(&text, opening_user_prompt)
+                        || seen_user.iter().any(|seen| seen == &text)
+                    {
+                        continue;
+                    }
+                    seen_user.push(text.clone());
+                    messages.push(HarnessMessage::user(text));
+                }
+            }
+        }
+        messages.extend(trajectory_steps_to_messages(std::slice::from_ref(step)));
+    }
+    messages
 }
 
 pub fn trajectory_steps_to_messages(steps: &[TrajectoryStep]) -> Vec<HarnessMessage> {

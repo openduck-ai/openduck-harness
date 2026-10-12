@@ -6,7 +6,7 @@ import {
   historyTaskTitle,
   presentHistoryRow,
 } from '../projectTasks.ts'
-import { isContinuableStatus } from '../taskContinuation.ts'
+import { isContinuableStatus, isHistoryFollowUpStatus } from '../taskContinuation.ts'
 
 interface HarnessHistoryTableProps {
   items: HarnessHistorySummary[]
@@ -236,6 +236,20 @@ export function HarnessHistoryTable({
                       >
                         <FastForward size={13} fill="currentColor" />
                         <span>Continue</span>
+                      </button>
+                    )}
+                    {isHistoryFollowUpStatus(String(item.status)) && (
+                      <button
+                        type="button"
+                        className="btn-action history-continue-btn"
+                        onClick={e => {
+                          e.stopPropagation()
+                          onInspect(item)
+                        }}
+                        title="Continue this run with its history and a new prompt"
+                      >
+                        <FastForward size={13} />
+                        <span>Follow up</span>
                       </button>
                     )}
                   </div>

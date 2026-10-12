@@ -44,7 +44,7 @@ import {
   type ScheduleKind,
 } from '@aaif/goose-hub-core'
 import { inspectProjectHarnessJob } from '../api.ts'
-import { extraTurnsForContinue, isContinuableStatus } from '../taskContinuation.ts'
+import { extraTurnsForContinue, isContinuableStatus, isHistoryFollowUpStatus } from '../taskContinuation.ts'
 import { buildAgentLog, liveLineText } from '../taskTrajectory.ts'
 import {
   fetchWithRetry,
@@ -2657,6 +2657,18 @@ export function ProjectHarnessTab({
                                     <FastForward size={13} fill="currentColor" />
                                     <span>Continue</span>
                                   </button>
+                                  {isHistoryFollowUpStatus(String(latest.status)) && (
+                                    <button
+                                      type="button"
+                                      className="btn-action continue-btn"
+                                      onClick={() => void handleSelectHistory(latest, 'tasks')}
+                                      disabled={isTaskBusy}
+                                      title="Open this run and continue it with its history and a new prompt"
+                                    >
+                                      <FastForward size={13} />
+                                      <span>Follow up</span>
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     className="btn-action run-btn run-btn-outline"
@@ -2679,6 +2691,19 @@ export function ProjectHarnessTab({
                                   </button>
                                 </>
                               ) : (
+                                <>
+                                {latest && isHistoryFollowUpStatus(String(latest.status)) && (
+                                  <button
+                                    type="button"
+                                    className="btn-action continue-btn"
+                                    onClick={() => void handleSelectHistory(latest, 'tasks')}
+                                    disabled={isTaskBusy}
+                                    title="Open this run and continue it with its history and a new prompt"
+                                  >
+                                    <FastForward size={13} />
+                                    <span>Follow up</span>
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   className="btn-action run-btn run-btn-filled"
@@ -2710,6 +2735,7 @@ export function ProjectHarnessTab({
                                     </>
                                   )}
                                 </button>
+                                </>
                               )}
                             </div>
 

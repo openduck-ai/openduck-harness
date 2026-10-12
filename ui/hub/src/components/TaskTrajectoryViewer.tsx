@@ -21,7 +21,7 @@ import {
   evaluateAutoScrollState,
   dockRevealDelta,
 } from '../taskTrajectory.ts'
-import { isContinuableStatus } from '../taskContinuation.ts'
+import { isContinuableStatus, isHistoryFollowUpStatus } from '../taskContinuation.ts'
 import { MarkdownPreview } from './MarkdownPreview.tsx'
 import { AgentLogTranscript } from './AgentLogTranscript.tsx'
 import { FilePreviewModal } from './FilePreviewModal.tsx'
@@ -1309,21 +1309,27 @@ export function TaskTrajectoryViewer({
             void runWithSelection(task, formatSelectionExtraPrompt('Final Agent Answer', text))
           }}
           continueRequest={
-            onContinueTask && isContinuableStatus(String(run.status)) && !liveInspect
+            onContinueTask &&
+            !liveInspect &&
+            (isContinuableStatus(String(run.status)) || isHistoryFollowUpStatus(String(run.status)))
               ? {
                   busy: runningTaskId === run.taskId,
-                  summary: run.continuation?.compactedSummary,
+                  mode: isHistoryFollowUpStatus(String(run.status)) ? 'history' : 'summary',
+                  summary: isHistoryFollowUpStatus(String(run.status))
+                    ? undefined
+                    : run.continuation?.compactedSummary,
                   onContinue: (extraTurns, extraPrompt) => onContinueTask(run.taskId, extraTurns, extraPrompt),
-                  onSpecifiedTurns: onOpenContinueModal
-                    ? () =>
-                        onOpenContinueModal(
-                          run.taskId,
-                          metrics.totalSteps,
-                          undefined,
-                          selectedHistoryId ?? undefined,
-                          run.continuation?.compactedSummary ?? undefined,
-                        )
-                    : undefined,
+                  onSpecifiedTurns:
+                    isHistoryFollowUpStatus(String(run.status)) || !onOpenContinueModal
+                      ? undefined
+                      : () =>
+                          onOpenContinueModal(
+                            run.taskId,
+                            metrics.totalSteps,
+                            undefined,
+                            selectedHistoryId ?? undefined,
+                            run.continuation?.compactedSummary ?? undefined,
+                          ),
                 }
               : undefined
           }

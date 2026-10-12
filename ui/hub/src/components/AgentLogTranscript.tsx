@@ -34,6 +34,8 @@ const CONTINUE_TURN_CHOICES = [10, 25, 50] as const
 
 export interface AgentLogContinueRequest {
   busy: boolean
+  /** `history` replays the saved conversation and appends the typed prompt. */
+  mode?: 'summary' | 'history'
   summary?: string
   onContinue: (extraTurns: number, extraPrompt: string) => Promise<void> | void
   onSpecifiedTurns?: () => void
@@ -589,6 +591,7 @@ function AgentLogDock({
 
   if (continueRequest && !live) {
     const summary = continueRequest.summary?.trim()
+    const historyFollowUp = continueRequest.mode === 'history'
     const send = () => {
       const text = draft.trim()
       if (!text || continueRequest.busy) return
@@ -596,7 +599,17 @@ function AgentLogDock({
     }
     return (
       <div className="agent-log-dock">
-        {summary && noteOpen && (
+        {historyFollowUp && noteOpen && (
+          <div className="agent-continue-note">
+            <div className="agent-continue-note-head">
+              <p>A follow-up starts a new run with this conversation and your prompt.</p>
+              <button type="button" className="agent-note-dismiss" onClick={() => setNoteOpen(false)}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+        {!historyFollowUp && summary && noteOpen && (
           <div className="agent-continue-note">
             <div className="agent-continue-note-head">
               <p>This run stopped before completion. A follow-up starts a new run from the saved summary.</p>
@@ -619,7 +632,7 @@ function AgentLogDock({
           <textarea
             value={draft}
             onChange={event => setDraft(event.target.value)}
-            placeholder="Send a follow-up"
+            placeholder={historyFollowUp ? 'Continue with a new prompt' : 'Send a follow-up'}
             rows={2}
             disabled={continueRequest.busy}
             onKeyDown={event => {
