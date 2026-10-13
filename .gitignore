@@ -101,6 +101,7 @@ gooseselftest/
 .antigravitycli/
 ui/text/dist/
 
+export_gemini_provider.sh
 export_genimi_provider.sh
 start_openduck.sh
 
