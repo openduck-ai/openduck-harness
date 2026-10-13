@@ -643,7 +643,16 @@ impl AgentPolicy for GooseAgentPolicy {
                                 }
                                 Ok(params)
                             };
-                            msg = msg.with_tool_request(call.id.clone(), tool_call);
+                            let metadata = call
+                                .metadata
+                                .as_ref()
+                                .and_then(|v| serde_json::from_value(v.clone()).ok());
+                            msg = msg.with_tool_request_with_metadata(
+                                call.id.clone(),
+                                tool_call,
+                                metadata.as_ref(),
+                                None,
+                            );
                         }
                     }
                     messages.push(msg);
@@ -855,29 +864,37 @@ fn action_from_provider_reply(reply: impl std::borrow::Borrow<Message>) -> Resul
 
     for item in &reply.content {
         match item {
-            MessageContent::ToolRequest(req) => match &req.tool_call {
-                Ok(params) => {
-                    let arguments = params
-                        .arguments
-                        .as_ref()
-                        .map(|o| serde_json::Value::Object(o.clone()))
-                        .unwrap_or_else(|| serde_json::json!({}));
-                    tool_calls.push(ToolCallRequest {
-                        id: req.id.clone(),
-                        name: params.name.to_string(),
-                        arguments,
-                        error: None,
-                    });
+            MessageContent::ToolRequest(req) => {
+                let metadata = req
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| serde_json::to_value(m).ok());
+                match &req.tool_call {
+                    Ok(params) => {
+                        let arguments = params
+                            .arguments
+                            .as_ref()
+                            .map(|o| serde_json::Value::Object(o.clone()))
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        tool_calls.push(ToolCallRequest {
+                            id: req.id.clone(),
+                            name: params.name.to_string(),
+                            arguments,
+                            error: None,
+                            metadata,
+                        });
+                    }
+                    Err(e) => {
+                        tool_calls.push(ToolCallRequest {
+                            id: req.id.clone(),
+                            name: "unparseable_tool_call".to_string(),
+                            arguments: serde_json::json!({}),
+                            error: Some(e.message.to_string()),
+                            metadata,
+                        });
+                    }
                 }
-                Err(e) => {
-                    tool_calls.push(ToolCallRequest {
-                        id: req.id.clone(),
-                        name: "unparseable_tool_call".to_string(),
-                        arguments: serde_json::json!({}),
-                        error: Some(e.message.to_string()),
-                    });
-                }
-            },
+            }
             MessageContent::Text(raw) => {
                 if !raw.text.is_empty() {
                     text_parts.push(raw.text.clone());
@@ -3226,6 +3243,80 @@ mod tests {
             Arc::new(DummyProvider),
             openduck_providers::model::ModelConfig::new("dummy-model"),
         )
+    }
+
+    #[test]
+    fn action_from_provider_reply_preserves_thought_signature_metadata() {
+        use openduck_providers::conversation::message::ProviderMetadata;
+        let mut meta = ProviderMetadata::new();
+        meta.insert(
+            "thought_signature".to_string(),
+            serde_json::json!("sig_test_123"),
+        );
+        let msg = Message::assistant().with_tool_request_with_metadata(
+            "call_test_1",
+            Ok(CallToolRequestParams::new("shell")),
+            Some(&meta),
+            None,
+        );
+        let action = action_from_provider_reply(&msg).unwrap();
+        match action {
+            AgentAction::CallTools(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].id, "call_test_1");
+                let m = calls[0]
+                    .metadata
+                    .as_ref()
+                    .expect("metadata should be preserved");
+                assert_eq!(m.get("thought_signature").unwrap(), "sig_test_123");
+            }
+            _ => panic!("Expected CallTools action"),
+        }
+    }
+
+    #[test]
+    fn harness_message_reconstructs_with_metadata() {
+        use openduck_harness::policy::{HarnessMessage, MessageRole};
+        let mut call = ToolCallRequest::new("call_123", "shell", serde_json::json!({"command": "pwd"}));
+        let meta_json = serde_json::json!({
+            "extra_content": {
+                "google": {
+                    "thought_signature": "gemini_thought_sig_xyz"
+                }
+            }
+        });
+        call.metadata = Some(meta_json);
+
+        let h_msg = HarnessMessage {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            tool_calls: Some(vec![call]),
+            tool_results: None,
+            created_at: chrono::Utc::now(),
+        };
+
+        let mut msg = Message::assistant();
+        if let Some(calls) = &h_msg.tool_calls {
+            for call in calls {
+                let tool_call = Ok(CallToolRequestParams::new(call.name.clone()));
+                let metadata = call
+                    .metadata
+                    .as_ref()
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                msg = msg.with_tool_request_with_metadata(
+                    call.id.clone(),
+                    tool_call,
+                    metadata.as_ref(),
+                    None,
+                );
+            }
+        }
+
+        let tool_req = msg.content[0].as_tool_request().unwrap();
+        assert_eq!(
+            openduck_providers::formats::google::get_thought_signature(&tool_req.metadata),
+            Some("gemini_thought_sig_xyz")
+        );
     }
 
     #[test]

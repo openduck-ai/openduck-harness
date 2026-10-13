@@ -54,6 +54,7 @@ fn is_user_loop_boundary(message: &Message) -> bool {
 
 fn insert_thought_signature(part: &mut Map<String, Value>, signature: &str) {
     part.insert(THOUGHT_SIGNATURE_KEY.to_string(), json!(signature));
+    part.insert("thought_signature".to_string(), json!(signature));
 }
 
 fn maybe_insert_signature_from_metadata(
@@ -1330,7 +1331,9 @@ mod tests {
             false,
         );
         assert_eq!(google_out[1]["parts"][0]["thoughtSignature"], SIG);
+        assert_eq!(google_out[1]["parts"][0]["thought_signature"], SIG);
         assert_eq!(google_out[2]["parts"][0]["thoughtSignature"], SIG);
+        assert_eq!(google_out[2]["parts"][0]["thought_signature"], SIG);
 
         let second_assistant = response_to_message(google_response(vec![json!({
             "functionCall": {"name": "echo", "args": {}},
@@ -1342,8 +1345,11 @@ mod tests {
             false,
         );
         assert_eq!(google_multi[1]["parts"][0]["thoughtSignature"], SIG);
+        assert_eq!(google_multi[1]["parts"][0]["thought_signature"], SIG);
         assert_eq!(google_multi[2]["parts"][0]["thoughtSignature"], SIG);
+        assert_eq!(google_multi[2]["parts"][0]["thought_signature"], SIG);
         assert_eq!(google_multi[3]["parts"][0]["thoughtSignature"], "sig_456");
+        assert_eq!(google_multi[3]["parts"][0]["thought_signature"], "sig_456");
 
         let final_response_with_sig =
             google_response(vec![json!({"text": "Done!", "thoughtSignature": SIG})]);

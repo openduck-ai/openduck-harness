@@ -513,12 +513,67 @@ pub fn format_messages_with_options(
     }
 
     merge_split_tool_call_messages(&mut messages_spec);
+    rewrite_orphan_tool_messages(&mut messages_spec);
 
     if let Some(format) = options.thinking_preservation_format {
         inline_reasoning_content(&mut messages_spec, format);
     }
 
     messages_spec
+}
+
+/// Gemini's OpenAI-compatible endpoint copies `role:tool` into
+/// `function_response` and fills `name` from the matching tool call.
+/// A result whose call was compacted away is sent with an empty name and
+/// rejected (`function_response.name: Name cannot be empty`). Keep the text
+/// as a user message instead of a tool result.
+fn rewrite_orphan_tool_messages(messages: &mut [Value]) {
+    let mut known_ids = std::collections::HashSet::new();
+    for message in messages.iter() {
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    if !id.is_empty() {
+                        known_ids.insert(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    for message in messages.iter_mut() {
+        if message.get("role").and_then(Value::as_str) != Some("tool") {
+            continue;
+        }
+        let id = message
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !id.is_empty() && known_ids.contains(id) {
+            continue;
+        }
+        let text = message
+            .get("content")
+            .map(tool_message_text)
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "(empty result)".to_string());
+        *message = json!({
+            "role": "user",
+            "content": format!("[Earlier tool result]: {text}")
+        });
+    }
+}
+
+fn tool_message_text(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => other.to_string(),
+    }
 }
 
 /// Rewrites `reasoning_content` into the message `content` for models that reject a
@@ -5179,6 +5234,36 @@ data: [DONE]"#;
         ));
         assert!(!is_valid_function_name("hello world"));
         assert!(!is_valid_function_name("hello@world"));
+    }
+
+    #[test]
+    fn formatter_rewrites_orphan_tool_result_as_user_text() {
+        let messages = vec![
+            Message::user().with_text("do the thing"),
+            Message::user().with_tool_response(
+                "call_orphan",
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    "File successfully written",
+                )])),
+            ),
+            Message::assistant()
+                .with_tool_request("call_ok", Ok(CallToolRequestParams::new("shell"))),
+            Message::user().with_tool_response(
+                "call_ok",
+                Ok(CallToolResult::success(vec![ContentBlock::text("ok")])),
+            ),
+        ];
+
+        let spec = format_messages(&messages, &ImageFormat::OpenAi);
+
+        assert_eq!(spec[1]["role"], "user");
+        assert_eq!(
+            spec[1]["content"],
+            "[Earlier tool result]: File successfully written"
+        );
+        assert!(spec[1].get("tool_call_id").is_none());
+        assert_eq!(spec[3]["role"], "tool");
+        assert_eq!(spec[3]["tool_call_id"], "call_ok");
     }
 
     #[test]

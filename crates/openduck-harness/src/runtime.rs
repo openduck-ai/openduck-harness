@@ -2482,8 +2482,9 @@ pub fn compact_context_messages(
         return;
     }
 
-    let head_count = 2.min(messages.len());
-    let head: Vec<HarnessMessage> = messages.iter().take(head_count).cloned().collect();
+    let mut head_count = 2.min(messages.len());
+    // A tool call kept in the head must keep the result that follows it.
+    head_count = extend_head_through_tool_results(messages, head_count);
 
     let tail_preserve = if exceeds_tokens {
         (max_messages.saturating_sub(head_count + 1)).clamp(4, 8)
@@ -2491,10 +2492,15 @@ pub fn compact_context_messages(
         (max_messages.saturating_sub(head_count + 1)).max(4)
     };
 
-    let tail_start = messages.len().saturating_sub(tail_preserve);
+    let mut tail_start = messages.len().saturating_sub(tail_preserve);
+    // Do not start the tail on a tool result whose call was compacted away.
+    // Gemini's OpenAI endpoint turns that into function_response.name = "".
+    tail_start = align_tail_to_tool_pair(messages, head_count, tail_start);
     if tail_start <= head_count {
         return;
     }
+
+    let head: Vec<HarnessMessage> = messages.iter().take(head_count).cloned().collect();
 
     let facts = extract_context_facts(&messages[head_count..tail_start]);
     let pruned_count = tail_start - head_count;
@@ -2526,6 +2532,61 @@ pub fn compact_context_messages(
     }
 
     *messages = compacted;
+}
+
+fn is_tool_call_message(message: &HarnessMessage) -> bool {
+    message.role == MessageRole::Assistant
+        && message
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty())
+}
+
+fn is_tool_result_message(message: &HarnessMessage) -> bool {
+    message.role == MessageRole::Tool
+        && message
+            .tool_results
+            .as_ref()
+            .is_some_and(|results| !results.is_empty())
+}
+
+fn extend_head_through_tool_results(messages: &[HarnessMessage], mut head_count: usize) -> usize {
+    if head_count == 0 || !is_tool_call_message(&messages[head_count - 1]) {
+        return head_count;
+    }
+    while head_count < messages.len() && is_tool_result_message(&messages[head_count]) {
+        head_count += 1;
+    }
+    head_count
+}
+
+/// If the tail would open on a tool result, keep the assistant call that produced it.
+/// A result with no call left in the kept history is skipped instead.
+fn align_tail_to_tool_pair(
+    messages: &[HarnessMessage],
+    head_count: usize,
+    tail_start: usize,
+) -> usize {
+    if tail_start <= head_count || tail_start >= messages.len() {
+        return tail_start;
+    }
+    if !is_tool_result_message(&messages[tail_start]) {
+        return tail_start;
+    }
+
+    let mut start = tail_start;
+    while start > head_count && is_tool_result_message(&messages[start - 1]) {
+        start -= 1;
+    }
+    if start > head_count && is_tool_call_message(&messages[start - 1]) {
+        return start - 1;
+    }
+
+    let mut skip = tail_start;
+    while skip < messages.len() && is_tool_result_message(&messages[skip]) {
+        skip += 1;
+    }
+    skip
 }
 
 /// Backward-compatible compaction trigger based on message count limit.
@@ -2944,6 +3005,92 @@ fn tokenize_shell_command(segment: &str) -> Vec<String> {
         tokens.push(current);
     }
     tokens
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::compact_context_messages;
+    use crate::policy::HarnessMessage;
+    use crate::types::{ToolCallRequest, ToolCallResponse};
+    use std::collections::HashSet;
+
+    fn tool_results_stay_paired(messages: &[HarnessMessage]) -> bool {
+        let mut open = HashSet::new();
+        for message in messages {
+            if let Some(calls) = &message.tool_calls {
+                for call in calls {
+                    open.insert(call.id.clone());
+                }
+            }
+            if let Some(results) = &message.tool_results {
+                for result in results {
+                    if !open.remove(&result.id) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn compaction_keeps_tool_call_with_its_result() {
+        let mut messages = vec![
+            HarnessMessage::system("System instructions"),
+            HarnessMessage::user("Task"),
+            HarnessMessage::assistant_with_tools(
+                "",
+                vec![ToolCallRequest::new(
+                    "call_shell",
+                    "shell",
+                    serde_json::json!({"command": "ls"}),
+                )],
+            ),
+            HarnessMessage::tool_response(vec![ToolCallResponse {
+                id: "call_shell".into(),
+                name: "shell".into(),
+                output: "listed".into(),
+                is_error: false,
+            }]),
+            HarnessMessage::assistant_with_tools(
+                "",
+                vec![ToolCallRequest::new(
+                    "call_write",
+                    "write_file",
+                    serde_json::json!({"path": "notes.md"}),
+                )],
+            ),
+            HarnessMessage::tool_response(vec![ToolCallResponse {
+                id: "call_write".into(),
+                name: "write_file".into(),
+                output: "File successfully written".into(),
+                is_error: false,
+            }]),
+        ];
+        for i in 0..3 {
+            messages.push(HarnessMessage::user(format!("note {i}")));
+        }
+
+        compact_context_messages(&mut messages, 6, None, 0.8);
+
+        assert!(
+            tool_results_stay_paired(&messages),
+            "tail started on a tool result whose call was dropped: {messages:?}"
+        );
+        let kept_write = messages.iter().any(|message| {
+            message
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| calls.iter().any(|call| call.id == "call_write"))
+        });
+        let kept_write_result = messages.iter().any(|message| {
+            message
+                .tool_results
+                .as_ref()
+                .is_some_and(|results| results.iter().any(|result| result.id == "call_write"))
+        });
+        assert!(kept_write && kept_write_result);
+    }
 }
 
 /// Checks if a shell command is doing fragmented sliced reads on files (e.g. `sed -n 'X,Yp'`).

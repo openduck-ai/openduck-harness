@@ -16,6 +16,8 @@ pub struct ToolCallRequest {
     pub arguments: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl ToolCallRequest {
@@ -29,6 +31,7 @@ impl ToolCallRequest {
             name: name.into(),
             arguments,
             error: None,
+            metadata: None,
         }
     }
 
@@ -42,7 +45,13 @@ impl ToolCallRequest {
             name: name.into(),
             arguments: serde_json::json!({}),
             error: Some(error.into()),
+            metadata: None,
         }
+    }
+
+    pub fn with_metadata(mut self, metadata: Option<serde_json::Value>) -> Self {
+        self.metadata = metadata;
+        self
     }
 }
 
