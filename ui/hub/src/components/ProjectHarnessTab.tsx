@@ -95,44 +95,6 @@ interface ProjectHarnessTabProps {
 type ProjectSubTab = 'tasks' | 'config' | 'reports' | 'cassettes' | 'history' | 'trajectory'
 type LogOrigin = 'tasks' | 'history' | 'reports' | 'config' | 'cassettes'
 
-const MIN_SUBTASK_TURNS = 8
-
-const SYNTHESIZED_PHASE_LABELS = [
-  {
-    title: 'Phase 1: Discovery / DTO',
-    description: 'Locate modules and define DTOs, traits, and interfaces',
-  },
-  {
-    title: 'Phase 2: Core implementation',
-    description: 'Implement backend engine, services, and business logic',
-  },
-  {
-    title: 'Phase 3: Integration / tests',
-    description: 'Build, run tests, and verify end-to-end behavior',
-  },
-] as const
-
-/** Matches Rust `split_synthesized_phase_turns`: 2:3:2 split with a floor of 8. */
-function splitSynthesizedPhaseTurns(parentMaxTurns: number): number[] {
-  const parent = Math.max(Number(parentMaxTurns) || 0, MIN_SUBTASK_TURNS)
-  const p1 = Math.max(MIN_SUBTASK_TURNS, Math.floor((parent * 2) / 7))
-  const p3 = Math.max(MIN_SUBTASK_TURNS, Math.floor((parent * 2) / 7))
-  const p2 = Math.max(MIN_SUBTASK_TURNS, parent - p1 - p3)
-  return [p1, p2, p3]
-}
-
-function phaseTurnsFromTask(
-  task: Pick<ProjectTaskDefinition, 'maxTurns' | 'phaseMaxTurns'>,
-): number[] {
-  const split = splitSynthesizedPhaseTurns(task.maxTurns || 25)
-  const overrides = task.phaseMaxTurns
-  if (!overrides || overrides.length === 0) return split
-  return split.map((fallback, i) => {
-    const value = overrides[i]
-    return typeof value === 'number' && value > 0 ? value : fallback
-  })
-}
-
 function normalizeHarnessConfig(raw: Partial<ProjectHarnessConfig> | any): ProjectHarnessConfig {
   return {
     version: raw?.version || '1.0',
@@ -199,8 +161,6 @@ export function ProjectHarnessTab({
     prompt: '',
     maxTurns: 25,
     timeoutSeconds: 300,
-    autoDecompose: true,
-    phaseMaxTurns: splitSynthesizedPhaseTurns(25),
   })
   const [taskTagsInput, setTaskTagsInput] = useState('')
   const [schedule, setSchedule] = useState<FriendlySchedule>(defaultSchedule)
@@ -847,8 +807,6 @@ export function ProjectHarnessTab({
       timeoutSeconds: config?.execution.timeoutSeconds || 300,
       cron: '',
       schedulePaused: false,
-      autoDecompose: true,
-      phaseMaxTurns: splitSynthesizedPhaseTurns(config?.execution.maxTurns || 25),
     })
     setSchedule({ ...defaultSchedule })
     setTaskTagsInput('')
@@ -1136,7 +1094,6 @@ export function ProjectHarnessTab({
         ...prev,
         maxTurns: res.suggestedMaxTurns,
         timeoutSeconds: res.suggestedTimeoutSeconds,
-        phaseMaxTurns: splitSynthesizedPhaseTurns(res.suggestedMaxTurns),
       }))
       setSuccessMsg(
         feedbackToSend
@@ -1162,7 +1119,6 @@ export function ProjectHarnessTab({
       ...prev,
       maxTurns: newTurns,
       timeoutSeconds: newTimeout,
-      phaseMaxTurns: splitSynthesizedPhaseTurns(newTurns),
     }))
     setSuccessMsg(`Budget manually adjusted to ${newTurns} turns (${newTimeout}s)`)
   }
@@ -1269,7 +1225,6 @@ export function ProjectHarnessTab({
       }
 
       const cron = scheduleToCron(schedule)
-      const hasExplicitSubtasks = (taskForm.subtasks?.length || 0) >= 2
       const payload: ProjectTaskDefinition = {
         ...taskForm,
         prompt,
@@ -1277,10 +1232,6 @@ export function ProjectHarnessTab({
         verifier: verifierSpec,
         cron,
         schedulePaused: Boolean(cron) && Boolean(taskForm.schedulePaused),
-        phaseMaxTurns:
-          taskForm.autoDecompose === false || hasExplicitSubtasks
-            ? undefined
-            : phaseTurnsFromTask(taskForm),
       }
 
       if (editingTaskId) {
@@ -2189,7 +2140,6 @@ export function ProjectHarnessTab({
                         setTaskForm({
                           ...taskForm,
                           maxTurns,
-                          phaseMaxTurns: splitSynthesizedPhaseTurns(maxTurns),
                         })
                       }}
                     />
@@ -2210,33 +2160,6 @@ export function ProjectHarnessTab({
                       }
                     />
                   </div>
-                </div>
-
-                <div className="form-group" style={{ marginTop: '0.25rem', marginBottom: '1rem' }}>
-                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.65rem', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      style={{ marginTop: '0.25rem' }}
-                      checked={taskForm.autoDecompose !== false}
-                      onChange={e =>
-                        setTaskForm({
-                          ...taskForm,
-                          autoDecompose: e.target.checked,
-                          phaseMaxTurns: e.target.checked
-                            ? phaseTurnsFromTask(taskForm)
-                            : undefined,
-                        })
-                      }
-                    />
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>
-                        Auto-Decompose Task into Sequential Subtasks (Recommended)
-                      </div>
-                      <div style={{ fontSize: '0.75rem', opacity: 0.75, marginTop: '0.15rem', lineHeight: '1.35' }}>
-                        In Step 1, OpenDuck analyzes the prompt, splits complex tasks into discrete phases (Discovery &amp; DTO &rarr; Core Service &rarr; Integration/Verification), and executes them in sequential order within the shared sandbox workspace.
-                      </div>
-                    </div>
-                  </label>
                 </div>
 
                 <div className="form-group" style={{ marginTop: '0.25rem', marginBottom: '1rem' }}>
@@ -2265,7 +2188,7 @@ export function ProjectHarnessTab({
                   </label>
                 </div>
 
-                {taskForm.autoDecompose !== false && (taskForm.subtasks?.length || 0) >= 2 && (
+                {(taskForm.subtasks?.length || 0) >= 2 && (
                   <div className="form-group" style={{ marginBottom: '1rem' }}>
                     <label className="form-label">Per-phase Max Turns</label>
                     <div style={{ fontSize: '0.75rem', opacity: 0.75, marginBottom: '0.5rem' }}>
@@ -2298,57 +2221,6 @@ export function ProjectHarnessTab({
                               setTaskForm({ ...taskForm, subtasks: next })
                             }}
                           />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {taskForm.autoDecompose !== false && (taskForm.subtasks?.length || 0) < 2 && (
-                  <div className="form-group" style={{ marginBottom: '1rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '0.75rem' }}>
-                      <label className="form-label">Per-phase Max Turns</label>
-                      <button
-                        type="button"
-                        className="btn btn-xs btn-secondary"
-                        onClick={() =>
-                          setTaskForm({
-                            ...taskForm,
-                            phaseMaxTurns: splitSynthesizedPhaseTurns(taskForm.maxTurns || 25),
-                          })
-                        }
-                        title="Re-split the parent Max Turns across the three synthesized phases (2:3:2)"
-                      >
-                        Reset to split of Max Turns
-                      </button>
-                    </div>
-                    <div style={{ fontSize: '0.75rem', opacity: 0.75, margin: '0.15rem 0 0.5rem', lineHeight: '1.35' }}>
-                      Auto-synthesis splits parent Max Turns ({taskForm.maxTurns || 25}) across three phases using a 2:3:2 ratio (discovery : implementation : verification). Override any phase here.
-                    </div>
-                    <div className="form-row-3">
-                      {SYNTHESIZED_PHASE_LABELS.map((phase, index) => (
-                        <div className="form-group" key={phase.title}>
-                          <label className="form-label" title={phase.description}>
-                            {phase.title}
-                          </label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={maxTurnsLimit}
-                            className="form-input"
-                            value={phaseTurnsFromTask(taskForm)[index]}
-                            onChange={e => {
-                              const next = [...phaseTurnsFromTask(taskForm)]
-                              next[index] = Math.max(
-                                1,
-                                Math.min(maxTurnsLimit, Number(e.target.value) || 1),
-                              )
-                              setTaskForm({ ...taskForm, phaseMaxTurns: next })
-                            }}
-                          />
-                          <div style={{ fontSize: '0.7rem', opacity: 0.65, marginTop: '0.2rem' }}>
-                            {phase.description}
-                          </div>
                         </div>
                       ))}
                     </div>

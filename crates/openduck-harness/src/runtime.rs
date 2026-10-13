@@ -1072,7 +1072,8 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                 .await;
         }
 
-        // Step 1: Decompose task into subtasks if explicitly configured or complex
+        // A saved continuation plan wins so Continue resumes the same sequence.
+        // Otherwise only subtasks written on the task run in order.
         let subtasks = if let Some(plan) = self
             .continuation
             .as_ref()
@@ -1080,17 +1081,8 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             .map(|cp| cp.subtask_plan.clone())
         {
             plan
-        } else if let Some(configured) = &task.subtasks {
-            configured.clone()
-        } else if task.auto_decompose.unwrap_or(true) {
-            crate::eval::subtask::SubtaskDecomposer::decompose(
-                &task.id,
-                &task.problem_statement,
-                Some(task.max_turns.unwrap_or(self.max_turns)),
-                task.phase_max_turns.as_deref(),
-            )
         } else {
-            Vec::new()
+            task.subtasks.clone().unwrap_or_default()
         };
 
         if subtasks.len() >= 2 {

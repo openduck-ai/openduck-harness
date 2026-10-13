@@ -12,11 +12,10 @@ pub mod types;
 
 pub use eval::{
     is_continuable_status, is_history_follow_up_status, load_jsonl_dataset, load_recipe_task,
-    resolve_synthesized_phase_turns, run_progress_summary_from_steps,
-    split_synthesized_phase_turns, BenchmarkItem, CommandVerifier, ContinuationCheckpoint,
+    run_progress_summary_from_steps, BenchmarkItem, CommandVerifier, ContinuationCheckpoint,
     ContinuationStopReason, DiffVerifier, EvalMetrics, EvalRunner, EvalRunnerConfig,
     EvaluationReport, SubtaskDecomposer, SubtaskOutcome, SubtaskSpec, TaskResult, TaskSpec,
-    VerificationResult, Verifier, MIN_SUBTASK_TURNS,
+    VerificationResult, Verifier,
 };
 pub use judge::{
     DecisionEngine, DecisionLedger, DecisionMode, DecisionPointId, DecisionPointSpec,

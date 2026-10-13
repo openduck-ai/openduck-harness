@@ -819,9 +819,7 @@ export interface ProjectTaskDefinition {
   timeoutSeconds?: number
   cron?: string
   schedulePaused?: boolean
-  autoDecompose?: boolean
   subtasks?: SubtaskSpec[]
-  phaseMaxTurns?: number[]
   /** When true, a run can append extra instructions without rewriting the saved prompt. */
   dynamicPrompt?: boolean
 }

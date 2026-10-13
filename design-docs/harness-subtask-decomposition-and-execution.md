@@ -1,5 +1,7 @@
 # OpenDuck Harness — Subtask Decomposition & Sequential Execution
 
+> Auto-decompose is removed. A task runs as one session unless its file lists explicit `subtasks`. Saved `autoDecompose` and `phaseMaxTurns` keys are ignored. A continuation that already stored a subtask plan still resumes that plan.
+
 ## 1. Overview & Motivation
 
 When autonomous coding agents tackle large, open-ended tasks (such as *"Complete all missing notification channels, database migrations, and UI components in docs/GPS_PLATFORM_PLAN.md"*), monolithic prompt execution frequently exhibits critical failure modes:

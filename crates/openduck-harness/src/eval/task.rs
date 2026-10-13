@@ -190,23 +190,6 @@ pub struct TaskSpec {
         alias = "sub_tasks"
     )]
     pub subtasks: Option<Vec<SubtaskSpec>>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "auto_decompose",
-        alias = "autoDecompose",
-        alias = "decompose_subtasks"
-    )]
-    pub auto_decompose: Option<bool>,
-    /// Per-phase turn budgets for auto-synthesized (or matching extracted) subtasks.
-    /// When omitted, synthesized phases split `max_turns` with a 2:3:2 ratio.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "phase_max_turns",
-        alias = "phaseMaxTurns"
-    )]
-    pub phase_max_turns: Option<Vec<usize>>,
 }
 
 impl TaskSpec {
@@ -226,8 +209,6 @@ impl TaskSpec {
             timeout_seconds: Some(300),
             exploration_budget: None,
             subtasks: None,
-            auto_decompose: None,
-            phase_max_turns: None,
         }
     }
 
@@ -248,16 +229,6 @@ impl TaskSpec {
 
     pub fn with_subtasks(mut self, subtasks: Vec<SubtaskSpec>) -> Self {
         self.subtasks = Some(subtasks);
-        self
-    }
-
-    pub fn with_auto_decompose(mut self, auto_decompose: bool) -> Self {
-        self.auto_decompose = Some(auto_decompose);
-        self
-    }
-
-    pub fn with_phase_max_turns(mut self, phase_max_turns: Vec<usize>) -> Self {
-        self.phase_max_turns = Some(phase_max_turns);
         self
     }
 }
