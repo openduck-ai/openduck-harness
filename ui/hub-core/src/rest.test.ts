@@ -331,6 +331,29 @@ test('ordinary REST calls still use the short timeout', async () => {
   }
 })
 
+test('network monitoring authenticates the request and preserves cancellation', async () => {
+  const originalFetch = globalThis.fetch
+  const controller = new AbortController()
+  let request: Request | undefined
+  globalThis.fetch = async (input, init) => {
+    request = new Request(input, init)
+    return new Response(JSON.stringify({ checkedAt: '2026-10-14T00:00:00Z', endpoints: [], proxies: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    await createApi('http://host', 'secret').getNetworkStatus(controller.signal)
+    assert.equal(request?.url, 'http://host/api/v1/network/status')
+    assert.equal(request?.headers.get('X-Secret-Key'), 'secret')
+    assert.equal(request?.signal.aborted, false)
+    controller.abort()
+    assert.equal(request?.signal.aborted, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('REST client sends extraPrompt when running a dynamic-prompt task', async () => {
   const originalFetch = globalThis.fetch
   let request: Request | undefined

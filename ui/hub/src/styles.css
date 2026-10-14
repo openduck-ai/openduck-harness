@@ -12282,3 +12282,32 @@ button.git-log-row {
 }
 
 
+.network-panel-heading, .network-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.network-panel-heading h3, .network-panel-heading button, .network-auto-refresh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.network-auto-refresh { font-size: 13px; margin-bottom: 16px; }
+.network-auto-refresh input { width: auto; }
+.network-table-scroll { overflow-x: auto; margin: 12px 0; }
+.network-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.network-table th, .network-table td { padding: 10px 8px; text-align: left; vertical-align: top; }
+.network-table th { font-weight: 600; white-space: nowrap; }
+.network-table td { border-top: 1px solid var(--border-default); }
+.network-probe { display: flex; align-items: baseline; gap: 6px; min-width: 100px; }
+.network-probe small, .network-url { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+.network-probe-unavailable .status-dot { background: #94a3b8; }
+.network-history { margin-top: 10px; min-width: 140px; }
+.network-history-bars { display: flex; align-items: end; gap: 3px; height: 32px; margin-bottom: 4px; }
+.network-history-bars span { width: 6px; border-radius: 2px; }
+.network-history-ok { background: #16a34a; }
+.network-history-failed { background: #dc2626; }

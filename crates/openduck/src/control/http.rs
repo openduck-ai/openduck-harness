@@ -1464,6 +1464,7 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
         }
     });
     Router::new()
+        .route("/api/v1/network/status", get(super::network::status))
         .route(
             "/api/v1/config",
             get(get_app_config)

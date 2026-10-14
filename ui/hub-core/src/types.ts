@@ -1006,3 +1006,38 @@ export type HarnessJobLiveEvent =
 
 
 
+export interface NetworkProbe {
+  status: 'reachable' | 'failed' | 'timeout' | 'unavailable'
+  latencyMs: number | null
+  detail: string
+  httpStatus: number | null
+}
+
+export interface NetworkEndpointStatus {
+  provider: string
+  url: string
+  dns: NetworkProbe
+  addresses: string[]
+  ping: NetworkProbe
+  tcp: NetworkProbe
+  directHttp: NetworkProbe
+  providerHttp: NetworkProbe
+  proxy: string | null
+}
+
+export interface NetworkProxyStatus {
+  source: string
+  url: string
+  tcp: NetworkProbe
+  tunnel: NetworkProbe
+  target: string
+}
+
+export interface NetworkStatus {
+  checkedAt: string
+  refreshIntervalSeconds: number
+  endpoints: NetworkEndpointStatus[]
+  proxies: NetworkProxyStatus[]
+  noProxy: string | null
+}
+

@@ -5,6 +5,7 @@ import { useTheme } from '../contexts/ThemeContext'
 import { OpenDuckConfigPanel } from './OpenDuckConfigPanel'
 import { ProjectRootsEditor } from './ProjectRootsEditor'
 import { useProjectRoots } from './useProjectRoots'
+import { NetworkStatusPanel } from './NetworkStatusPanel'
 
 interface ServerSettingsProps {
   baseUrl: string
@@ -200,7 +201,7 @@ export function ServerSettings({
               </div>
 
               <div className="diagnostic-item">
-                <span className="muted text-sm">Ping Latency</span>
+                <span className="muted text-sm">Browser → Hub HTTP latency</span>
                 <div className="diagnostic-value">
                   <strong>{pingLatency !== null ? `${pingLatency} ms` : isConnected ? 'Active' : '—'}</strong>
                 </div>
@@ -240,6 +241,7 @@ export function ServerSettings({
         </div>
       </div>
 
+      <NetworkStatusPanel api={api} isConnected={isConnected} />
       <OpenDuckConfigPanel api={api} isConnected={isConnected} />
     </div>
   )
