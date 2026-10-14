@@ -61,6 +61,27 @@ pub struct GitCommitEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct GitWorktreeEntry {
+    pub path: String,
+    pub head: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    pub is_bare: bool,
+    pub is_detached: bool,
+    pub is_locked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktreeListResponse {
+    pub is_repo: bool,
+    pub worktrees: Vec<GitWorktreeEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct GitLogResponse {
     pub is_repo: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -965,6 +986,173 @@ pub async fn suggest_commit_message(
     }
 }
 
+pub fn parse_worktree_porcelain(raw: &str) -> Vec<GitWorktreeEntry> {
+    let mut entries = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut current_head = String::new();
+    let mut current_branch: Option<String> = None;
+    let mut is_bare = false;
+    let mut is_detached = false;
+    let mut is_locked = false;
+    let mut lock_reason: Option<String> = None;
+
+    let flush = |entries: &mut Vec<GitWorktreeEntry>,
+                 path: &mut Option<String>,
+                 head: &mut String,
+                 branch: &mut Option<String>,
+                 bare: &mut bool,
+                 detached: &mut bool,
+                 locked: &mut bool,
+                 lock_msg: &mut Option<String>| {
+        if let Some(p) = path.take() {
+            entries.push(GitWorktreeEntry {
+                path: p,
+                head: std::mem::take(head),
+                branch: branch.take(),
+                is_bare: *bare,
+                is_detached: *detached,
+                is_locked: *locked,
+                lock_reason: lock_msg.take(),
+            });
+            *bare = false;
+            *detached = false;
+            *locked = false;
+        }
+    };
+
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            flush(
+                &mut entries,
+                &mut current_path,
+                &mut current_head,
+                &mut current_branch,
+                &mut is_bare,
+                &mut is_detached,
+                &mut is_locked,
+                &mut lock_reason,
+            );
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("worktree ") {
+            flush(
+                &mut entries,
+                &mut current_path,
+                &mut current_head,
+                &mut current_branch,
+                &mut is_bare,
+                &mut is_detached,
+                &mut is_locked,
+                &mut lock_reason,
+            );
+            current_path = Some(path.trim().to_string());
+        } else if let Some(h) = line.strip_prefix("HEAD ") {
+            current_head = h.trim().to_string();
+        } else if let Some(b) = line.strip_prefix("branch ") {
+            let ref_name = b.trim();
+            let branch = ref_name.strip_prefix("refs/heads/").unwrap_or(ref_name);
+            current_branch = Some(branch.to_string());
+        } else if line == "bare" {
+            is_bare = true;
+        } else if line == "detached" {
+            is_detached = true;
+        } else if let Some(reason) = line.strip_prefix("locked ") {
+            is_locked = true;
+            lock_reason = Some(reason.trim().to_string());
+        } else if line == "locked" {
+            is_locked = true;
+        }
+    }
+
+    flush(
+        &mut entries,
+        &mut current_path,
+        &mut current_head,
+        &mut current_branch,
+        &mut is_bare,
+        &mut is_detached,
+        &mut is_locked,
+        &mut lock_reason,
+    );
+
+    entries
+}
+
+pub async fn worktree_list(path: &Path) -> Result<GitWorktreeListResponse> {
+    ensure_repo(path).await?;
+    let raw = run_git_ok(path, &["worktree", "list", "--porcelain"], STATUS_TIMEOUT).await?;
+    let worktrees = parse_worktree_porcelain(&raw);
+    Ok(GitWorktreeListResponse {
+        is_repo: true,
+        worktrees,
+    })
+}
+
+pub async fn worktree_add(
+    path: &Path,
+    worktree_dir: &Path,
+    branch: &str,
+    base_commit: Option<&str>,
+) -> Result<()> {
+    ensure_repo(path).await?;
+    let dir_str = worktree_dir
+        .to_str()
+        .ok_or_else(|| anyhow!("Invalid worktree directory path"))?;
+
+    let mut args = vec!["worktree", "add", "-b", branch, dir_str];
+    if let Some(base) = base_commit {
+        args.push(base);
+    }
+
+    let output = run_git(path, &args, MUTATE_TIMEOUT).await?;
+    if !output.success {
+        // Fallback: branch might already exist
+        let fallback_args = vec!["worktree", "add", dir_str, branch];
+        let fallback = run_git(path, &fallback_args, MUTATE_TIMEOUT).await?;
+        if !fallback.success {
+            bail!("{}", git_error(&output, "Failed to create worktree"));
+        }
+    }
+    Ok(())
+}
+
+pub async fn worktree_remove(path: &Path, worktree_dir: &Path, force: bool) -> Result<()> {
+    ensure_repo(path).await?;
+    let dir_str = worktree_dir
+        .to_str()
+        .ok_or_else(|| anyhow!("Invalid worktree directory path"))?;
+
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(dir_str);
+
+    let output = run_git(path, &args, MUTATE_TIMEOUT).await?;
+    if !output.success {
+        bail!("{}", git_error(&output, "Failed to remove worktree"));
+    }
+    Ok(())
+}
+
+pub async fn list_untracked_files(path: &Path) -> Result<Vec<String>> {
+    ensure_repo(path).await?;
+    let output = run_git_ok(
+        path,
+        &["ls-files", "--others", "--exclude-standard"],
+        STATUS_TIMEOUT,
+    )
+    .await?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1163,5 +1351,71 @@ mod tests {
         run_plain_git(dir.path(), &["add", "a.txt"]);
         run_plain_git(dir.path(), &["commit", "-m", "first"]);
         assert!(commit(dir.path(), "   ", &[]).await.is_err());
+    }
+
+    #[test]
+    fn parses_worktree_porcelain_records() {
+        let sample = "\
+worktree /home/user/project
+HEAD a1b2c3d4e5f6071829304152637485960718293a
+branch refs/heads/main
+
+worktree /home/user/project-worktree
+HEAD b2c3d4e5f6071829304152637485960718293a4b
+branch refs/heads/feature-x
+locked test lock reason
+
+worktree /home/user/project-detached
+HEAD c3d4e5f6071829304152637485960718293a4b5c
+detached
+";
+        let parsed = parse_worktree_porcelain(sample);
+        assert_eq!(parsed.len(), 3);
+
+        assert_eq!(parsed[0].path, "/home/user/project");
+        assert_eq!(parsed[0].branch.as_deref(), Some("main"));
+        assert!(!parsed[0].is_detached);
+        assert!(!parsed[0].is_locked);
+
+        assert_eq!(parsed[1].path, "/home/user/project-worktree");
+        assert_eq!(parsed[1].branch.as_deref(), Some("feature-x"));
+        assert!(parsed[1].is_locked);
+        assert_eq!(parsed[1].lock_reason.as_deref(), Some("test lock reason"));
+
+        assert_eq!(parsed[2].path, "/home/user/project-detached");
+        assert!(parsed[2].is_detached);
+        assert!(parsed[2].branch.is_none());
+    }
+
+    #[tokio::test]
+    async fn worktree_lifecycle_test() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        fs::write(root.join("README.md"), "main\n").unwrap();
+        run_plain_git(root, &["add", "README.md"]);
+        run_plain_git(root, &["commit", "-m", "init"]);
+
+        let wt_dir = tempdir().unwrap();
+        let wt_path = wt_dir.path().join("wt1");
+
+        worktree_add(root, &wt_path, "feature-wt", None)
+            .await
+            .unwrap();
+
+        let list = worktree_list(root).await.unwrap();
+        assert!(list.worktrees.len() >= 2);
+        assert!(list
+            .worktrees
+            .iter()
+            .any(|w| w.branch.as_deref() == Some("feature-wt")));
+
+        worktree_remove(root, &wt_path, true).await.unwrap();
+
+        let list_after = worktree_list(root).await.unwrap();
+        assert!(!list_after
+            .worktrees
+            .iter()
+            .any(|w| w.branch.as_deref() == Some("feature-wt")));
     }
 }

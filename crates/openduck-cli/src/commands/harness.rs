@@ -85,6 +85,18 @@ pub struct RunArgs {
     /// Use lightweight mock EchoPolicy instead of live model
     #[arg(long)]
     pub echo: bool,
+
+    /// Run task inside an isolated Git worktree on a separate branch
+    #[arg(long)]
+    pub worktree: bool,
+
+    /// Custom branch name for worktree task (defaults to agent/task-<id>)
+    #[arg(long)]
+    pub worktree_branch: Option<String>,
+
+    /// Keep worktree directory after task completion for inspection
+    #[arg(long)]
+    pub keep_worktree: bool,
 }
 
 #[derive(Debug, Args)]
@@ -164,28 +176,45 @@ async fn handle_eval(args: EvalArgs) -> Result<()> {
 }
 
 async fn handle_run(args: RunArgs) -> Result<()> {
-    let task_spec = if let Some(task_file) = args.task {
+    let task_spec = if let Some(task_file) = &args.task {
         if task_file.extension().and_then(|e| e.to_str()) == Some("yaml")
             || task_file.extension().and_then(|e| e.to_str()) == Some("yml")
         {
-            let item = load_recipe_task(&task_file).await?;
+            let item = load_recipe_task(task_file).await?;
             item.task
         } else {
-            let items = load_jsonl_dataset(&task_file).await?;
+            let items = load_jsonl_dataset(task_file).await?;
             items
                 .into_iter()
                 .next()
                 .map(|i| i.task)
                 .context("Dataset contains no tasks")?
         }
-    } else if let Some(prompt) = args.prompt {
+    } else if let Some(ref prompt) = args.prompt {
         TaskSpec::new("cli-task", "cli-adhoc", prompt)
     } else {
         anyhow::bail!("Must provide either --task <path> or --prompt <text>");
     };
 
-    let mut sandbox = LocalSandbox::ephemeral()?;
-    sandbox.initialize().await?;
+    let mut sandbox: Box<dyn SandboxDriver> = if args.worktree {
+        let repo_root = std::env::current_dir()?;
+        let branch = args
+            .worktree_branch
+            .clone()
+            .unwrap_or_else(|| format!("agent/task-{}", task_spec.id.replace('/', "-")));
+        let mut wt_config =
+            openduck_harness::sandbox::WorktreeConfig::new(repo_root).with_branch(branch);
+        wt_config.keep_worktree = args.keep_worktree;
+        let mut wt = openduck_harness::sandbox::WorktreeSandbox::new(wt_config);
+        wt.initialize().await?;
+        println!("Initialized Git worktree at: {:?}", wt.worktree_path());
+        println!("Task running on isolated branch: '{}'", wt.branch_name());
+        Box::new(wt)
+    } else {
+        let mut s = LocalSandbox::ephemeral()?;
+        s.initialize().await?;
+        Box::new(s)
+    };
 
     if args.echo {
         let base_policy = EchoPolicy::default();

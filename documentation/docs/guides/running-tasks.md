@@ -222,3 +222,14 @@ This command:
 3. Names the session "project-setup"
 4. Starts with "Initialize project" instruction
 5. Exits automatically after processing the command.
+
+### Isolated Git Worktree Execution
+
+To execute tasks and recipes without touching your current working directory or unstaged edits, use the Git worktree isolation mode:
+
+```bash
+openduck harness run --prompt "Refactor auth middleware" --worktree
+```
+
+See the [Git Worktree Task Runner Guide](./git-worktree-task-runner.md) for branch naming, untracked `.env` sync strategies, and snapshot management.
+
