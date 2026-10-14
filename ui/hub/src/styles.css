@@ -2094,6 +2094,11 @@ textarea {
   animation: mentionPopoverFadeIn 0.15s ease-out;
 }
 
+.mention-popover-below {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
 @keyframes mentionPopoverFadeIn {
   from {
     opacity: 0;
@@ -8813,6 +8818,144 @@ textarea {
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
+}
+
+.task-draft-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.03));
+}
+
+.task-draft-chat.mention-open {
+  position: relative;
+  z-index: 4;
+}
+
+.task-draft-hint,
+.task-draft-empty {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-secondary, #94a3b8);
+}
+
+.task-draft-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.task-draft-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-width: 95%;
+}
+
+.task-draft-msg p {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.task-draft-msg.is-user {
+  align-self: flex-end;
+}
+
+.task-draft-msg.is-assistant {
+  align-self: flex-start;
+}
+
+.task-draft-role {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-tertiary, #94a3b8);
+}
+
+.task-draft-compose {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.task-draft-input {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  z-index: 2;
+}
+
+.task-draft-input .form-textarea {
+  width: 100%;
+  min-height: 2.6rem;
+}
+
+.task-draft-split {
+  margin-top: 0.45rem;
+}
+
+.subtask-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin: 0.4rem 0 1rem;
+}
+
+.subtask-editor-head,
+.subtask-card-head,
+.subtask-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.subtask-card-actions {
+  justify-content: flex-end;
+}
+
+.subtask-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.subtask-index {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.expected-output-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.expected-output-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.expected-output-row .form-input {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.expected-output-row .btn-sm {
+  flex: 0 0 auto;
 }
 
 .editor-button-row {

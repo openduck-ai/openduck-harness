@@ -16,6 +16,6 @@ pub use progress_summary::run_progress_summary_from_steps;
 pub use runner::{EvalRunner, EvalRunnerConfig};
 pub use subtask::{SubtaskDecomposer, SubtaskOutcome};
 pub use task::{
-    CommandVerifier, DiffVerifier, EnvironmentSpec, SubtaskSpec, TaskSpec, VerificationResult,
-    Verifier,
+    CommandVerifier, DiffVerifier, EnvironmentSpec, SubtaskExpectedOutput, SubtaskSpec, TaskSpec,
+    VerificationResult, Verifier,
 };

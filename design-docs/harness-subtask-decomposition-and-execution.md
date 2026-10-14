@@ -1,6 +1,6 @@
 # OpenDuck Harness — Subtask Decomposition & Sequential Execution
 
-> Auto-decompose is removed. A task runs as one session unless its file lists explicit `subtasks`. Saved `autoDecompose` and `phaseMaxTurns` keys are ignored. A continuation that already stored a subtask plan still resumes that plan.
+> Run-time auto-decompose stays off. A task runs as one session unless its file lists at least two `subtasks`. The Hub task editor can chat with the harness to draft the task, and a long run is split into subtasks with expected outputs the user can edit. Each subtask runs only after the previous one succeeds and its output checks pass. Saved `autoDecompose` and `phaseMaxTurns` keys are ignored. A continuation that already stored a subtask plan still resumes that plan.
 
 ## 1. Overview & Motivation
 
@@ -201,14 +201,15 @@ prompt: '@docs/GPS_PLATFORM_PLAN.md complete unimplemented features, add e2e tes
 
 ### Web Hub Dashboard UI Configuration
 
-In the **Web Hub Project Dashboard** (`http://localhost:8015` or your local hub port):
+In the **Web Hub Project Dashboard**:
 1. Navigate to the project's **Harness** tab.
-2. Under **Project Tasks**, click **+ New Task** (or edit an existing task).
-3. In the task editor modal:
-   - Below **Max Turns** and **Timeout (Seconds)**, you will see the **Auto-Decompose Task into Sequential Subtasks (Recommended)** checkbox.
-   - **Enabled (Default)**: Automatically splits multi-step prompts or complex feature requests into sequential phases. **Per-phase Max Turns** inputs appear under the checkbox; they default to a 2:3:2 split of parent Max Turns and can be overridden. Changing parent Max Turns re-splits unless you then edit a phase.
-   - **Disabled**: Runs the task in monolithic single-turn mode without subtask decomposition.
-4. Click **💾 Save Task** to persist the configuration (including `phaseMaxTurns`) into `.goose/tasks/{task_id}.yaml`.
+2. Under **Project Tasks**, click **New Task** (or edit an existing task).
+3. In **Draft with the harness**, describe the task. The harness replies in the chat and, when the request is a long run, fills the form with ordered subtasks.
+4. Edit each subtask's title, instructions, turn budget, target files, and expected outputs. A file check looks for a path and optional text. A command check runs in the workspace. A final-answer check passes when the subtask finishes and reports what it did.
+5. **Split long task** sends the current prompt and asks for a split. Two or more saved subtasks run one after another. Fewer than two runs as one session.
+6. Click **Save Task** to write `.goose/tasks/{task_id}.yaml`.
+
+`POST /api/v1/projects/{slug}/harness/tasks/draft` takes the chat and the current draft. The model reply is used when a provider is configured. Otherwise the same endpoint returns a heuristic draft.
 
 ---
 

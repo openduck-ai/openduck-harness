@@ -3277,7 +3277,8 @@ mod tests {
     #[test]
     fn harness_message_reconstructs_with_metadata() {
         use openduck_harness::policy::{HarnessMessage, MessageRole};
-        let mut call = ToolCallRequest::new("call_123", "shell", serde_json::json!({"command": "pwd"}));
+        let mut call =
+            ToolCallRequest::new("call_123", "shell", serde_json::json!({"command": "pwd"}));
         let meta_json = serde_json::json!({
             "extra_content": {
                 "google": {

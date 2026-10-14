@@ -119,6 +119,29 @@ impl Verifier for DiffVerifier {
     }
 }
 
+/// One condition that must hold before the next subtask starts.
+///
+/// `kind` is `note`, `file`, or `command`. A note passes when the subtask
+/// finishes successfully and leaves a final answer. A file or command check
+/// is evaluated in the shared sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskExpectedOutput {
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_stdout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_content: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtaskSpec {
@@ -131,6 +154,12 @@ pub struct SubtaskSpec {
     pub max_turns: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exploration_budget: Option<usize>,
+    #[serde(
+        default,
+        alias = "expected_outputs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expected_outputs: Option<Vec<SubtaskExpectedOutput>>,
 }
 
 impl SubtaskSpec {
@@ -146,6 +175,7 @@ impl SubtaskSpec {
             target_files: None,
             max_turns: None,
             exploration_budget: None,
+            expected_outputs: None,
         }
     }
 
@@ -161,6 +191,11 @@ impl SubtaskSpec {
 
     pub fn with_exploration_budget(mut self, budget: usize) -> Self {
         self.exploration_budget = Some(budget);
+        self
+    }
+
+    pub fn with_expected_outputs(mut self, outputs: Vec<SubtaskExpectedOutput>) -> Self {
+        self.expected_outputs = Some(outputs);
         self
     }
 }

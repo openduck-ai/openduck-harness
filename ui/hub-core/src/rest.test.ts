@@ -279,6 +279,58 @@ test('REST client patches project task schedules', async () => {
   }
 })
 
+test('REST client drafts a project task from the chat', async () => {
+  const originalFetch = globalThis.fetch
+  let request: Request | undefined
+  let timeoutSignal: AbortSignal | null | undefined
+  globalThis.fetch = async (input, init) => {
+    request = new Request(input, init)
+    timeoutSignal = init?.signal
+    return new Response(
+      JSON.stringify({
+        reply: 'Split into two subtasks.',
+        source: 'heuristic',
+        draft: { id: 'task-gps', largeTask: true, subtasks: [] },
+      }),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    )
+  }
+  try {
+    const drafted = await createApi('http://host', 'secret').draftProjectTask('my-proj', {
+      messages: [{ role: 'user', content: 'Add GPS notifications' }],
+    })
+    assert.equal(request?.url, 'http://host/api/v1/projects/my-proj/harness/tasks/draft')
+    assert.equal(request?.method, 'POST')
+    assert.match(await request!.text(), /Add GPS notifications/)
+    assert.equal(drafted.reply, 'Split into two subtasks.')
+    assert.equal(drafted.draft?.id, 'task-gps')
+    assert.equal(timeoutSignal ?? null, null)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('ordinary REST calls still use the short timeout', async () => {
+  const originalFetch = globalThis.fetch
+  let signal: AbortSignal | null | undefined
+  globalThis.fetch = async (_input, init) => {
+    signal = init?.signal
+    return new Response(JSON.stringify({ projects: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    await createApi('http://host', 'secret').listProjects()
+    assert.ok(signal)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('REST client sends extraPrompt when running a dynamic-prompt task', async () => {
   const originalFetch = globalThis.fetch
   let request: Request | undefined

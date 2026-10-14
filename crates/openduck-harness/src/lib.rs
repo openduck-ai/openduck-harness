@@ -14,8 +14,8 @@ pub use eval::{
     is_continuable_status, is_history_follow_up_status, load_jsonl_dataset, load_recipe_task,
     run_progress_summary_from_steps, BenchmarkItem, CommandVerifier, ContinuationCheckpoint,
     ContinuationStopReason, DiffVerifier, EvalMetrics, EvalRunner, EvalRunnerConfig,
-    EvaluationReport, SubtaskDecomposer, SubtaskOutcome, SubtaskSpec, TaskResult, TaskSpec,
-    VerificationResult, Verifier,
+    EvaluationReport, SubtaskDecomposer, SubtaskExpectedOutput, SubtaskOutcome, SubtaskSpec,
+    TaskResult, TaskSpec, VerificationResult, Verifier,
 };
 pub use judge::{
     DecisionEngine, DecisionLedger, DecisionMode, DecisionPointId, DecisionPointSpec,
@@ -27,9 +27,10 @@ pub use policy::{
     AgentAction, AgentPolicy, HarnessContextView, HarnessMessage, MessageRole, YieldReason,
 };
 pub use project::{
-    compose_dynamic_run_prompt, ExecutionConfig, JudgeConfig, PathsConfig, PolicyConfig,
-    ProjectHarnessConfig, ProjectTaskDefinition, ProjectTaskStore, ProjectTaskSummary,
-    SandboxConfig, TaskVerifierSpec,
+    compose_dynamic_run_prompt, draft_system_prompt, heuristic_task_draft, parse_model_task_draft,
+    ExecutionConfig, JudgeConfig, PathsConfig, PolicyConfig, ProjectHarnessConfig,
+    ProjectTaskDefinition, ProjectTaskStore, ProjectTaskSummary, SandboxConfig, TaskDraft,
+    TaskDraftMessage, TaskDraftTurn, TaskVerifierSpec,
 };
 pub use replay::{Cassette, CassetteFrame, RecordMode, ReplayPolicy};
 pub use runtime::{

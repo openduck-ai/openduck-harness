@@ -59,15 +59,14 @@ impl AgentPolicy for SequentialSubtaskPolicy {
         // Subtask 1: Write src/dto.rs
         if active_subtask_title.contains("Subtask (1/3)") {
             if current_step == 0 {
-                return Ok(AgentAction::CallTools(vec![ToolCallRequest {
-                    id: "call-1".into(),
-                    name: "write_file".into(),
-                    arguments: serde_json::json!({
+                return Ok(AgentAction::CallTools(vec![ToolCallRequest::new(
+                    "call-1",
+                    "write_file",
+                    serde_json::json!({
                         "path": "src/dto.rs",
                         "content": "pub struct GpsPayload { pub lat: f64, pub lon: f64 }\n"
                     }),
-                    error: None,
-                }]));
+                )]));
             } else {
                 return Ok(AgentAction::FinalAnswer("DTO defined in src/dto.rs".into()));
             }
@@ -76,22 +75,20 @@ impl AgentPolicy for SequentialSubtaskPolicy {
         // Subtask 2: Read src/dto.rs and write src/service.rs
         if active_subtask_title.contains("Subtask (2/3)") {
             if current_step == 2 {
-                return Ok(AgentAction::CallTools(vec![ToolCallRequest {
-                    id: "call-2".into(),
-                    name: "read_file".into(),
-                    arguments: serde_json::json!({"path": "src/dto.rs"}),
-                    error: None,
-                }]));
+                return Ok(AgentAction::CallTools(vec![ToolCallRequest::new(
+                    "call-2",
+                    "read_file",
+                    serde_json::json!({"path": "src/dto.rs"}),
+                )]));
             } else if current_step == 3 {
-                return Ok(AgentAction::CallTools(vec![ToolCallRequest {
-                    id: "call-3".into(),
-                    name: "write_file".into(),
-                    arguments: serde_json::json!({
+                return Ok(AgentAction::CallTools(vec![ToolCallRequest::new(
+                    "call-3",
+                    "write_file",
+                    serde_json::json!({
                         "path": "src/service.rs",
                         "content": "use crate::dto::GpsPayload;\npub fn notify(_p: GpsPayload) -> bool { true }\n"
                     }),
-                    error: None,
-                }]));
+                )]));
             } else {
                 return Ok(AgentAction::FinalAnswer(
                     "Service implemented in src/service.rs".into(),
@@ -126,7 +123,16 @@ async fn test_sequential_subtask_execution_in_shared_sandbox() {
             "st-1",
             "Define DTOs",
             "Define GpsPayload struct in src/dto.rs",
-        ),
+        )
+        .with_expected_outputs(vec![openduck_harness::SubtaskExpectedOutput {
+            description: "GpsPayload is defined".into(),
+            kind: Some("file".into()),
+            command: None,
+            expected_exit_code: None,
+            expected_stdout: None,
+            file_path: Some("src/dto.rs".into()),
+            expected_content: Some("struct GpsPayload".into()),
+        }]),
         SubtaskSpec::new(
             "st-2",
             "Implement Service",
@@ -256,6 +262,7 @@ fn test_format_subtask_prompt_includes_upstream_outcomes() {
         summary: "Defined GpsPayload".into(),
         step_count: 2,
         steps_taken: 2,
+        output_check: None,
     }];
     let prompt = SubtaskDecomposer::format_subtask_prompt(&task, &subtask, 1, 3, &outcomes);
     assert!(prompt.contains("Completed Upstream Subtasks"));
@@ -326,6 +333,7 @@ async fn test_continue_from_checkpoint_skips_completed_subtask() {
             summary: "DTO done".into(),
             step_count: 2,
             steps_taken: 2,
+            output_check: None,
         }],
         resume_subtask_id: Some("st-2".into()),
         subtask_plan: subtasks.clone(),
@@ -349,4 +357,96 @@ async fn test_continue_from_checkpoint_skips_completed_subtask() {
         "completed subtask 1 must be skipped: {history:?}"
     );
     assert!(history.iter().any(|h| h.contains("Subtask (2/3)")));
+}
+
+#[tokio::test]
+async fn test_sequential_subtasks_stop_when_expected_output_is_missing() {
+    struct AnswerOnlyPolicy {
+        executed: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl AgentPolicy for AnswerOnlyPolicy {
+        fn name(&self) -> &str {
+            "answer-only"
+        }
+
+        async fn step(
+            &mut self,
+            context: &HarnessContextView,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<AgentAction> {
+            let prompt = context
+                .messages
+                .iter()
+                .find(|message| message.content.contains("## Current Subtask"))
+                .map(|message| message.content.clone())
+                .unwrap_or_default();
+            let active = prompt
+                .lines()
+                .find(|line| line.starts_with("## Current Subtask"))
+                .unwrap_or("")
+                .to_string();
+            if !active.is_empty() {
+                let mut list = self.executed.lock().unwrap();
+                if !list.contains(&active) {
+                    list.push(active);
+                }
+            }
+            assert!(
+                prompt.contains("Expected outputs"),
+                "subtask prompt must name the output check"
+            );
+            assert!(prompt.contains("src/missing.rs"));
+            Ok(AgentAction::FinalAnswer(
+                "I finished without writing the file".into(),
+            ))
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let executed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sandbox = LocalSandbox::new(dir.path().to_path_buf());
+    let mut harness = AgentHarness::new(
+        AnswerOnlyPolicy {
+            executed: executed.clone(),
+        },
+        sandbox,
+    );
+    let subtasks = vec![
+        SubtaskSpec::new("st-1", "Write the type", "Create src/missing.rs").with_expected_outputs(
+            vec![openduck_harness::SubtaskExpectedOutput {
+                description: "src/missing.rs exists".into(),
+                kind: Some("file".into()),
+                command: None,
+                expected_exit_code: None,
+                expected_stdout: None,
+                file_path: Some("src/missing.rs".into()),
+                expected_content: None,
+            }],
+        ),
+        SubtaskSpec::new("st-2", "Use the type", "Read src/missing.rs"),
+    ];
+    let task = TaskSpec::new("task-output-gate", "test", "Add a type").with_subtasks(subtasks);
+    let result = harness.run_task(&task).await.unwrap();
+
+    assert_eq!(result.status, RunStatus::Failure);
+    let history = executed.lock().unwrap().clone();
+    assert_eq!(history.len(), 1, "subtask 2 must wait for the missing file");
+    let answer = result.final_answer.unwrap_or_default();
+    assert!(answer.contains("I finished without writing the file"));
+    assert!(
+        result
+            .continuation
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.completed_subtasks.first())
+            .is_some_and(|outcome| {
+                outcome.status == RunStatus::Failure
+                    && outcome
+                        .output_check
+                        .as_deref()
+                        .is_some_and(|text| text.contains("src/missing.rs"))
+            }),
+        "the failed output check is stored on the subtask outcome"
+    );
 }

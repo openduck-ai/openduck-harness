@@ -40,6 +40,8 @@ import type {
   ProjectHarnessOverview,
   ProjectInput,
   ProjectTaskDefinition,
+  ProjectTaskDraftRequest,
+  ProjectTaskDraftResponse,
   ProjectTaskEstimateRequest,
   ProjectTaskEstimateResponse,
   ProjectTaskRunRequest,
@@ -88,6 +90,7 @@ function requestTimeoutMs(path: string): number | null {
     route.includes('/replay') ||
     route.includes('/exec') ||
     route.includes('/estimate') ||
+    route.includes('/draft') ||
     route.includes('/stream')
   ) {
     return null
@@ -384,6 +387,14 @@ export function createApi(baseUrl: string, secret = '') {
     estimateProjectTask: (slug: string, req: ProjectTaskEstimateRequest) =>
       request<ProjectTaskEstimateResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/harness/tasks/estimate`,
+        {
+          method: 'POST',
+          body: JSON.stringify(req),
+        },
+      ),
+    draftProjectTask: (slug: string, req: ProjectTaskDraftRequest) =>
+      request<ProjectTaskDraftResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/harness/tasks/draft`,
         {
           method: 'POST',
           body: JSON.stringify(req),

@@ -794,6 +794,17 @@ export type TaskVerifierSpec =
       expectedContent: string
     }
 
+export interface SubtaskExpectedOutput {
+  description: string
+  /** note passes when the subtask finishes with a final answer. file and command are checked in the workspace. */
+  kind?: 'note' | 'file' | 'command' | string
+  command?: string
+  expectedExitCode?: number
+  expectedStdout?: string
+  filePath?: string
+  expectedContent?: string
+}
+
 export interface SubtaskSpec {
   id: string
   title: string
@@ -801,6 +812,7 @@ export interface SubtaskSpec {
   targetFiles?: string[]
   maxTurns?: number
   explorationBudget?: number
+  expectedOutputs?: SubtaskExpectedOutput[]
 }
 
 export interface ProjectTaskDefinition {
@@ -887,6 +899,36 @@ export interface ProjectTaskEstimateResponse {
   complexity: 'simple' | 'medium' | 'complex' | 'multi-step' | string
   reasoning: string
   source: 'model' | 'heuristic' | string
+}
+
+export interface TaskDraftMessage {
+  role: 'user' | 'assistant' | string
+  content: string
+}
+
+export interface TaskDraft {
+  id: string
+  name: string
+  category?: string
+  tags: string[]
+  prompt: string
+  maxTurns: number
+  timeoutSeconds: number
+  largeTask: boolean
+  complexity: string
+  reasoning: string
+  subtasks: SubtaskSpec[]
+}
+
+export interface ProjectTaskDraftRequest {
+  messages: TaskDraftMessage[]
+  current?: TaskDraft
+}
+
+export interface ProjectTaskDraftResponse {
+  reply: string
+  source: 'model' | 'heuristic' | string
+  draft?: TaskDraft | null
 }
 
 // ---------------- SSE Real-Time Event Types ----------------
