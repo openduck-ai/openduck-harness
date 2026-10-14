@@ -179,7 +179,9 @@ export function ProviderStatsDashboard({
             <span className="kpi-unit">ms</span>
           </div>
           <div className="kpi-subtext">
-            {(providerStats.totalDurationMs / 1000).toFixed(2)}s total completion time
+            {providerStats.avgWaitMs !== undefined && providerStats.avgWaitMs !== null
+              ? `TTFB: ${Math.round(providerStats.avgWaitMs)}ms • Stream: ${Math.round(providerStats.avgReceiveMs || 0)}ms`
+              : `${(providerStats.totalDurationMs / 1000).toFixed(2)}s total completion time`}
           </div>
         </div>
 
@@ -402,6 +404,7 @@ export function ProviderStatsDashboard({
                   <th>Provider & Model</th>
                   <th>Status</th>
                   <th>Latency</th>
+                  <th>Network Waterfall (Connect / Send / TTFB / Stream)</th>
                   <th>Tokens</th>
                   <th>Retry Details / Reason</th>
                   <th>Action</th>
@@ -454,6 +457,48 @@ export function ProviderStatsDashboard({
                         </span>
                       </td>
                       <td className="font-mono">{call.latencyMs.toLocaleString()} ms</td>
+                      <td>
+                        {call.networkTiming ? (
+                          (() => {
+                            const total = call.networkTiming.totalMs || call.latencyMs || 1
+                            const connPct = Math.round(((call.networkTiming.connectionMs || 0) / total) * 100)
+                            const sendPct = Math.max(1, Math.round(((call.networkTiming.sendMs || 0) / total) * 100))
+                            const waitPct = Math.round(((call.networkTiming.waitMs || 0) / total) * 100)
+                            const recvPct = Math.round(((call.networkTiming.receiveMs || 0) / total) * 100)
+                            return (
+                              <div className="network-waterfall-cell">
+                                <div
+                                  className="network-waterfall-bar"
+                                  title={`Connect: ${call.networkTiming.connectionMs}ms | Send: ${call.networkTiming.sendMs}ms | Wait (TTFB): ${call.networkTiming.waitMs}ms | Stream: ${call.networkTiming.receiveMs}ms`}
+                                >
+                                  {call.networkTiming.connectionMs > 0 && (
+                                    <div className="waterfall-seg seg-connect" style={{ width: `${connPct}%` }} />
+                                  )}
+                                  <div className="waterfall-seg seg-send" style={{ width: `${sendPct}%` }} />
+                                  <div className="waterfall-seg seg-wait" style={{ width: `${waitPct}%` }} />
+                                  {call.networkTiming.receiveMs > 0 && (
+                                    <div className="waterfall-seg seg-receive" style={{ width: `${recvPct}%` }} />
+                                  )}
+                                </div>
+                                <div className="waterfall-legend-inline">
+                                  <span className="legend-item-inline" title="Time To First Byte / Token">
+                                    <span className="legend-dot wait" />
+                                    TTFB {call.networkTiming.waitMs}ms
+                                  </span>
+                                  {call.networkTiming.receiveMs > 0 && (
+                                    <span className="legend-item-inline" title="Stream receive duration">
+                                      <span className="legend-dot receive" />
+                                      Stream {call.networkTiming.receiveMs}ms
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )
+                          })()
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
+                      </td>
                       <td className="font-mono">
                         {call.tokenUsage ? (
                           <span

@@ -41,9 +41,20 @@ import {
   type ProjectTaskDefinition,
   type ProjectTaskEstimateResponse,
   type ProjectTaskSummary,
+  type TaskDraftMessage,
   type ScheduleKind,
 } from '@aaif/goose-hub-core'
 import { inspectProjectHarnessJob } from '../api.ts'
+import { escapeClosesTaskEditor } from '../taskEditorDismiss.ts'
+import { SubtaskEditor, TaskDraftChat } from './TaskDraftPanel.tsx'
+import {
+  applyTaskDraft,
+  blankSubtask,
+  shouldReplaceGeneratedTaskId,
+  subtaskSaveError,
+  subtasksForSave,
+  taskFormToDraft,
+} from '../taskDraft.ts'
 import { extraTurnsForContinue, isContinuableStatus, isHistoryFollowUpStatus } from '../taskContinuation.ts'
 import { buildAgentLog, liveLineText } from '../taskTrajectory.ts'
 import {
@@ -94,43 +105,22 @@ interface ProjectHarnessTabProps {
 
 type ProjectSubTab = 'tasks' | 'config' | 'reports' | 'cassettes' | 'history' | 'trajectory'
 type LogOrigin = 'tasks' | 'history' | 'reports' | 'config' | 'cassettes'
+type TaskMentionField = 'prompt' | 'draft'
 
-const MIN_SUBTASK_TURNS = 8
-
-const SYNTHESIZED_PHASE_LABELS = [
-  {
-    title: 'Phase 1: Discovery / DTO',
-    description: 'Locate modules and define DTOs, traits, and interfaces',
-  },
-  {
-    title: 'Phase 2: Core implementation',
-    description: 'Implement backend engine, services, and business logic',
-  },
-  {
-    title: 'Phase 3: Integration / tests',
-    description: 'Build, run tests, and verify end-to-end behavior',
-  },
-] as const
-
-/** Matches Rust `split_synthesized_phase_turns`: 2:3:2 split with a floor of 8. */
-function splitSynthesizedPhaseTurns(parentMaxTurns: number): number[] {
-  const parent = Math.max(Number(parentMaxTurns) || 0, MIN_SUBTASK_TURNS)
-  const p1 = Math.max(MIN_SUBTASK_TURNS, Math.floor((parent * 2) / 7))
-  const p3 = Math.max(MIN_SUBTASK_TURNS, Math.floor((parent * 2) / 7))
-  const p2 = Math.max(MIN_SUBTASK_TURNS, parent - p1 - p3)
-  return [p1, p2, p3]
+interface TaskMentionPopoverState {
+  isOpen: boolean
+  query: string
+  mentionStart: number
+  selectedIndex: number
+  field: TaskMentionField | null
 }
 
-function phaseTurnsFromTask(
-  task: Pick<ProjectTaskDefinition, 'maxTurns' | 'phaseMaxTurns'>,
-): number[] {
-  const split = splitSynthesizedPhaseTurns(task.maxTurns || 25)
-  const overrides = task.phaseMaxTurns
-  if (!overrides || overrides.length === 0) return split
-  return split.map((fallback, i) => {
-    const value = overrides[i]
-    return typeof value === 'number' && value > 0 ? value : fallback
-  })
+const closedTaskMentionPopover: TaskMentionPopoverState = {
+  isOpen: false,
+  query: '',
+  mentionStart: -1,
+  selectedIndex: 0,
+  field: null,
 }
 
 function normalizeHarnessConfig(raw: Partial<ProjectHarnessConfig> | any): ProjectHarnessConfig {
@@ -199,8 +189,6 @@ export function ProjectHarnessTab({
     prompt: '',
     maxTurns: 25,
     timeoutSeconds: 300,
-    autoDecompose: true,
-    phaseMaxTurns: splitSynthesizedPhaseTurns(25),
   })
   const [taskTagsInput, setTaskTagsInput] = useState('')
   const [schedule, setSchedule] = useState<FriendlySchedule>(defaultSchedule)
@@ -213,6 +201,9 @@ export function ProjectHarnessTab({
   const [estimatingBudget, setEstimatingBudget] = useState(false)
   const [estimateInfo, setEstimateInfo] = useState<ProjectTaskEstimateResponse | null>(null)
   const [estimateFeedback, setEstimateFeedback] = useState('')
+  const [draftMessages, setDraftMessages] = useState<TaskDraftMessage[]>([])
+  const [draftInput, setDraftInput] = useState('')
+  const [drafting, setDrafting] = useState(false)
   const [taskAttachments, setTaskAttachments] = useState<File[]>([])
   const [existingAttachmentMentions, setExistingAttachmentMentions] = useState<
     MentionDisplayItem[]
@@ -223,20 +214,17 @@ export function ProjectHarnessTab({
   // Task mention autocomplete state
   const [taskMentionItems, setTaskMentionItems] = useState<MentionDisplayItem[]>([])
   const [loadingTaskMentions, setLoadingTaskMentions] = useState(false)
-  const [taskMentionPopover, setTaskMentionPopover] = useState<{
-    isOpen: boolean
-    query: string
-    mentionStart: number
-    selectedIndex: number
-  }>({
-    isOpen: false,
-    query: '',
-    mentionStart: -1,
-    selectedIndex: 0,
-  })
+  const [taskMentionPopover, setTaskMentionPopover] = useState<TaskMentionPopoverState>(
+    closedTaskMentionPopover,
+  )
   const taskMentionPopoverRef = useRef<MentionPopoverHandle | null>(null)
+  const draftMentionPopoverRef = useRef<MentionPopoverHandle | null>(null)
   const taskPromptTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const draftTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const taskEditorRef = useRef<HTMLDivElement | null>(null)
+  const imeEscapeUntilRef = useRef(0)
   const dismissedTaskMentionRef = useRef<DismissedMention | null>(null)
+  const dismissedTaskMentionFieldRef = useRef<TaskMentionField | null>(null)
   const lastDismissedTaskTimeRef = useRef<number>(0)
 
   // Running states
@@ -847,8 +835,6 @@ export function ProjectHarnessTab({
       timeoutSeconds: config?.execution.timeoutSeconds || 300,
       cron: '',
       schedulePaused: false,
-      autoDecompose: true,
-      phaseMaxTurns: splitSynthesizedPhaseTurns(config?.execution.maxTurns || 25),
     })
     setSchedule({ ...defaultSchedule })
     setTaskTagsInput('')
@@ -860,9 +846,43 @@ export function ProjectHarnessTab({
     setVerifierExpectedContent('')
     setEstimateInfo(null)
     setEstimateFeedback('')
+    setDraftMessages([])
+    setDraftInput('')
+    setDrafting(false)
     setTaskAttachments([])
     setExistingAttachmentMentions([])
+    setTaskMentionPopover(closedTaskMentionPopover)
     setIsEditingTask(true)
+  }
+
+  const handleSendDraft = async (textOverride?: string) => {
+    if (!selectedProjectSlug || drafting) return
+    const text = (textOverride ?? draftInput).trim()
+    if (!text) return
+    const nextMessages: TaskDraftMessage[] = [...draftMessages, { role: 'user', content: text }]
+    setDraftMessages(nextMessages)
+    setDraftInput('')
+    setTaskMentionPopover(prev =>
+      prev.field === 'draft' ? { ...prev, isOpen: false } : prev,
+    )
+    setDrafting(true)
+    setError('')
+    try {
+      const res = await api.draftProjectTask(selectedProjectSlug, {
+        messages: nextMessages,
+        current: taskFormToDraft(taskForm, taskTagsInput),
+      })
+      setDraftMessages([...nextMessages, { role: 'assistant', content: res.reply }])
+      if (res.draft) {
+        const replaceId = shouldReplaceGeneratedTaskId(taskForm.id, Boolean(editingTaskId))
+        setTaskForm(prev => applyTaskDraft(prev, res.draft!, { replaceId }))
+        setTaskTagsInput((res.draft.tags ?? []).join(', '))
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to draft the task')
+    } finally {
+      setDrafting(false)
+    }
   }
 
   const loadTaskMentionSources = useCallback(async () => {
@@ -973,23 +993,26 @@ export function ProjectHarnessTab({
   )
 
   const updateTaskMentionState = useCallback(
-    (text: string, cursorPos: number) => {
+    (text: string, cursorPos: number, field: TaskMentionField) => {
       const trigger = detectMentionTrigger(text, cursorPos)
       if (!trigger) {
         dismissedTaskMentionRef.current = null
+        dismissedTaskMentionFieldRef.current = null
         setTaskMentionPopover(prev => (prev.isOpen ? { ...prev, isOpen: false } : prev))
         return
       }
 
-      if (shouldIgnoreMentionTrigger(trigger, dismissedTaskMentionRef.current)) {
+      const sameDismissedField = dismissedTaskMentionFieldRef.current === field
+      if (sameDismissedField && shouldIgnoreMentionTrigger(trigger, dismissedTaskMentionRef.current)) {
         return
       }
 
-      if (Date.now() - lastDismissedTaskTimeRef.current < 200) {
+      if (sameDismissedField && Date.now() - lastDismissedTaskTimeRef.current < 200) {
         return
       }
 
       dismissedTaskMentionRef.current = null
+      dismissedTaskMentionFieldRef.current = null
 
       if (taskMentionItems.length === 0 && !loadingTaskMentions) {
         void loadTaskMentionSources()
@@ -1000,13 +1023,17 @@ export function ProjectHarnessTab({
         query: trigger.query,
         mentionStart: trigger.mentionStart,
         selectedIndex: 0,
+        field,
       })
     },
     [taskMentionItems.length, loadingTaskMentions, loadTaskMentionSources],
   )
 
   const debouncedTaskCursorMentionUpdate = useMemo(
-    () => debounce((text: string, pos: number) => updateTaskMentionState(text, pos), 50),
+    () =>
+      debounce((text: string, pos: number, field: TaskMentionField) => {
+        updateTaskMentionState(text, pos, field)
+      }, 50),
     [updateTaskMentionState],
   )
 
@@ -1017,6 +1044,7 @@ export function ProjectHarnessTab({
           mentionStart: prev.mentionStart,
           query: prev.query,
         }
+        dismissedTaskMentionFieldRef.current = prev.field
         lastDismissedTaskTimeRef.current = Date.now()
       }
       return { ...prev, isOpen: false }
@@ -1027,59 +1055,88 @@ export function ProjectHarnessTab({
     const val = e.target.value
     const cursorPos = e.target.selectionStart ?? val.length
     setTaskForm({ ...taskForm, prompt: val })
-    updateTaskMentionState(val, cursorPos)
+    updateTaskMentionState(val, cursorPos, 'prompt')
+  }
+
+  const handleDraftInput = (value: string, cursor: number) => {
+    setDraftInput(value)
+    updateTaskMentionState(value, cursor, 'draft')
   }
 
   const handleTaskMentionSelect = (item: MentionDisplayItem) => {
     dismissedTaskMentionRef.current = null
+    dismissedTaskMentionFieldRef.current = null
+    const field = taskMentionPopover.field
+    const source =
+      field === 'draft'
+        ? (draftTextareaRef.current?.value ?? draftInput)
+        : (taskPromptTextareaRef.current?.value ?? taskForm.prompt)
     const { newText, newCursorPos } = applyMentionInsertion(
-      taskForm.prompt,
+      source,
       taskMentionPopover.mentionStart,
       taskMentionPopover.query.length,
       item.insertText,
     )
+    if (field === 'draft') {
+      applyDraftText(newText, newCursorPos)
+      return
+    }
     applyPromptText(newText, newCursorPos)
   }
 
-  const handleTaskPromptKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (taskMentionPopover.isOpen && taskMentionPopoverRef.current) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        const displayItems = taskMentionPopoverRef.current.getDisplayItems()
-        const maxIndex = Math.max(0, displayItems.length - 1)
-        setTaskMentionPopover(prev => ({
-          ...prev,
-          selectedIndex: Math.min(prev.selectedIndex + 1, maxIndex),
-        }))
-        return
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setTaskMentionPopover(prev => ({
-          ...prev,
-          selectedIndex: Math.max(prev.selectedIndex - 1, 0),
-        }))
-        return
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        const displayItems = taskMentionPopoverRef.current.getDisplayItems()
-        if (displayItems.length > 0) {
-          e.preventDefault()
-          taskMentionPopoverRef.current.selectItem(taskMentionPopover.selectedIndex)
-          return
-        }
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        dismissedTaskMentionRef.current = {
-          mentionStart: taskMentionPopover.mentionStart,
-          query: taskMentionPopover.query,
-        }
-        lastDismissedTaskTimeRef.current = Date.now()
-        setTaskMentionPopover(prev => ({ ...prev, isOpen: false }))
-        return
-      }
+  const handleMentionMenuKeyDown = (
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+    field: TaskMentionField,
+  ): boolean => {
+    const popoverRef = field === 'draft' ? draftMentionPopoverRef : taskMentionPopoverRef
+    if (!taskMentionPopover.isOpen || taskMentionPopover.field !== field || !popoverRef.current) {
+      return false
     }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      const displayItems = popoverRef.current.getDisplayItems()
+      const maxIndex = Math.max(0, displayItems.length - 1)
+      setTaskMentionPopover(prev => ({
+        ...prev,
+        selectedIndex: Math.min(prev.selectedIndex + 1, maxIndex),
+      }))
+      return true
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setTaskMentionPopover(prev => ({
+        ...prev,
+        selectedIndex: Math.max(prev.selectedIndex - 1, 0),
+      }))
+      return true
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      const displayItems = popoverRef.current.getDisplayItems()
+      if (displayItems.length > 0) {
+        e.preventDefault()
+        e.stopPropagation()
+        popoverRef.current.selectItem(taskMentionPopover.selectedIndex)
+        return true
+      }
+      return false
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      dismissedTaskMentionRef.current = {
+        mentionStart: taskMentionPopover.mentionStart,
+        query: taskMentionPopover.query,
+      }
+      dismissedTaskMentionFieldRef.current = field
+      lastDismissedTaskTimeRef.current = Date.now()
+      setTaskMentionPopover(prev => ({ ...prev, isOpen: false }))
+      return true
+    }
+    return false
+  }
+
+  const handleTaskPromptKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    handleMentionMenuKeyDown(e, 'prompt')
   }
 
   const handleOpenEditTask = async (taskId: string) => {
@@ -1107,8 +1164,12 @@ export function ProjectHarnessTab({
       }
       setEstimateInfo(null)
       setEstimateFeedback('')
+      setDraftMessages([])
+      setDraftInput('')
+      setDrafting(false)
       setTaskAttachments([])
       setExistingAttachmentMentions([])
+      setTaskMentionPopover(closedTaskMentionPopover)
       setIsEditingTask(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch task detail')
@@ -1136,7 +1197,6 @@ export function ProjectHarnessTab({
         ...prev,
         maxTurns: res.suggestedMaxTurns,
         timeoutSeconds: res.suggestedTimeoutSeconds,
-        phaseMaxTurns: splitSynthesizedPhaseTurns(res.suggestedMaxTurns),
       }))
       setSuccessMsg(
         feedbackToSend
@@ -1162,7 +1222,6 @@ export function ProjectHarnessTab({
       ...prev,
       maxTurns: newTurns,
       timeoutSeconds: newTimeout,
-      phaseMaxTurns: splitSynthesizedPhaseTurns(newTurns),
     }))
     setSuccessMsg(`Budget manually adjusted to ${newTurns} turns (${newTimeout}s)`)
   }
@@ -1186,17 +1245,27 @@ export function ProjectHarnessTab({
     setTaskAttachments(prev => prev.filter((_, i) => i !== index))
   }
 
+  const placeTextareaCursor = (node: HTMLTextAreaElement, newText: string, newCursorPos: number) => {
+    node.value = newText
+    node.focus()
+    setTimeout(() => {
+      node.setSelectionRange(newCursorPos, newCursorPos)
+    }, 0)
+  }
+
   const applyPromptText = (newText: string, newCursorPos: number) => {
     setTaskForm(prev => ({ ...prev, prompt: newText }))
     setTaskMentionPopover(prev => ({ ...prev, isOpen: false }))
     if (taskPromptTextareaRef.current) {
-      taskPromptTextareaRef.current.value = newText
-      taskPromptTextareaRef.current.focus()
-      setTimeout(() => {
-        if (taskPromptTextareaRef.current) {
-          taskPromptTextareaRef.current.setSelectionRange(newCursorPos, newCursorPos)
-        }
-      }, 0)
+      placeTextareaCursor(taskPromptTextareaRef.current, newText, newCursorPos)
+    }
+  }
+
+  const applyDraftText = (newText: string, newCursorPos: number) => {
+    setDraftInput(newText)
+    setTaskMentionPopover(prev => ({ ...prev, isOpen: false }))
+    if (draftTextareaRef.current) {
+      placeTextareaCursor(draftTextareaRef.current, newText, newCursorPos)
     }
   }
 
@@ -1222,6 +1291,11 @@ export function ProjectHarnessTab({
     }
     if (!taskForm.prompt.trim()) {
       setError('Task prompt is required')
+      return
+    }
+    const subtaskError = subtaskSaveError(taskForm.subtasks)
+    if (subtaskError) {
+      setError(subtaskError)
       return
     }
 
@@ -1269,7 +1343,6 @@ export function ProjectHarnessTab({
       }
 
       const cron = scheduleToCron(schedule)
-      const hasExplicitSubtasks = (taskForm.subtasks?.length || 0) >= 2
       const payload: ProjectTaskDefinition = {
         ...taskForm,
         prompt,
@@ -1277,10 +1350,7 @@ export function ProjectHarnessTab({
         verifier: verifierSpec,
         cron,
         schedulePaused: Boolean(cron) && Boolean(taskForm.schedulePaused),
-        phaseMaxTurns:
-          taskForm.autoDecompose === false || hasExplicitSubtasks
-            ? undefined
-            : phaseTurnsFromTask(taskForm),
+        subtasks: subtasksForSave(taskForm.subtasks),
       }
 
       if (editingTaskId) {
@@ -1538,15 +1608,29 @@ export function ProjectHarnessTab({
   useEffect(() => {
     if (!isEditingTask) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !savingTask) {
-        setTaskAttachments([])
-        setExistingAttachmentMentions([])
-        setIsEditingTask(false)
+      const target = event.target
+      const editor = taskEditorRef.current
+      const targetInsideEditor = target instanceof Node && editor ? editor.contains(target) : false
+      if (
+        !escapeClosesTaskEditor({
+          key: event.key,
+          defaultPrevented: event.defaultPrevented,
+          isComposing: event.isComposing || event.keyCode === 229,
+          imeLocked: Date.now() < imeEscapeUntilRef.current,
+          mentionOpen: taskMentionPopover.isOpen,
+          saving: savingTask,
+          targetInsideEditor,
+        })
+      ) {
+        return
       }
+      setTaskAttachments([])
+      setExistingAttachmentMentions([])
+      setIsEditingTask(false)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [isEditingTask, savingTask])
+  }, [isEditingTask, savingTask, taskMentionPopover.isOpen])
 
   return (
     <div className="project-harness-container">
@@ -1790,11 +1874,18 @@ export function ProjectHarnessTab({
               }}
             >
               <div
+                ref={taskEditorRef}
                 className="harness-card task-editor-drawer"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="task-editor-title"
                 onClick={e => e.stopPropagation()}
+                onCompositionStart={() => {
+                  imeEscapeUntilRef.current = Number.POSITIVE_INFINITY
+                }}
+                onCompositionEnd={() => {
+                  imeEscapeUntilRef.current = Date.now() + 150
+                }}
               >
                 <div className="task-editor-drawer-header">
                   <h3 id="task-editor-title" className="section-title" style={{ margin: 0 }}>
@@ -1817,6 +1908,36 @@ export function ProjectHarnessTab({
                   </button>
                 </div>
                 <div className="form-grid">
+                <TaskDraftChat
+                  messages={draftMessages}
+                  input={draftInput}
+                  drafting={drafting}
+                  onInput={handleDraftInput}
+                  onSend={() => void handleSendDraft()}
+                  textareaRef={draftTextareaRef}
+                  mentionOpen={taskMentionPopover.isOpen && taskMentionPopover.field === 'draft'}
+                  onMentionKeyDown={event => handleMentionMenuKeyDown(event, 'draft')}
+                  onCursorActivity={(value, cursor) =>
+                    debouncedTaskCursorMentionUpdate(value, cursor, 'draft')
+                  }
+                  mentionPopover={
+                    <MentionPopover
+                      ref={draftMentionPopoverRef}
+                      isOpen={taskMentionPopover.isOpen && taskMentionPopover.field === 'draft'}
+                      onClose={handleTaskMentionClose}
+                      onSelect={handleTaskMentionSelect}
+                      position={{ x: 0, y: 0 }}
+                      query={taskMentionPopover.query}
+                      selectedIndex={taskMentionPopover.selectedIndex}
+                      onSelectedIndexChange={index =>
+                        setTaskMentionPopover(prev => ({ ...prev, selectedIndex: index }))
+                      }
+                      items={combinedTaskMentionItems}
+                      loading={loadingTaskMentions || isSearchingTaskServer}
+                      placement="below"
+                    />
+                  }
+                />
                 <div className="form-row-2">
                   <div className="form-group">
                     <label className="form-label">Task ID (Filename Slug)</label>
@@ -1868,7 +1989,7 @@ export function ProjectHarnessTab({
                   <label className="form-label">Task Instructions / Prompt</label>
                   <MentionPopover
                     ref={taskMentionPopoverRef}
-                    isOpen={taskMentionPopover.isOpen}
+                    isOpen={taskMentionPopover.isOpen && taskMentionPopover.field === 'prompt'}
                     onClose={handleTaskMentionClose}
                     onSelect={handleTaskMentionSelect}
                     position={{ x: 0, y: 0 }}
@@ -1900,16 +2021,28 @@ export function ProjectHarnessTab({
                       ) {
                         return
                       }
-                      const cursorPos = e.currentTarget.selectionStart ?? taskForm.prompt.length
-                      debouncedTaskCursorMentionUpdate(taskForm.prompt, cursorPos)
+                      const cursorPos = e.currentTarget.selectionStart ?? e.currentTarget.value.length
+                      debouncedTaskCursorMentionUpdate(e.currentTarget.value, cursorPos, 'prompt')
                     }}
                     onClick={e => {
-                      const cursorPos = e.currentTarget.selectionStart ?? taskForm.prompt.length
-                      debouncedTaskCursorMentionUpdate(taskForm.prompt, cursorPos)
+                      const cursorPos = e.currentTarget.selectionStart ?? e.currentTarget.value.length
+                      debouncedTaskCursorMentionUpdate(e.currentTarget.value, cursorPos, 'prompt')
                     }}
                     onKeyDown={handleTaskPromptKeyDown}
                     placeholder="Instructions for the agent to execute in the project repository workspace (type @ to mention attached files, repo files, rules, or agents)..."
                   />
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm task-draft-split"
+                    onClick={() =>
+                      void handleSendDraft(
+                        `Break this into subtasks if it is a long-running task:\n\n${taskForm.prompt}`,
+                      )
+                    }
+                    disabled={drafting || !taskForm.prompt.trim()}
+                  >
+                    {drafting ? 'Drafting…' : 'Split long task'}
+                  </button>
                 </div>
 
                 <div className="form-group task-attach-row">
@@ -2189,7 +2322,6 @@ export function ProjectHarnessTab({
                         setTaskForm({
                           ...taskForm,
                           maxTurns,
-                          phaseMaxTurns: splitSynthesizedPhaseTurns(maxTurns),
                         })
                       }}
                     />
@@ -2210,33 +2342,6 @@ export function ProjectHarnessTab({
                       }
                     />
                   </div>
-                </div>
-
-                <div className="form-group" style={{ marginTop: '0.25rem', marginBottom: '1rem' }}>
-                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.65rem', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      style={{ marginTop: '0.25rem' }}
-                      checked={taskForm.autoDecompose !== false}
-                      onChange={e =>
-                        setTaskForm({
-                          ...taskForm,
-                          autoDecompose: e.target.checked,
-                          phaseMaxTurns: e.target.checked
-                            ? phaseTurnsFromTask(taskForm)
-                            : undefined,
-                        })
-                      }
-                    />
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>
-                        Auto-Decompose Task into Sequential Subtasks (Recommended)
-                      </div>
-                      <div style={{ fontSize: '0.75rem', opacity: 0.75, marginTop: '0.15rem', lineHeight: '1.35' }}>
-                        In Step 1, OpenDuck analyzes the prompt, splits complex tasks into discrete phases (Discovery &amp; DTO &rarr; Core Service &rarr; Integration/Verification), and executes them in sequential order within the shared sandbox workspace.
-                      </div>
-                    </div>
-                  </label>
                 </div>
 
                 <div className="form-group" style={{ marginTop: '0.25rem', marginBottom: '1rem' }}>
@@ -2265,95 +2370,22 @@ export function ProjectHarnessTab({
                   </label>
                 </div>
 
-                {taskForm.autoDecompose !== false && (taskForm.subtasks?.length || 0) >= 2 && (
-                  <div className="form-group" style={{ marginBottom: '1rem' }}>
-                    <label className="form-label">Per-phase Max Turns</label>
-                    <div style={{ fontSize: '0.75rem', opacity: 0.75, marginBottom: '0.5rem' }}>
-                      Explicit subtasks from this task YAML. Each phase runs sequentially in the shared sandbox.
-                    </div>
-                    <div className="form-row-3">
-                      {taskForm.subtasks!.map((subtask, index) => (
-                        <div className="form-group" key={subtask.id || index}>
-                          <label className="form-label" title={subtask.description}>
-                            {subtask.title || `Phase ${index + 1}`}
-                          </label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={maxTurnsLimit}
-                            className="form-input"
-                            value={subtask.maxTurns || 8}
-                            onChange={e => {
-                              const next = (taskForm.subtasks || []).map((item, i) =>
-                                i === index
-                                  ? {
-                                      ...item,
-                                      maxTurns: Math.max(
-                                        1,
-                                        Math.min(maxTurnsLimit, Number(e.target.value) || 1),
-                                      ),
-                                    }
-                                  : item,
-                              )
-                              setTaskForm({ ...taskForm, subtasks: next })
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {taskForm.autoDecompose !== false && (taskForm.subtasks?.length || 0) < 2 && (
-                  <div className="form-group" style={{ marginBottom: '1rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '0.75rem' }}>
-                      <label className="form-label">Per-phase Max Turns</label>
-                      <button
-                        type="button"
-                        className="btn btn-xs btn-secondary"
-                        onClick={() =>
-                          setTaskForm({
-                            ...taskForm,
-                            phaseMaxTurns: splitSynthesizedPhaseTurns(taskForm.maxTurns || 25),
-                          })
-                        }
-                        title="Re-split the parent Max Turns across the three synthesized phases (2:3:2)"
-                      >
-                        Reset to split of Max Turns
-                      </button>
-                    </div>
-                    <div style={{ fontSize: '0.75rem', opacity: 0.75, margin: '0.15rem 0 0.5rem', lineHeight: '1.35' }}>
-                      Auto-synthesis splits parent Max Turns ({taskForm.maxTurns || 25}) across three phases using a 2:3:2 ratio (discovery : implementation : verification). Override any phase here.
-                    </div>
-                    <div className="form-row-3">
-                      {SYNTHESIZED_PHASE_LABELS.map((phase, index) => (
-                        <div className="form-group" key={phase.title}>
-                          <label className="form-label" title={phase.description}>
-                            {phase.title}
-                          </label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={maxTurnsLimit}
-                            className="form-input"
-                            value={phaseTurnsFromTask(taskForm)[index]}
-                            onChange={e => {
-                              const next = [...phaseTurnsFromTask(taskForm)]
-                              next[index] = Math.max(
-                                1,
-                                Math.min(maxTurnsLimit, Number(e.target.value) || 1),
-                              )
-                              setTaskForm({ ...taskForm, phaseMaxTurns: next })
-                            }}
-                          />
-                          <div style={{ fontSize: '0.7rem', opacity: 0.65, marginTop: '0.2rem' }}>
-                            {phase.description}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <SubtaskEditor
+                  subtasks={taskForm.subtasks ?? []}
+                  maxTurnsLimit={maxTurnsLimit}
+                  onChange={next =>
+                    setTaskForm({
+                      ...taskForm,
+                      subtasks: next.length ? next : undefined,
+                    })
+                  }
+                  onAdd={() =>
+                    setTaskForm({
+                      ...taskForm,
+                      subtasks: [...(taskForm.subtasks ?? []), blankSubtask((taskForm.subtasks ?? []).length)],
+                    })
+                  }
+                />
 
                 <div className="form-group">
                   <label className="form-label">Run automatically</label>

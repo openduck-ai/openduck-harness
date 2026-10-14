@@ -33,6 +33,7 @@ export interface MentionPopoverProps {
   onSelectedIndexChange: (index: number) => void
   items: MentionDisplayItem[]
   loading?: boolean
+  placement?: 'above' | 'below'
 }
 
 export interface MentionPopoverHandle {
@@ -141,6 +142,7 @@ export const MentionPopover = forwardRef<MentionPopoverHandle, MentionPopoverPro
       onSelectedIndexChange,
       items,
       loading = false,
+      placement = 'above',
     },
     ref,
   ) => {
@@ -224,10 +226,10 @@ export const MentionPopover = forwardRef<MentionPopoverHandle, MentionPopoverPro
     return (
       <div
         ref={popoverRef}
-        className="mention-popover"
+        className={`mention-popover${placement === 'below' ? ' mention-popover-below' : ''}`}
         style={{
           left: `${position.x}px`,
-          bottom: `${position.y}px`,
+          bottom: placement === 'below' ? 'auto' : `${position.y}px`,
         }}
       >
         <div className="mention-popover-header">

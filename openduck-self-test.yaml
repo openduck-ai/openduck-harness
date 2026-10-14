@@ -9,6 +9,7 @@ activities:
   - Test file operations (create, read, update, delete, undo)
   - Validate shell command execution and error handling
   - Validate Azure AI Foundry provider routing and deployment aliases
+  - Validate Hub network monitoring for DNS, ICMP, direct connectivity, and proxy routes
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
   - Test load tool for knowledge injection and discovery
@@ -60,6 +61,12 @@ instructions: |
   control from inside your running instance - your tools, your behaviors, your error handling, your consistency.
 
   ## Core Testing Philosophy
+  For Hub network monitoring, open Server & Settings and verify the Network Status panel
+  refreshes DNS, ICMP, TCP, HTTP, and proxy measurements. Confirm that blocked ICMP is
+  distinguished from reachable HTTP, HTTP 401/403 does not count as a transport failure,
+  proxy URLs hide credentials and query strings, and recent samples update without overlap.
+  Check GET /api/v1/network/status against the panel, including the checkedAt timestamp.
+
   - You ARE the system under test AND the tester
   - Use your tools to create test scenarios, then validate the results
   - Test both success and failure paths

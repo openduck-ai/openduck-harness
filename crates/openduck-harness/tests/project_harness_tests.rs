@@ -77,8 +77,6 @@ async fn test_project_task_store_crud() {
         cron: None,
         schedule_paused: false,
         subtasks: None,
-        auto_decompose: Some(true),
-        phase_max_turns: Some(vec![80, 200, 220]),
         dynamic_prompt: false,
     };
 
@@ -108,21 +106,12 @@ async fn test_project_task_store_crud() {
     assert_eq!(fetched.max_turns, Some(15));
     assert_eq!(fetched.cron, None);
     assert!(!fetched.schedule_paused);
-    assert_eq!(fetched.auto_decompose, Some(true));
-    assert_eq!(
-        fetched.phase_max_turns.as_deref(),
-        Some(&[80, 200, 220][..])
-    );
 
     // 5. Convert to BenchmarkItem
     let benchmark_item = ProjectTaskStore::to_benchmark_item(&fetched, None);
     assert_eq!(benchmark_item.task.id, "task-fetch-polymarket");
     assert_eq!(benchmark_item.task.dataset, "data-api");
     assert_eq!(benchmark_item.task.max_turns, Some(15));
-    assert_eq!(
-        benchmark_item.task.phase_max_turns.as_deref(),
-        Some(&[80, 200, 220][..])
-    );
 
     // 6. Delete task
     ProjectTaskStore::delete_task(&tasks_dir, "task-fetch-polymarket")
@@ -151,8 +140,6 @@ async fn test_project_task_prompt_preview() {
         cron: None,
         schedule_paused: false,
         subtasks: None,
-        auto_decompose: None,
-        phase_max_turns: None,
         dynamic_prompt: false,
     };
     ProjectTaskStore::save_task(&tasks_dir, &task_multi)
@@ -174,8 +161,6 @@ async fn test_project_task_prompt_preview() {
         cron: None,
         schedule_paused: false,
         subtasks: None,
-        auto_decompose: None,
-        phase_max_turns: None,
         dynamic_prompt: false,
     };
     ProjectTaskStore::save_task(&tasks_dir, &task_long)
@@ -209,8 +194,6 @@ async fn test_project_task_schedule_roundtrip() {
         cron: Some("0 2 * * *".into()),
         schedule_paused: true,
         subtasks: None,
-        auto_decompose: None,
-        phase_max_turns: None,
         dynamic_prompt: false,
     };
 
@@ -250,8 +233,6 @@ fn sample_task(id: &str, tags: Vec<String>) -> ProjectTaskDefinition {
         cron: None,
         schedule_paused: false,
         subtasks: None,
-        auto_decompose: None,
-        phase_max_turns: None,
         dynamic_prompt: false,
     }
 }

@@ -301,19 +301,26 @@ async fn stream_provider_completion(
     (
         Message,
         openduck_providers::conversation::token_usage::ProviderUsage,
+        openduck_harness::telemetry::NetworkTiming,
     ),
     openduck_providers::errors::ProviderError,
 > {
     let retry_config = provider.retry_config();
     openduck_providers::retry::retry_operation(&retry_config, || async {
         on_partial(PartialGeneration::default());
+        let call_start = std::time::Instant::now();
         let stream = provider
             .stream(model_config, system_prompt, messages, tools)
             .await?;
+        let headers_received = std::time::Instant::now();
         let interval = partial_publish_interval();
         let mut last_signature = String::new();
         let mut last_emit = std::time::Instant::now() - interval;
+        let mut first_token_time: Option<std::time::Instant> = None;
         let (message, usage) = openduck_providers::base::collect_stream_with(stream, |message| {
+            if first_token_time.is_none() {
+                first_token_time = Some(std::time::Instant::now());
+            }
             let partial = partial_generation_from_message(message);
             if partial.thinking.trim().is_empty() {
                 return;
@@ -330,11 +337,34 @@ async fn stream_provider_completion(
             on_partial(partial);
         })
         .await?;
+        let stream_end = std::time::Instant::now();
         let final_partial = partial_generation_from_message(&message);
         if !final_partial.thinking.trim().is_empty() {
             on_partial(final_partial);
         }
-        Ok((message, usage))
+
+        let first_byte_time = first_token_time.unwrap_or(headers_received);
+        let send_ms = headers_received
+            .duration_since(call_start)
+            .as_millis()
+            .min(10) as u64;
+        let wait_ms = first_byte_time.duration_since(call_start).as_millis() as u64;
+        let receive_ms = stream_end.duration_since(first_byte_time).as_millis() as u64;
+        let total_ms = stream_end.duration_since(call_start).as_millis() as u64;
+
+        let timing = openduck_harness::telemetry::NetworkTiming {
+            dns_ms: None,
+            tcp_connect_ms: None,
+            tls_handshake_ms: None,
+            connection_ms: 0,
+            connection_reused: true,
+            send_ms,
+            wait_ms: wait_ms.saturating_sub(send_ms),
+            receive_ms,
+            total_ms,
+        };
+
+        Ok((message, usage, timing))
     })
     .await
 }
@@ -372,16 +402,46 @@ async fn complete_provider_with_retry(
                 .await
             }
             None => {
-                provider
+                match provider
                     .complete(model_config, system_prompt, &working_messages, tools)
                     .await
+                {
+                    Ok((reply, usage)) => {
+                        let total_ms = call_start.elapsed().as_millis() as u64;
+                        let send_ms = total_ms.min(5);
+                        let timing = openduck_harness::telemetry::NetworkTiming {
+                            dns_ms: None,
+                            tcp_connect_ms: None,
+                            tls_handshake_ms: None,
+                            connection_ms: 0,
+                            connection_reused: true,
+                            send_ms,
+                            wait_ms: total_ms.saturating_sub(send_ms),
+                            receive_ms: 0,
+                            total_ms,
+                        };
+                        Ok((reply, usage, timing))
+                    }
+                    Err(e) => Err(e),
+                }
             }
         };
         let latency_ms = call_start.elapsed().as_millis() as u64;
 
-        let (reply, usage) = match res {
+        let (reply, usage, network_timing) = match res {
             Ok(res) => res,
             Err(openduck_providers::errors::ProviderError::ContextLengthExceeded(ref err_msg)) => {
+                let err_timing = openduck_harness::telemetry::NetworkTiming {
+                    dns_ms: None,
+                    tcp_connect_ms: None,
+                    tls_handshake_ms: None,
+                    connection_ms: 0,
+                    connection_reused: true,
+                    send_ms: latency_ms.min(5),
+                    wait_ms: latency_ms.saturating_sub(latency_ms.min(5)),
+                    receive_ms: 0,
+                    total_ms: latency_ms,
+                };
                 recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
                     provider: provider_name.clone(),
                     model: model_name.clone(),
@@ -393,6 +453,7 @@ async fn complete_provider_with_retry(
                     retry_attempt: Some((empty_retries + transient_retries) as usize),
                     retry_reason: Some("context_length_exceeded".to_string()),
                     is_secondary: if is_secondary { Some(true) } else { None },
+                    network_timing: Some(err_timing),
                 });
                 tracing::warn!(
                     policy = %policy_name,
@@ -414,15 +475,45 @@ async fn complete_provider_with_retry(
                         .await
                     }
                     None => {
-                        provider
+                        match provider
                             .complete(model_config, system_prompt, &pruned, tools)
                             .await
+                        {
+                            Ok((reply, usage)) => {
+                                let total_ms = fallback_start.elapsed().as_millis() as u64;
+                                let send_ms = total_ms.min(5);
+                                let timing = openduck_harness::telemetry::NetworkTiming {
+                                    dns_ms: None,
+                                    tcp_connect_ms: None,
+                                    tls_handshake_ms: None,
+                                    connection_ms: 0,
+                                    connection_reused: true,
+                                    send_ms,
+                                    wait_ms: total_ms.saturating_sub(send_ms),
+                                    receive_ms: 0,
+                                    total_ms,
+                                };
+                                Ok((reply, usage, timing))
+                            }
+                            Err(e) => Err(e),
+                        }
                     }
                 };
                 let fallback_latency = fallback_start.elapsed().as_millis() as u64;
                 match fallback_res {
                     Ok(fb_res) => fb_res,
                     Err(fb_err) => {
+                        let fb_timing = openduck_harness::telemetry::NetworkTiming {
+                            dns_ms: None,
+                            tcp_connect_ms: None,
+                            tls_handshake_ms: None,
+                            connection_ms: 0,
+                            connection_reused: true,
+                            send_ms: fallback_latency.min(5),
+                            wait_ms: fallback_latency.saturating_sub(fallback_latency.min(5)),
+                            receive_ms: 0,
+                            total_ms: fallback_latency,
+                        };
                         recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
                             provider: provider_name.clone(),
                             model: model_name.clone(),
@@ -434,6 +525,7 @@ async fn complete_provider_with_retry(
                             retry_attempt: Some((empty_retries + transient_retries + 1) as usize),
                             retry_reason: Some("context_length_pruned_failed".to_string()),
                             is_secondary: if is_secondary { Some(true) } else { None },
+                            network_timing: Some(fb_timing),
                         });
                         return Err(anyhow::anyhow!(fb_err));
                     }
@@ -444,6 +536,17 @@ async fn complete_provider_with_retry(
                     && transient_retries < MAX_TRANSIENT_POLICY_RETRIES =>
             {
                 transient_retries += 1;
+                let err_timing = openduck_harness::telemetry::NetworkTiming {
+                    dns_ms: None,
+                    tcp_connect_ms: None,
+                    tls_handshake_ms: None,
+                    connection_ms: 0,
+                    connection_reused: true,
+                    send_ms: latency_ms.min(5),
+                    wait_ms: latency_ms.saturating_sub(latency_ms.min(5)),
+                    receive_ms: 0,
+                    total_ms: latency_ms,
+                };
                 recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
                     provider: provider_name.clone(),
                     model: model_name.clone(),
@@ -455,6 +558,7 @@ async fn complete_provider_with_retry(
                     retry_attempt: Some(transient_retries as usize),
                     retry_reason: Some("transient_error".to_string()),
                     is_secondary: if is_secondary { Some(true) } else { None },
+                    network_timing: Some(err_timing),
                 });
                 let delay_ms = transient_retry_delay_ms(transient_retries);
                 tracing::warn!(
@@ -471,6 +575,17 @@ async fn complete_provider_with_retry(
                 continue;
             }
             Err(e) => {
+                let err_timing = openduck_harness::telemetry::NetworkTiming {
+                    dns_ms: None,
+                    tcp_connect_ms: None,
+                    tls_handshake_ms: None,
+                    connection_ms: 0,
+                    connection_reused: true,
+                    send_ms: latency_ms.min(5),
+                    wait_ms: latency_ms.saturating_sub(latency_ms.min(5)),
+                    receive_ms: 0,
+                    total_ms: latency_ms,
+                };
                 recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
                     provider: provider_name.clone(),
                     model: model_name.clone(),
@@ -486,6 +601,7 @@ async fn complete_provider_with_retry(
                     },
                     retry_reason: None,
                     is_secondary: if is_secondary { Some(true) } else { None },
+                    network_timing: Some(err_timing),
                 });
                 return Err(anyhow::anyhow!(e));
             }
@@ -514,6 +630,7 @@ async fn complete_provider_with_retry(
                     },
                     retry_reason: None,
                     is_secondary: if is_secondary { Some(true) } else { None },
+                    network_timing: Some(network_timing),
                 });
                 return Ok(ProviderStepResult {
                     action,
@@ -537,6 +654,7 @@ async fn complete_provider_with_retry(
                     retry_attempt: Some((empty_retries + transient_retries) as usize),
                     retry_reason: Some("empty_completion".to_string()),
                     is_secondary: if is_secondary { Some(true) } else { None },
+                    network_timing: Some(network_timing),
                 });
                 let delay_ms = empty_turn_retry_delay_ms(empty_retries);
                 tracing::warn!(
@@ -567,6 +685,7 @@ async fn complete_provider_with_retry(
                     },
                     retry_reason: None,
                     is_secondary: if is_secondary { Some(true) } else { None },
+                    network_timing: Some(network_timing),
                 });
                 return Err(err);
             }
@@ -3277,7 +3396,8 @@ mod tests {
     #[test]
     fn harness_message_reconstructs_with_metadata() {
         use openduck_harness::policy::{HarnessMessage, MessageRole};
-        let mut call = ToolCallRequest::new("call_123", "shell", serde_json::json!({"command": "pwd"}));
+        let mut call =
+            ToolCallRequest::new("call_123", "shell", serde_json::json!({"command": "pwd"}));
         let meta_json = serde_json::json!({
             "extra_content": {
                 "google": {

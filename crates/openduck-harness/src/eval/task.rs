@@ -119,6 +119,29 @@ impl Verifier for DiffVerifier {
     }
 }
 
+/// One condition that must hold before the next subtask starts.
+///
+/// `kind` is `note`, `file`, or `command`. A note passes when the subtask
+/// finishes successfully and leaves a final answer. A file or command check
+/// is evaluated in the shared sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskExpectedOutput {
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_stdout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_content: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtaskSpec {
@@ -131,6 +154,12 @@ pub struct SubtaskSpec {
     pub max_turns: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exploration_budget: Option<usize>,
+    #[serde(
+        default,
+        alias = "expected_outputs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expected_outputs: Option<Vec<SubtaskExpectedOutput>>,
 }
 
 impl SubtaskSpec {
@@ -146,6 +175,7 @@ impl SubtaskSpec {
             target_files: None,
             max_turns: None,
             exploration_budget: None,
+            expected_outputs: None,
         }
     }
 
@@ -161,6 +191,11 @@ impl SubtaskSpec {
 
     pub fn with_exploration_budget(mut self, budget: usize) -> Self {
         self.exploration_budget = Some(budget);
+        self
+    }
+
+    pub fn with_expected_outputs(mut self, outputs: Vec<SubtaskExpectedOutput>) -> Self {
+        self.expected_outputs = Some(outputs);
         self
     }
 }
@@ -190,23 +225,6 @@ pub struct TaskSpec {
         alias = "sub_tasks"
     )]
     pub subtasks: Option<Vec<SubtaskSpec>>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "auto_decompose",
-        alias = "autoDecompose",
-        alias = "decompose_subtasks"
-    )]
-    pub auto_decompose: Option<bool>,
-    /// Per-phase turn budgets for auto-synthesized (or matching extracted) subtasks.
-    /// When omitted, synthesized phases split `max_turns` with a 2:3:2 ratio.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "phase_max_turns",
-        alias = "phaseMaxTurns"
-    )]
-    pub phase_max_turns: Option<Vec<usize>>,
 }
 
 impl TaskSpec {
@@ -226,8 +244,6 @@ impl TaskSpec {
             timeout_seconds: Some(300),
             exploration_budget: None,
             subtasks: None,
-            auto_decompose: None,
-            phase_max_turns: None,
         }
     }
 
@@ -248,16 +264,6 @@ impl TaskSpec {
 
     pub fn with_subtasks(mut self, subtasks: Vec<SubtaskSpec>) -> Self {
         self.subtasks = Some(subtasks);
-        self
-    }
-
-    pub fn with_auto_decompose(mut self, auto_decompose: bool) -> Self {
-        self.auto_decompose = Some(auto_decompose);
-        self
-    }
-
-    pub fn with_phase_max_turns(mut self, phase_max_turns: Vec<usize>) -> Self {
-        self.phase_max_turns = Some(phase_max_turns);
         self
     }
 }

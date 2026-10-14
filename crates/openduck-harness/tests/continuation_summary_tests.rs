@@ -133,9 +133,7 @@ async fn continuing_a_run_writes_the_summary_into_the_workspace() {
     let mut harness = AgentHarness::new(EchoPolicy::default(), sandbox)
         .with_continuation(Some(checkpoint))
         .with_extra_turns(Some(5));
-    let task = TaskSpec::new("task-297953", "feature", "Export BMS history")
-        .with_auto_decompose(false)
-        .with_turns(3);
+    let task = TaskSpec::new("task-297953", "feature", "Export BMS history").with_turns(3);
     let result = harness.run_task(&task).await.unwrap();
     assert_eq!(result.status, RunStatus::Success);
 
@@ -262,7 +260,6 @@ async fn history_follow_up_replays_the_conversation_and_appends_the_new_prompt()
         }))
         .with_extra_turns(Some(4));
     let task = TaskSpec::new("task-export", "feature", "Export the report")
-        .with_auto_decompose(true)
         .with_subtasks(vec![
             SubtaskSpec::new("write", "Write", "Write the exporter"),
             SubtaskSpec::new("test", "Test", "Run the tests"),

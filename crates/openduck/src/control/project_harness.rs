@@ -16,8 +16,9 @@ use openduck_harness::eval::{
 };
 use openduck_harness::policy::adapters::EchoPolicy;
 use openduck_harness::project::{
-    compose_dynamic_run_prompt, ProjectHarnessConfig, ProjectTaskDefinition, ProjectTaskStore,
-    ProjectTaskSummary,
+    compose_dynamic_run_prompt, draft_system_prompt, heuristic_task_draft, parse_model_task_draft,
+    ProjectHarnessConfig, ProjectTaskDefinition, ProjectTaskStore, ProjectTaskSummary, TaskDraft,
+    TaskDraftMessage,
 };
 use openduck_harness::replay::{Cassette, ReplayPolicy};
 use openduck_harness::runtime::{AgentHarness, HistoryFollowUp};
@@ -183,6 +184,24 @@ pub struct ProjectTaskEstimateResponse {
     pub complexity: String,
     pub reasoning: String,
     pub source: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectTaskDraftRequest {
+    pub messages: Vec<TaskDraftMessage>,
+    /// The form the user is editing, so a follow-up can revise it.
+    #[serde(default)]
+    pub current: Option<TaskDraft>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectTaskDraftResponse {
+    pub reply: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<TaskDraft>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1958,6 +1977,138 @@ Output ONLY a valid JSON object matching this schema:
         reasoning,
         source: "model".to_string(),
     })
+}
+
+fn bounded_draft_messages(messages: Vec<TaskDraftMessage>) -> Vec<TaskDraftMessage> {
+    messages
+        .into_iter()
+        .filter(|message| {
+            matches!(
+                message.role.to_ascii_lowercase().as_str(),
+                "user" | "assistant"
+            )
+        })
+        .map(|mut message| {
+            if message.content.chars().count() > 8_000 {
+                message.content = message.content.chars().take(8_000).collect();
+            }
+            message
+        })
+        .rev()
+        .take(24)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+async fn draft_with_model(
+    config: &ProjectHarnessConfig,
+    messages: &[TaskDraftMessage],
+    current: Option<&TaskDraft>,
+    max_turns_limit: usize,
+) -> Result<openduck_harness::TaskDraftTurn> {
+    use crate::config::Config;
+    use crate::conversation::message::{Message, MessageContent};
+    use crate::model_config::model_config_from_user_config;
+
+    let global_config = Config::global();
+    let provider_name = match config.policy.provider.as_deref() {
+        Some(provider) => provider.to_string(),
+        None => global_config.get_goose_provider().context(
+            "No default provider configured. Use --provider <name> or run 'goose configure'",
+        )?,
+    };
+    let model_name = match config
+        .policy
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        Some(model) => model.to_string(),
+        None => global_config
+            .get_goose_model()
+            .context("No model configured for active provider")?,
+    };
+    let model_config = model_config_from_user_config(&provider_name, &model_name)?;
+    let provider = crate::providers::create(&provider_name, vec![]).await?;
+
+    let mut user_msg = String::from("### Conversation\n");
+    for message in messages {
+        let role = if message.role.eq_ignore_ascii_case("assistant") {
+            "Assistant"
+        } else {
+            "User"
+        };
+        user_msg.push_str(&format!("{role}: {}\n\n", message.content.trim()));
+    }
+    if let Some(current) = current {
+        if let Ok(json) = serde_json::to_string_pretty(current) {
+            user_msg.push_str("\n### Current draft\n```json\n");
+            user_msg.push_str(&json);
+            user_msg.push_str("\n```\n");
+        }
+    }
+
+    let system = draft_system_prompt(max_turns_limit);
+    let chat = vec![Message::user().with_text(user_msg)];
+    let tools: [rmcp::model::Tool; 0] = [];
+    // The model streams the draft and often needs longer than the hub's old 12s
+    // client abort. Keep the HTTP response open until this cap, then fall back.
+    let (reply, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(90),
+        provider.complete(&model_config, &system, &chat, &tools),
+    )
+    .await
+    .map_err(|_| anyhow!("Task draft request timed out"))??;
+    let text = reply
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            MessageContent::Text(raw) if !raw.text.is_empty() => Some(raw.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    parse_model_task_draft(&text, max_turns_limit)
+}
+
+pub async fn draft_project_task(
+    AxumPath(slug): AxumPath<String>,
+    Json(req): Json<ProjectTaskDraftRequest>,
+) -> Result<Json<ProjectTaskDraftResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let (_entry, root) = resolve_project_root(&slug).map_err(not_found)?;
+    let config = ProjectHarnessConfig::load_or_default(&root).await;
+    let max_turns_limit = project_max_turns_limit(&root, &config);
+    let messages = bounded_draft_messages(req.messages);
+    let current = req.current.as_ref();
+
+    if messages.is_empty() {
+        let turn = heuristic_task_draft(&messages, current, max_turns_limit);
+        return Ok(Json(ProjectTaskDraftResponse {
+            reply: turn.reply,
+            source: "heuristic".to_string(),
+            draft: turn.draft,
+        }));
+    }
+
+    match draft_with_model(&config, &messages, current, max_turns_limit).await {
+        Ok(turn) => Ok(Json(ProjectTaskDraftResponse {
+            reply: turn.reply,
+            source: "model".to_string(),
+            draft: turn.draft,
+        })),
+        Err(error) => {
+            tracing::warn!(error = %error, "Task draft failed, falling back to heuristic");
+            let turn = heuristic_task_draft(&messages, current, max_turns_limit);
+            Ok(Json(ProjectTaskDraftResponse {
+                reply: turn.reply,
+                source: "heuristic".to_string(),
+                draft: turn.draft,
+            }))
+        }
+    }
 }
 
 pub async fn estimate_project_task(

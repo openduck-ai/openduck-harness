@@ -111,21 +111,6 @@ pub struct ProjectTaskDefinition {
         skip_serializing_if = "Option::is_none"
     )]
     pub subtasks: Option<Vec<SubtaskSpec>>,
-    #[serde(
-        default,
-        alias = "auto_decompose",
-        alias = "autoDecompose",
-        alias = "decompose_subtasks",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub auto_decompose: Option<bool>,
-    #[serde(
-        default,
-        alias = "phase_max_turns",
-        alias = "phaseMaxTurns",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub phase_max_turns: Option<Vec<usize>>,
     /// When true, a run may append extra instructions without rewriting the saved prompt.
     #[serde(default, alias = "dynamic_prompt", skip_serializing_if = "is_false")]
     pub dynamic_prompt: bool,
@@ -387,8 +372,6 @@ impl ProjectTaskStore {
             spec.timeout_seconds = Some(timeout);
         }
         spec.subtasks = task_def.subtasks.clone();
-        spec.auto_decompose = task_def.auto_decompose;
-        spec.phase_max_turns = task_def.phase_max_turns.clone();
 
         let verifier: Arc<dyn Verifier> = if let Some(v_spec) = &task_def.verifier {
             v_spec.build_verifier()

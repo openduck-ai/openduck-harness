@@ -2094,6 +2094,11 @@ textarea {
   animation: mentionPopoverFadeIn 0.15s ease-out;
 }
 
+.mention-popover-below {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
 @keyframes mentionPopoverFadeIn {
   from {
     opacity: 0;
@@ -8815,6 +8820,144 @@ textarea {
   box-shadow: none;
 }
 
+.task-draft-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.03));
+}
+
+.task-draft-chat.mention-open {
+  position: relative;
+  z-index: 4;
+}
+
+.task-draft-hint,
+.task-draft-empty {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-secondary, #94a3b8);
+}
+
+.task-draft-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.task-draft-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-width: 95%;
+}
+
+.task-draft-msg p {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.task-draft-msg.is-user {
+  align-self: flex-end;
+}
+
+.task-draft-msg.is-assistant {
+  align-self: flex-start;
+}
+
+.task-draft-role {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-tertiary, #94a3b8);
+}
+
+.task-draft-compose {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.task-draft-input {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  z-index: 2;
+}
+
+.task-draft-input .form-textarea {
+  width: 100%;
+  min-height: 2.6rem;
+}
+
+.task-draft-split {
+  margin-top: 0.45rem;
+}
+
+.subtask-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin: 0.4rem 0 1rem;
+}
+
+.subtask-editor-head,
+.subtask-card-head,
+.subtask-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.subtask-card-actions {
+  justify-content: flex-end;
+}
+
+.subtask-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.subtask-index {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.expected-output-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.expected-output-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.expected-output-row .form-input {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.expected-output-row .btn-sm {
+  flex: 0 0 auto;
+}
+
 .editor-button-row {
   display: flex;
   align-items: center;
@@ -12058,3 +12201,113 @@ button.git-log-row {
   font-size: 0.85rem;
 }
 
+/* Network Waterfall Timing (Browser DevTools Style) */
+.network-waterfall-cell {
+  min-width: 150px;
+  max-width: 200px;
+}
+
+.network-waterfall-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  width: 100%;
+}
+
+.waterfall-seg {
+  height: 100%;
+  position: relative;
+  transition: opacity 0.15s ease;
+}
+
+.waterfall-seg:hover {
+  filter: brightness(1.2);
+}
+
+.waterfall-seg.seg-connect {
+  background: #38bdf8;
+}
+
+.waterfall-seg.seg-send {
+  background: #fbbf24;
+}
+
+.waterfall-seg.seg-wait {
+  background: #34d399;
+}
+
+.waterfall-seg.seg-receive {
+  background: #818cf8;
+}
+
+.waterfall-legend-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+.legend-item-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.legend-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.legend-dot.connect {
+  background: #38bdf8;
+}
+
+.legend-dot.send {
+  background: #fbbf24;
+}
+
+.legend-dot.wait {
+  background: #34d399;
+}
+
+.legend-dot.receive {
+  background: #818cf8;
+}
+
+
+.network-panel-heading, .network-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.network-panel-heading h3, .network-panel-heading button, .network-auto-refresh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.network-auto-refresh { font-size: 13px; margin-bottom: 16px; }
+.network-auto-refresh input { width: auto; }
+.network-table-scroll { overflow-x: auto; margin: 12px 0; }
+.network-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.network-table th, .network-table td { padding: 10px 8px; text-align: left; vertical-align: top; }
+.network-table th { font-weight: 600; white-space: nowrap; }
+.network-table td { border-top: 1px solid var(--border-default); }
+.network-probe { display: flex; align-items: baseline; gap: 6px; min-width: 100px; }
+.network-probe small, .network-url { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+.network-probe-unavailable .status-dot { background: #94a3b8; }
+.network-history { margin-top: 10px; min-width: 140px; }
+.network-history-bars { display: flex; align-items: end; gap: 3px; height: 32px; margin-bottom: 4px; }
+.network-history-bars span { width: 6px; border-radius: 2px; }
+.network-history-ok { background: #16a34a; }
+.network-history-failed { background: #dc2626; }

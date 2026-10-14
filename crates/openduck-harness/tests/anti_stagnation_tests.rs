@@ -1908,10 +1908,11 @@ async fn test_consult_advisor_restores_session_from_continuation() {
     .with_continuation(Some(checkpoint));
 
     let result = harness
-        .run_task(
-            &TaskSpec::new("task-resume-adv", "test", "Continue advisor")
-                .with_auto_decompose(false),
-        )
+        .run_task(&TaskSpec::new(
+            "task-resume-adv",
+            "test",
+            "Continue advisor",
+        ))
         .await
         .unwrap();
     assert_eq!(result.status, RunStatus::Success);
@@ -1945,11 +1946,7 @@ async fn test_consult_advisor_isolates_sessions_per_subtask() {
         openduck_harness::SubtaskSpec::new("st-b", "Second", "Do second").with_max_turns(4),
     ];
     let result = harness
-        .run_task(
-            &TaskSpec::new("task-sub-adv", "test", "Split work")
-                .with_auto_decompose(false)
-                .with_subtasks(subtasks),
-        )
+        .run_task(&TaskSpec::new("task-sub-adv", "test", "Split work").with_subtasks(subtasks))
         .await
         .unwrap();
     assert_eq!(result.status, RunStatus::Success);

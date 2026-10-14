@@ -533,6 +533,18 @@ export interface TokenUsageSummary {
   totalTokens?: number
 }
 
+export interface NetworkTiming {
+  dnsMs?: number | null
+  tcpConnectMs?: number | null
+  tlsHandshakeMs?: number | null
+  connectionMs: number
+  connectionReused: boolean
+  sendMs: number
+  waitMs: number
+  receiveMs: number
+  totalMs: number
+}
+
 export interface ProviderCallRecord {
   provider: string
   model: string
@@ -544,6 +556,7 @@ export interface ProviderCallRecord {
   retryAttempt?: number | null
   retryReason?: string | null
   isSecondary?: boolean | null
+  networkTiming?: NetworkTiming | null
 }
 
 export interface ProviderCallStats {
@@ -560,6 +573,10 @@ export interface ProviderCallStats {
   totalCost?: number | null
   retries: number
   errors: string[]
+  avgConnectionMs?: number | null
+  avgSendMs?: number | null
+  avgWaitMs?: number | null
+  avgReceiveMs?: number | null
 }
 
 export interface TaskProviderStats {
@@ -573,6 +590,10 @@ export interface TaskProviderStats {
   outputTokens: number
   totalTokens: number
   totalCost?: number | null
+  avgConnectionMs?: number | null
+  avgSendMs?: number | null
+  avgWaitMs?: number | null
+  avgReceiveMs?: number | null
   byProvider: Record<string, ProviderCallStats>
   byModel?: Record<string, ProviderCallStats>
 }
@@ -794,6 +815,17 @@ export type TaskVerifierSpec =
       expectedContent: string
     }
 
+export interface SubtaskExpectedOutput {
+  description: string
+  /** note passes when the subtask finishes with a final answer. file and command are checked in the workspace. */
+  kind?: 'note' | 'file' | 'command' | string
+  command?: string
+  expectedExitCode?: number
+  expectedStdout?: string
+  filePath?: string
+  expectedContent?: string
+}
+
 export interface SubtaskSpec {
   id: string
   title: string
@@ -801,6 +833,7 @@ export interface SubtaskSpec {
   targetFiles?: string[]
   maxTurns?: number
   explorationBudget?: number
+  expectedOutputs?: SubtaskExpectedOutput[]
 }
 
 export interface ProjectTaskDefinition {
@@ -819,9 +852,7 @@ export interface ProjectTaskDefinition {
   timeoutSeconds?: number
   cron?: string
   schedulePaused?: boolean
-  autoDecompose?: boolean
   subtasks?: SubtaskSpec[]
-  phaseMaxTurns?: number[]
   /** When true, a run can append extra instructions without rewriting the saved prompt. */
   dynamicPrompt?: boolean
 }
@@ -891,6 +922,36 @@ export interface ProjectTaskEstimateResponse {
   source: 'model' | 'heuristic' | string
 }
 
+export interface TaskDraftMessage {
+  role: 'user' | 'assistant' | string
+  content: string
+}
+
+export interface TaskDraft {
+  id: string
+  name: string
+  category?: string
+  tags: string[]
+  prompt: string
+  maxTurns: number
+  timeoutSeconds: number
+  largeTask: boolean
+  complexity: string
+  reasoning: string
+  subtasks: SubtaskSpec[]
+}
+
+export interface ProjectTaskDraftRequest {
+  messages: TaskDraftMessage[]
+  current?: TaskDraft
+}
+
+export interface ProjectTaskDraftResponse {
+  reply: string
+  source: 'model' | 'heuristic' | string
+  draft?: TaskDraft | null
+}
+
 // ---------------- SSE Real-Time Event Types ----------------
 
 export type HarnessProjectEvent =
@@ -944,4 +1005,39 @@ export type HarnessJobLiveEvent =
     }
 
 
+
+export interface NetworkProbe {
+  status: 'reachable' | 'failed' | 'timeout' | 'unavailable'
+  latencyMs: number | null
+  detail: string
+  httpStatus: number | null
+}
+
+export interface NetworkEndpointStatus {
+  provider: string
+  url: string
+  dns: NetworkProbe
+  addresses: string[]
+  ping: NetworkProbe
+  tcp: NetworkProbe
+  directHttp: NetworkProbe
+  providerHttp: NetworkProbe
+  proxy: string | null
+}
+
+export interface NetworkProxyStatus {
+  source: string
+  url: string
+  tcp: NetworkProbe
+  tunnel: NetworkProbe
+  target: string
+}
+
+export interface NetworkStatus {
+  checkedAt: string
+  refreshIntervalSeconds: number
+  endpoints: NetworkEndpointStatus[]
+  proxies: NetworkProxyStatus[]
+  noProxy: string | null
+}
 

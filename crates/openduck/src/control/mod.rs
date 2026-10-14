@@ -10,6 +10,7 @@ pub mod harness;
 pub mod http;
 pub mod insight;
 pub mod jobs;
+pub mod network;
 pub mod project_harness;
 pub mod project_roots;
 pub mod projects;

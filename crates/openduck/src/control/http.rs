@@ -1464,6 +1464,7 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
         }
     });
     Router::new()
+        .route("/api/v1/network/status", get(super::network::status))
         .route(
             "/api/v1/config",
             get(get_app_config)
@@ -1566,6 +1567,10 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
         .route(
             "/api/v1/projects/{slug}/harness/tasks/estimate",
             post(super::project_harness::estimate_project_task),
+        )
+        .route(
+            "/api/v1/projects/{slug}/harness/tasks/draft",
+            post(super::project_harness::draft_project_task),
         )
         .route(
             "/api/v1/projects/{slug}/harness/tasks/{task_id}",

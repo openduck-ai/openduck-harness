@@ -22,6 +22,31 @@ pub struct ProviderCallRecord {
     pub retry_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_secondary: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_timing: Option<NetworkTiming>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkTiming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_connect_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_handshake_ms: Option<u64>,
+    #[serde(default)]
+    pub connection_ms: u64,
+    #[serde(default)]
+    pub connection_reused: bool,
+    #[serde(default)]
+    pub send_ms: u64,
+    #[serde(default)]
+    pub wait_ms: u64,
+    #[serde(default)]
+    pub receive_ms: u64,
+    #[serde(default)]
+    pub total_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -43,6 +68,14 @@ pub struct ProviderCallStats {
     pub retries: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_connection_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_send_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_wait_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_receive_ms: Option<f64>,
 }
 
 impl ProviderCallStats {
@@ -69,6 +102,19 @@ impl ProviderCallStats {
 
         self.total_duration_ms += call.latency_ms;
         self.avg_duration_ms = (self.total_duration_ms as f64) / (self.total_calls as f64);
+
+        if let Some(timing) = &call.network_timing {
+            let n = self.total_calls as f64;
+            let prev_n = (self.total_calls - 1) as f64;
+            let prev_conn = self.avg_connection_ms.unwrap_or(0.0);
+            self.avg_connection_ms = Some((prev_conn * prev_n + timing.connection_ms as f64) / n);
+            let prev_send = self.avg_send_ms.unwrap_or(0.0);
+            self.avg_send_ms = Some((prev_send * prev_n + timing.send_ms as f64) / n);
+            let prev_wait = self.avg_wait_ms.unwrap_or(0.0);
+            self.avg_wait_ms = Some((prev_wait * prev_n + timing.wait_ms as f64) / n);
+            let prev_recv = self.avg_receive_ms.unwrap_or(0.0);
+            self.avg_receive_ms = Some((prev_recv * prev_n + timing.receive_ms as f64) / n);
+        }
 
         if let Some(usage) = &call.token_usage {
             if let Some(inp) = usage.input_tokens {
@@ -110,6 +156,14 @@ pub struct TaskProviderStats {
     pub total_tokens: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_cost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_connection_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_send_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_wait_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_receive_ms: Option<f64>,
     pub by_provider: HashMap<String, ProviderCallStats>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub by_model: HashMap<String, ProviderCallStats>,
@@ -130,6 +184,19 @@ impl TaskProviderStats {
 
         self.total_duration_ms += call.latency_ms;
         self.avg_duration_ms = (self.total_duration_ms as f64) / (self.total_calls as f64);
+
+        if let Some(timing) = &call.network_timing {
+            let n = self.total_calls as f64;
+            let prev_n = (self.total_calls - 1) as f64;
+            let prev_conn = self.avg_connection_ms.unwrap_or(0.0);
+            self.avg_connection_ms = Some((prev_conn * prev_n + timing.connection_ms as f64) / n);
+            let prev_send = self.avg_send_ms.unwrap_or(0.0);
+            self.avg_send_ms = Some((prev_send * prev_n + timing.send_ms as f64) / n);
+            let prev_wait = self.avg_wait_ms.unwrap_or(0.0);
+            self.avg_wait_ms = Some((prev_wait * prev_n + timing.wait_ms as f64) / n);
+            let prev_recv = self.avg_receive_ms.unwrap_or(0.0);
+            self.avg_receive_ms = Some((prev_recv * prev_n + timing.receive_ms as f64) / n);
+        }
 
         if let Some(usage) = &call.token_usage {
             if let Some(inp) = usage.input_tokens {
@@ -212,6 +279,7 @@ impl TaskProviderStats {
                     retry_attempt: None,
                     retry_reason: None,
                     is_secondary: None,
+                    network_timing: None,
                 };
                 stats.record_call(&call);
             }
@@ -244,6 +312,17 @@ mod tests {
             retry_attempt: None,
             retry_reason: None,
             is_secondary: None,
+            network_timing: Some(NetworkTiming {
+                dns_ms: Some(10),
+                tcp_connect_ms: Some(20),
+                tls_handshake_ms: Some(30),
+                connection_ms: 60,
+                connection_reused: false,
+                send_ms: 15,
+                wait_ms: 350,
+                receive_ms: 775,
+                total_ms: 1200,
+            }),
         };
 
         let call2 = ProviderCallRecord {
@@ -257,6 +336,17 @@ mod tests {
             retry_attempt: Some(1),
             retry_reason: Some("transient_error".to_string()),
             is_secondary: None,
+            network_timing: Some(NetworkTiming {
+                dns_ms: None,
+                tcp_connect_ms: None,
+                tls_handshake_ms: None,
+                connection_ms: 0,
+                connection_reused: true,
+                send_ms: 10,
+                wait_ms: 790,
+                receive_ms: 0,
+                total_ms: 800,
+            }),
         };
 
         let call3 = ProviderCallRecord {
@@ -274,6 +364,7 @@ mod tests {
             retry_attempt: None,
             retry_reason: None,
             is_secondary: Some(true),
+            network_timing: None,
         };
 
         stats.record_call(&call1);
@@ -291,12 +382,20 @@ mod tests {
         assert_eq!(stats.total_tokens, 450);
         assert_eq!(stats.total_cost, Some(0.003));
 
+        // Network timing aggregation checks
+        assert_eq!(stats.avg_connection_ms, Some(30.0));
+        assert_eq!(stats.avg_send_ms, Some(12.5));
+        assert_eq!(stats.avg_wait_ms, Some(570.0));
+        assert_eq!(stats.avg_receive_ms, Some(387.5));
+
         let anthropic = stats.by_provider.get("anthropic").unwrap();
         assert_eq!(anthropic.total_calls, 2);
         assert_eq!(anthropic.successful_calls, 1);
         assert_eq!(anthropic.failed_calls, 1);
         assert_eq!(anthropic.retries, 1);
         assert_eq!(anthropic.errors, vec!["Rate limited"]);
+        assert_eq!(anthropic.avg_connection_ms, Some(30.0));
+        assert_eq!(anthropic.avg_wait_ms, Some(570.0));
 
         let openai = stats.by_provider.get("openai").unwrap();
         assert_eq!(openai.total_calls, 1);

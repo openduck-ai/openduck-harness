@@ -30,6 +30,7 @@ import type {
   ConfigScalar,
   HarnessSettingsUpdate,
   JudgeSettingsUpdate,
+  NetworkStatus,
   Project,
   ProjectDetail,
   ProjectDirectory,
@@ -40,6 +41,8 @@ import type {
   ProjectHarnessOverview,
   ProjectInput,
   ProjectTaskDefinition,
+  ProjectTaskDraftRequest,
+  ProjectTaskDraftResponse,
   ProjectTaskEstimateRequest,
   ProjectTaskEstimateResponse,
   ProjectTaskRunRequest,
@@ -82,12 +85,14 @@ export async function readErrorMessage(response: Response): Promise<string> {
 
 function requestTimeoutMs(path: string): number | null {
   const route = path.toLowerCase()
+  if (route === '/api/v1/network/status') return 40_000
   if (
     route.includes('/run') ||
     route.includes('/eval') ||
     route.includes('/replay') ||
     route.includes('/exec') ||
     route.includes('/estimate') ||
+    route.includes('/draft') ||
     route.includes('/stream')
   ) {
     return null
@@ -106,7 +111,10 @@ async function fetchWithTimeout(
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await fetch(url, { ...init, signal: controller.signal })
+    const signal = init.signal
+      ? AbortSignal.any([init.signal, controller.signal])
+      : controller.signal
+    return await fetch(url, { ...init, signal })
   } catch (err) {
     if (controller.signal.aborted) {
       throw new Error(`Request timed out after ${timeoutMs}ms`)
@@ -143,6 +151,8 @@ export function createApi(baseUrl: string, secret = '') {
       ),
     createProject: (input: ProjectInput) => request<{ project: Project }>('/api/v1/projects', { method: 'POST', body: JSON.stringify(input) }),
     getAppConfig: () => request<AppConfigDocument>('/api/v1/config'),
+    getNetworkStatus: (signal?: AbortSignal) =>
+      request<NetworkStatus>('/api/v1/network/status', { signal }),
     getProvidersConfig: () => request<ProvidersConfigResponse>('/api/v1/config/providers'),
     updateProvidersConfig: (body: ProviderConfigPutBody) =>
       request<ProvidersConfigResponse>('/api/v1/config/providers', {
@@ -384,6 +394,14 @@ export function createApi(baseUrl: string, secret = '') {
     estimateProjectTask: (slug: string, req: ProjectTaskEstimateRequest) =>
       request<ProjectTaskEstimateResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/harness/tasks/estimate`,
+        {
+          method: 'POST',
+          body: JSON.stringify(req),
+        },
+      ),
+    draftProjectTask: (slug: string, req: ProjectTaskDraftRequest) =>
+      request<ProjectTaskDraftResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/harness/tasks/draft`,
         {
           method: 'POST',
           body: JSON.stringify(req),

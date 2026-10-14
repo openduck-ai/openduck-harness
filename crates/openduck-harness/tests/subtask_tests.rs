@@ -11,101 +11,6 @@ use openduck_harness::sandbox::local::LocalSandbox;
 use openduck_harness::types::{RunStatus, ToolCallRequest, ToolDefinition};
 use openduck_harness::{SubtaskSpec, TaskSpec};
 
-#[test]
-fn test_subtask_decomposition_from_numbered_list() {
-    let prompt = r#"
-Please complete the GPS notification feature:
-1. Define DTOs and configuration models in rmqx_admin/src/domain/dto/gps_platform.rs
-2. Implement SMS notification dispatch in rmqx_admin/src/domain/services/gps_notify.rs
-3. Update frontend alarm rule configuration form in ui/src/views/AlarmRuleList.vue
-4. Run cargo test -p rmqx_admin to verify all integration test cases
-"#;
-
-    let subtasks = SubtaskDecomposer::decompose("task-gps", prompt, None, None);
-    assert_eq!(subtasks.len(), 4, "Should extract exactly 4 subtasks");
-
-    assert!(subtasks[0].title.contains("Define DTOs"));
-    assert_eq!(
-        subtasks[0].target_files.as_deref(),
-        Some(&["rmqx_admin/src/domain/dto/gps_platform.rs".to_string()][..])
-    );
-
-    assert!(subtasks[1].title.contains("Implement SMS notification"));
-    assert_eq!(
-        subtasks[1].target_files.as_deref(),
-        Some(&["rmqx_admin/src/domain/services/gps_notify.rs".to_string()][..])
-    );
-
-    assert!(subtasks[2].title.contains("Update frontend alarm rule"));
-    assert_eq!(
-        subtasks[2].target_files.as_deref(),
-        Some(&["ui/src/views/AlarmRuleList.vue".to_string()][..])
-    );
-
-    assert!(subtasks[3].title.contains("Run cargo test"));
-}
-
-#[test]
-fn test_subtask_decomposition_from_markdown_checklist() {
-    let prompt = r#"
-We need to migrate telemetry storage:
-- [ ] Phase A: Add clickhouse client dependency and connection pool in src/db.rs
-- [ ] Phase B: Create telemetry table migration and schema in migrations/001_telemetry.sql
-- [ ] Phase C: Implement telemetry batch writer in src/telemetry/writer.rs
-"#;
-
-    let subtasks = SubtaskDecomposer::decompose("task-telemetry", prompt, None, None);
-    assert_eq!(subtasks.len(), 3);
-    assert!(subtasks[0].title.contains("Phase A"));
-    assert!(subtasks[1].title.contains("Phase B"));
-    assert!(subtasks[2].title.contains("Phase C"));
-}
-
-#[test]
-fn test_subtask_decomposition_for_complex_prose() {
-    let prompt = "Please implement the new multi-channel notification engine supporting SMS, AppPush, and Webhook dispatching with appropriate DTO schemas, service handlers, DB records, and end-to-end integration tests.";
-    let subtasks = SubtaskDecomposer::decompose("task-prose", prompt, Some(28), None);
-    assert_eq!(
-        subtasks.len(),
-        3,
-        "Complex prose should synthesize 3 phases"
-    );
-    assert!(subtasks[0].title.contains("Phase 1"));
-    assert!(subtasks[1].title.contains("Phase 2"));
-    assert!(subtasks[2].title.contains("Phase 3"));
-    assert_eq!(subtasks[0].max_turns, Some(8));
-    assert_eq!(subtasks[1].max_turns, Some(12));
-    assert_eq!(subtasks[2].max_turns, Some(8));
-}
-
-#[test]
-fn test_synthesized_phases_split_parent_max_turns() {
-    assert_eq!(
-        openduck_harness::split_synthesized_phase_turns(28),
-        [8, 12, 8]
-    );
-    let split_500 = openduck_harness::split_synthesized_phase_turns(500);
-    assert_eq!(split_500, [142, 216, 142]);
-    assert!(split_500[1] > split_500[0]);
-    assert_eq!(split_500.iter().sum::<usize>(), 500);
-
-    let prompt = "Please implement the new multi-channel notification engine supporting SMS, AppPush, and Webhook dispatching with appropriate DTO schemas, service handlers, DB records, and end-to-end integration tests.";
-    let subtasks = SubtaskDecomposer::decompose("task-prose", prompt, Some(500), None);
-    assert_eq!(subtasks[0].max_turns, Some(142));
-    assert_eq!(subtasks[1].max_turns, Some(216));
-    assert_eq!(subtasks[2].max_turns, Some(142));
-}
-
-#[test]
-fn test_synthesized_phases_honor_phase_max_turns_overrides() {
-    let prompt = "Please implement the new multi-channel notification engine supporting SMS, AppPush, and Webhook dispatching with appropriate DTO schemas, service handlers, DB records, and end-to-end integration tests.";
-    let subtasks =
-        SubtaskDecomposer::decompose("task-prose", prompt, Some(500), Some(&[80, 200, 220][..]));
-    assert_eq!(subtasks[0].max_turns, Some(80));
-    assert_eq!(subtasks[1].max_turns, Some(200));
-    assert_eq!(subtasks[2].max_turns, Some(220));
-}
-
 #[derive(Clone)]
 struct SequentialSubtaskPolicy {
     step: Arc<AtomicUsize>,
@@ -154,15 +59,14 @@ impl AgentPolicy for SequentialSubtaskPolicy {
         // Subtask 1: Write src/dto.rs
         if active_subtask_title.contains("Subtask (1/3)") {
             if current_step == 0 {
-                return Ok(AgentAction::CallTools(vec![ToolCallRequest {
-                    id: "call-1".into(),
-                    name: "write_file".into(),
-                    arguments: serde_json::json!({
+                return Ok(AgentAction::CallTools(vec![ToolCallRequest::new(
+                    "call-1",
+                    "write_file",
+                    serde_json::json!({
                         "path": "src/dto.rs",
                         "content": "pub struct GpsPayload { pub lat: f64, pub lon: f64 }\n"
                     }),
-                    error: None,
-                }]));
+                )]));
             } else {
                 return Ok(AgentAction::FinalAnswer("DTO defined in src/dto.rs".into()));
             }
@@ -171,22 +75,20 @@ impl AgentPolicy for SequentialSubtaskPolicy {
         // Subtask 2: Read src/dto.rs and write src/service.rs
         if active_subtask_title.contains("Subtask (2/3)") {
             if current_step == 2 {
-                return Ok(AgentAction::CallTools(vec![ToolCallRequest {
-                    id: "call-2".into(),
-                    name: "read_file".into(),
-                    arguments: serde_json::json!({"path": "src/dto.rs"}),
-                    error: None,
-                }]));
+                return Ok(AgentAction::CallTools(vec![ToolCallRequest::new(
+                    "call-2",
+                    "read_file",
+                    serde_json::json!({"path": "src/dto.rs"}),
+                )]));
             } else if current_step == 3 {
-                return Ok(AgentAction::CallTools(vec![ToolCallRequest {
-                    id: "call-3".into(),
-                    name: "write_file".into(),
-                    arguments: serde_json::json!({
+                return Ok(AgentAction::CallTools(vec![ToolCallRequest::new(
+                    "call-3",
+                    "write_file",
+                    serde_json::json!({
                         "path": "src/service.rs",
                         "content": "use crate::dto::GpsPayload;\npub fn notify(_p: GpsPayload) -> bool { true }\n"
                     }),
-                    error: None,
-                }]));
+                )]));
             } else {
                 return Ok(AgentAction::FinalAnswer(
                     "Service implemented in src/service.rs".into(),
@@ -221,7 +123,16 @@ async fn test_sequential_subtask_execution_in_shared_sandbox() {
             "st-1",
             "Define DTOs",
             "Define GpsPayload struct in src/dto.rs",
-        ),
+        )
+        .with_expected_outputs(vec![openduck_harness::SubtaskExpectedOutput {
+            description: "GpsPayload is defined".into(),
+            kind: Some("file".into()),
+            command: None,
+            expected_exit_code: None,
+            expected_stdout: None,
+            file_path: Some("src/dto.rs".into()),
+            expected_content: Some("struct GpsPayload".into()),
+        }]),
         SubtaskSpec::new(
             "st-2",
             "Implement Service",
@@ -351,6 +262,7 @@ fn test_format_subtask_prompt_includes_upstream_outcomes() {
         summary: "Defined GpsPayload".into(),
         step_count: 2,
         steps_taken: 2,
+        output_check: None,
     }];
     let prompt = SubtaskDecomposer::format_subtask_prompt(&task, &subtask, 1, 3, &outcomes);
     assert!(prompt.contains("Completed Upstream Subtasks"));
@@ -421,6 +333,7 @@ async fn test_continue_from_checkpoint_skips_completed_subtask() {
             summary: "DTO done".into(),
             step_count: 2,
             steps_taken: 2,
+            output_check: None,
         }],
         resume_subtask_id: Some("st-2".into()),
         subtask_plan: subtasks.clone(),
@@ -444,4 +357,96 @@ async fn test_continue_from_checkpoint_skips_completed_subtask() {
         "completed subtask 1 must be skipped: {history:?}"
     );
     assert!(history.iter().any(|h| h.contains("Subtask (2/3)")));
+}
+
+#[tokio::test]
+async fn test_sequential_subtasks_stop_when_expected_output_is_missing() {
+    struct AnswerOnlyPolicy {
+        executed: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl AgentPolicy for AnswerOnlyPolicy {
+        fn name(&self) -> &str {
+            "answer-only"
+        }
+
+        async fn step(
+            &mut self,
+            context: &HarnessContextView,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<AgentAction> {
+            let prompt = context
+                .messages
+                .iter()
+                .find(|message| message.content.contains("## Current Subtask"))
+                .map(|message| message.content.clone())
+                .unwrap_or_default();
+            let active = prompt
+                .lines()
+                .find(|line| line.starts_with("## Current Subtask"))
+                .unwrap_or("")
+                .to_string();
+            if !active.is_empty() {
+                let mut list = self.executed.lock().unwrap();
+                if !list.contains(&active) {
+                    list.push(active);
+                }
+            }
+            assert!(
+                prompt.contains("Expected outputs"),
+                "subtask prompt must name the output check"
+            );
+            assert!(prompt.contains("src/missing.rs"));
+            Ok(AgentAction::FinalAnswer(
+                "I finished without writing the file".into(),
+            ))
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let executed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sandbox = LocalSandbox::new(dir.path().to_path_buf());
+    let mut harness = AgentHarness::new(
+        AnswerOnlyPolicy {
+            executed: executed.clone(),
+        },
+        sandbox,
+    );
+    let subtasks = vec![
+        SubtaskSpec::new("st-1", "Write the type", "Create src/missing.rs").with_expected_outputs(
+            vec![openduck_harness::SubtaskExpectedOutput {
+                description: "src/missing.rs exists".into(),
+                kind: Some("file".into()),
+                command: None,
+                expected_exit_code: None,
+                expected_stdout: None,
+                file_path: Some("src/missing.rs".into()),
+                expected_content: None,
+            }],
+        ),
+        SubtaskSpec::new("st-2", "Use the type", "Read src/missing.rs"),
+    ];
+    let task = TaskSpec::new("task-output-gate", "test", "Add a type").with_subtasks(subtasks);
+    let result = harness.run_task(&task).await.unwrap();
+
+    assert_eq!(result.status, RunStatus::Failure);
+    let history = executed.lock().unwrap().clone();
+    assert_eq!(history.len(), 1, "subtask 2 must wait for the missing file");
+    let answer = result.final_answer.unwrap_or_default();
+    assert!(answer.contains("I finished without writing the file"));
+    assert!(
+        result
+            .continuation
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.completed_subtasks.first())
+            .is_some_and(|outcome| {
+                outcome.status == RunStatus::Failure
+                    && outcome
+                        .output_check
+                        .as_deref()
+                        .is_some_and(|text| text.contains("src/missing.rs"))
+            }),
+        "the failed output check is stored on the subtask outcome"
+    );
 }

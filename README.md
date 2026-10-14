@@ -20,7 +20,7 @@ _Sandboxed execution, benchmark evaluation, deterministic replay, multi-project 
 
 OpenDuck transcends traditional single-loop AI assistants by providing a modular, sandboxed execution runtime and an unified control plane. Whether you are running interactive development sessions, executing deterministic benchmarks, managing multi-project workspaces with visual Git graphs, or scheduling unattended background tasks with email alerts, OpenDuck provides the full infrastructure needed to run, test, and steer autonomous agents at scale.
 
-The CLI binary is `openduck` (with legacy `duck` aliase). Workspace crates use the `openduck-*` prefix. Configuration and environment variables prefer `OPENDUCK_*`.
+The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Workspace crates use the `openduck-*` prefix. Configuration and environment variables prefer `OPENDUCK_*`.
 
 ---
 
@@ -31,13 +31,16 @@ The CLI binary is `openduck` (with legacy `duck` aliase). Workspace crates use t
 - **Pluggable Sandboxing (`SandboxDriver`)**: Run tasks in host-isolated environments (`LocalSandbox`, Docker/OCI `ContainerSandbox`) with workspace snapshots, checkpoints, and rollbacks.
 - **Evaluation & Benchmark Suite (`openduck harness eval`)**: Run batch benchmark suites (JSONL datasets, YAML recipes, SWE-bench style tasks) with parallel execution, metric scoring (pass/fail, turns, latency, token costs), and trajectory export.
 - **Deterministic Record & Replay (`openduck harness replay`)**: Record agent LLM completions and MCP tool interactions into VCR-style cassettes for zero-cost, reproducible regression testing and offline debugging.
-- **Automated Verifiers**: Built-in `CommandVerifier` (test runner output) and `DiffVerifier` (git patch diff against expected golden state).
+- **Task Continuation & Follow-up Execution**: Resume, re-run, or branch follow-up executions directly from task history and replay cassettes with preserved context.
+- **Provider Telemetry & Real-Time Statistics**: Track token consumption (prompt/completion/cached), request latencies, time to first token (TTFT), volume, and estimated costs across harness task executions.
+- **Automated Verifiers & Safety Controls**: Built-in `CommandVerifier` (test runner output) and `DiffVerifier` (git patch diff against expected golden state), along with configurable `max_turns` limits (`OPENDUCK_MAX_TURNS`) and graceful handling of malformed tool calls.
 
 ### 🚀 2. Enterprise Agent System & Multi-Project Workspace
 - **Project Dashboard**: Register and manage multiple software projects with automatic directory binding, metadata tags, and insight summaries.
 - **Visual Git Management**: Built-in Git control module with an interactive commit graph, branch & tag ref tooltips, file diff viewer, status inspection, and automated commit message generation.
 - **Project-Level Task Harness**: Define repeatable task specs in `.openduck/tasks/` configured via `.openduck/harness.yaml`.
 - **Integrated Markdown & File Explorer**: Inspect repository files with rich Markdown previews directly in the Web Hub.
+- **Historical Tool Argument Snipping**: Automatic compaction of historical tool call arguments in `openduck-context-management` to curb token inflation and drastically reduce step latency in long trajectories.
 
 ### ⏰ 3. Cron Task Scheduling & Automated Locking
 - **In-Process Cron Scheduler**: Schedule recurring recipes, health checks, repo scrapers, or benchmark runs.
@@ -49,7 +52,8 @@ The CLI binary is `openduck` (with legacy `duck` aliase). Workspace crates use t
 - **Configurable Task Reports**: HTML/Markdown formatted email summaries containing task status, duration, diffs, and verification metrics.
 
 ### 🔌 5. Broad Model Context & Protocol Ecosystem
-- **15+ LLM Providers**: Anthropic, OpenAI, Google Gemini, Ollama (local models), OpenRouter, Azure Foundry, AWS Bedrock, Databricks, Snowflake, and more.
+- **15+ LLM Providers & Reasoning Models**: Anthropic, OpenAI, Google Gemini (with thought signature extraction), Ollama (local models), OpenRouter, Azure Foundry, AWS Bedrock, Databricks, Snowflake, and Qwen (with reasoning effort mapping for Qwen 3.8 Flash, QwQ, and thinking variants).
+- **HTTP & SOCKS Proxy Support**: Connect providers through HTTP or SOCKS5 proxies configured via declarative files, environment variables, or the Web Hub UI.
 - **Model Context Protocol (MCP)**: Native support for 70+ community MCP extensions plus built-in extensions:
   - `agy`: Antigravity CLI integration for delegated subagent task execution.
   - `developer`: Local shell command execution, file reading, and editing.
@@ -59,7 +63,7 @@ The CLI binary is `openduck` (with legacy `duck` aliase). Workspace crates use t
 
 ### 🖥️ 6. Unified Multi-Interface Suite
 - **OpenDuck CLI**: Full-featured terminal interface (`session`, `run`, `harness`, `serve`, `schedule`, `term`, `doctor`).
-- **OpenDuck Web Hub (`ui/hub`)**: Lightweight web dashboard for project workspaces, git visualizer, harness task runner, and server settings.
+- **OpenDuck Web Hub (`ui/hub`)**: Enterprise web dashboard for project workspaces, visual git, task harness runner, live telemetry stats, transcript logs, and in-browser config management.
 - **OpenDuck Desktop (`ui/desktop`)**: Native Electron desktop application for macOS, Windows, and Linux.
 - **OpenDuck Mobile PWA (`ui/mobile`)**: Mobile web client for steering agents and approving permissions on the go.
 - **Cross-Language SDKs**: First-class client libraries for TypeScript (`@openduck/sdk`), Python, Rust, JVM/Kotlin (`io.github.aaif-goose:gdk`), and Swift.
@@ -73,7 +77,7 @@ The CLI binary is `openduck` (with legacy `duck` aliase). Workspace crates use t
 |                                OPENDUCK SYSTEM                                    |
 +-----------------------------------------------------------------------------------+
 |  [ Interfaces & Frontends ]                                                       |
-|   ├── OpenDuck CLI (`openduck`, `duck`)                                  |
+|   ├── OpenDuck CLI (`openduck`, `goose`, `duck`)                                  |
 |   ├── OpenDuck Web Hub (`ui/hub` & `ui/hub-core` React Dashboard)                 |
 |   ├── OpenDuck Desktop (`ui/desktop` Electron App)                                |
 |   ├── OpenDuck Mobile PWA (`ui/mobile`)                                           |
@@ -82,6 +86,7 @@ The CLI binary is `openduck` (with legacy `duck` aliase). Workspace crates use t
 |  [ Control Plane & Server (`openduck serve` / ACP & REST) ]                       |
 |   ├── Project Workspace Registry & Markdown Source Store                          |
 |   ├── Interactive Git Management (Graph, Diffs, Commit Gen)                       |
+|   ├── In-Browser App & Provider Configuration Manager (Env Overrides, Proxies)    |
 |   ├── Task Scheduler (Cron, Task Locking, Concurrency Control)                    |
 |   ├── SMTP Notification & Email Alert Engine                                      |
 |   └── Auth & Multi-Session Database (SQLite `sessions.db`, `control.db`)          |
@@ -90,11 +95,16 @@ The CLI binary is `openduck` (with legacy `duck` aliase). Workspace crates use t
 |   ├── Pluggable Agent Policies (`AgentPolicy`: ReAct, State Machine, Adapters)    |
 |   ├── Sandbox Drivers (`SandboxDriver`: LocalSandbox, Docker ContainerSandbox)    |
 |   ├── Evaluation & Benchmark Engine (`EvalRunner`, `TaskSpec`, Verifiers)         |
+|   ├── Task Continuations & Historical Follow-Up Execution                         |
+|   ├── Provider Telemetry & Trajectory Metrics (Tokens, Latency, Costs, TTFT)      |
 |   └── Deterministic Record & Replay Layer (`Cassette`, `MockProvider`)            |
++-----------------------------------------------------------------------------------+
+|  [ Context & Optimization Layer (`openduck-context-management`) ]                 |
+|   └── Compaction, Pruning & Historical Tool Call Argument Snipping                |
 +-----------------------------------------------------------------------------------+
 |  [ Tool & Extensibility Layer ]                                                   |
 |   ├── Model Context Protocol (MCP) Servers (Built-in: agy, dev, browser, memory)  |
-|   └── 15+ LLM Providers (OpenAI, Anthropic, Gemini, Ollama, Azure, Bedrock, etc.)  |
+|   └── 15+ LLM Providers (OpenAI, Anthropic, Gemini, Ollama, Qwen, Azure, Proxies) |
 +-----------------------------------------------------------------------------------+
 ```
 
@@ -110,13 +120,13 @@ Install the pre-built binary using the official installer script:
 curl -fsSL https://github.com/openduck-ai/openduck-harness/releases/download/stable/download_cli.sh | bash
 ```
 
-_This installs `openduck` along with `duck` compatibility aliase._
+_This installs `openduck` along with legacy `goose` and `duck` compatibility aliases._
 
 Or build from source using Rust:
 
 ```bash
 git clone https://github.com/openduck-ai/openduck-harness
-cd goose
+cd openduck-harness
 source bin/activate-hermit   # activates pinned Rust, Node, pnpm toolchains
 cargo build --release
 ```
@@ -230,7 +240,11 @@ openduck schedule run-now --id <JOB_ID>
 The Web Hub is an enterprise agent management dashboard that connects to `openduck serve`:
 - **Project Workspaces**: Easily switch between registered repositories.
 - **Git Graph & Visualizer**: Interactive commit log, branch heads, tags, and file diff views.
-- **Harness Task Runner**: Run and monitor harness tasks, benchmark evaluations, and replay cassettes with live logs.
+- **Harness Task Runner & Continuations**: Run and monitor harness tasks, follow up on historical runs, benchmark evaluations, and replay cassettes with live logs.
+- **Provider Stats Dashboard**: Real-time telemetry monitoring for token consumption, latency, TTFT, request volume, and costs across providers and models.
+- **Coding-Agent Transcript View**: Granular agent execution logs with collapsible reasoning/thinking blocks, live status indicators, and auto-scrolling.
+- **In-Browser Configuration Editor**: Inspect and edit OpenDuck settings, provider configurations, and model options directly from the browser with active environment override indicators.
+- **URL Navigation & Deep-Linking**: State synchronized with URL query parameters (`page`, `project`, `tab`, `split`) with full browser history support.
 - **Chat & Session Manager**: Stream live ACP responses with tool approvals.
 - **Schedules & Email Alerts**: Configure automated cron jobs and SMTP notification recipients.
 
@@ -295,11 +309,13 @@ For a detailed breakdown of all configuration files in `~/.config/openduck/` (in
 |---|---|
 | `OPENDUCK_PROVIDER__TYPE` | Active LLM provider (e.g. `anthropic`, `openai`, `google`, `ollama`) |
 | `OPENDUCK_PROVIDER__MODEL` | Model identifier (e.g. `claude-3-7-sonnet-latest`, `gpt-4o`) |
+| `OPENDUCK_MAX_TURNS` | Maximum turn limit for harness and task executions (aliases: `GOOSE_MAX_TURNS`, `HARNESS_MAX_TURNS`) |
 | `OPENDUCK_SERVER__SECRET_KEY` | Shared secret key for authenticating ACP & REST API requests |
 | `OPENDUCK_STATE_MACHINE` | Set to `1` to enable the next-generation agent state machine |
 | `OPENDUCK_DISABLE_KEYRING` | Set to `1` to store secrets in `~/.config/openduck/secrets.yaml` instead of OS keyring |
 | `OPENDUCK_NOTIFICATION_CONFIG`| Custom file path to override `notifications.yaml` |
 | `OPENDUCK_PATH_ROOT` | Absolute root directory override for all XDG configuration and data paths |
 | `OPENDUCK_LOG_LEVEL` | Tracing log level (`info`, `debug`, `trace`) |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | HTTP/SOCKS proxy URLs for routing provider and MCP network requests |
 
 _Note: All `GOOSE_*` environment variables and configuration paths remain supported as backwards-compatible aliases._

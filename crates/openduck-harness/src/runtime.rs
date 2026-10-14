@@ -1072,7 +1072,8 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                 .await;
         }
 
-        // Step 1: Decompose task into subtasks if explicitly configured or complex
+        // A saved continuation plan wins so Continue resumes the same sequence.
+        // Otherwise only subtasks written on the task run in order.
         let subtasks = if let Some(plan) = self
             .continuation
             .as_ref()
@@ -1080,17 +1081,8 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             .map(|cp| cp.subtask_plan.clone())
         {
             plan
-        } else if let Some(configured) = &task.subtasks {
-            configured.clone()
-        } else if task.auto_decompose.unwrap_or(true) {
-            crate::eval::subtask::SubtaskDecomposer::decompose(
-                &task.id,
-                &task.problem_statement,
-                Some(task.max_turns.unwrap_or(self.max_turns)),
-                task.phase_max_turns.as_deref(),
-            )
         } else {
-            Vec::new()
+            task.subtasks.clone().unwrap_or_default()
         };
 
         if subtasks.len() >= 2 {
@@ -1265,8 +1257,14 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                     .min(4)
             });
 
-            let (subtask_status, subtask_answer, subtask_steps, subtask_tool_calls, modified_files) =
-                self.run_session_loop(
+            let (
+                mut subtask_status,
+                subtask_answer,
+                subtask_steps,
+                subtask_tool_calls,
+                modified_files,
+            ) = self
+                .run_session_loop(
                     session_id,
                     &subtask.id,
                     &subtask_prompt,
@@ -1280,13 +1278,33 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             let steps_taken = subtask_steps.len();
             cumulative_steps.extend(subtask_steps);
 
-            let outcome_summary = subtask_answer.clone().unwrap_or_else(|| {
+            let mut outcome_summary = subtask_answer.clone().unwrap_or_else(|| {
                 if subtask_status == RunStatus::Success {
                     "Completed".to_string()
                 } else {
                     format!("Finished with status: {:?}", subtask_status)
                 }
             });
+            let mut output_check = None;
+            if subtask_status == RunStatus::Success {
+                let report = crate::eval::subtask::verify_expected_outputs(
+                    &self.sandbox,
+                    subtask.expected_outputs.as_deref().unwrap_or(&[]),
+                    subtask_answer.as_deref(),
+                )
+                .await;
+                if !report.details.is_empty() {
+                    output_check = Some(report.details.clone());
+                }
+                if !report.passed {
+                    // The agent finished, but the declared outputs are missing.
+                    // Later subtasks stay queued until this one actually produced them.
+                    subtask_status = RunStatus::Failure;
+                    outcome_summary = report.details;
+                } else if let Some(details) = &output_check {
+                    outcome_summary = format!("{outcome_summary}\n\nExpected outputs:\n{details}");
+                }
+            }
 
             if let Some(ref ans) = subtask_answer {
                 final_answers.push(format!(
@@ -1306,13 +1324,12 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                 summary: outcome_summary,
                 step_count: cumulative_steps.len(),
                 steps_taken,
+                output_check,
             });
 
             if subtask_status != RunStatus::Success {
                 overall_status = subtask_status;
-                if matches!(subtask_status, RunStatus::Cancelled | RunStatus::Failure) {
-                    break;
-                }
+                break;
             }
         }
 
