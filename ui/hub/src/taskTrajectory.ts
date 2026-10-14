@@ -1106,6 +1106,11 @@ export function computeTaskProviderStats(
   let outputTokens = 0
   let totalTokens = 0
   let totalCost: number | undefined = undefined
+  let totalConnectionMs = 0
+  let totalSendMs = 0
+  let totalWaitMs = 0
+  let totalReceiveMs = 0
+  let callsWithNetworkTiming = 0
   const byProvider: Record<string, ProviderCallStats> = {}
   const byModel: Record<string, ProviderCallStats> = {}
 
@@ -1133,6 +1138,13 @@ export function computeTaskProviderStats(
         totalTokens += tot
         if (call.cost !== undefined && call.cost !== null) {
           totalCost = (totalCost ?? 0) + call.cost
+        }
+        if (call.networkTiming) {
+          callsWithNetworkTiming++
+          totalConnectionMs += call.networkTiming.connectionMs || 0
+          totalSendMs += call.networkTiming.sendMs || 0
+          totalWaitMs += call.networkTiming.waitMs || 0
+          totalReceiveMs += call.networkTiming.receiveMs || 0
         }
 
         const pName = call.provider || 'unknown'
@@ -1172,6 +1184,14 @@ export function computeTaskProviderStats(
         if (call.cost !== undefined && call.cost !== null) {
           pStat.totalCost = (pStat.totalCost ?? 0) + call.cost
         }
+        if (call.networkTiming) {
+          const prevCalls = pStat.totalCalls - 1
+          const n = pStat.totalCalls
+          pStat.avgConnectionMs = ((pStat.avgConnectionMs || 0) * prevCalls + (call.networkTiming.connectionMs || 0)) / n
+          pStat.avgSendMs = ((pStat.avgSendMs || 0) * prevCalls + (call.networkTiming.sendMs || 0)) / n
+          pStat.avgWaitMs = ((pStat.avgWaitMs || 0) * prevCalls + (call.networkTiming.waitMs || 0)) / n
+          pStat.avgReceiveMs = ((pStat.avgReceiveMs || 0) * prevCalls + (call.networkTiming.receiveMs || 0)) / n
+        }
 
         const mKey = `${call.provider}:${call.model}`
         if (!byModel[mKey]) {
@@ -1210,6 +1230,14 @@ export function computeTaskProviderStats(
         mStat.totalTokens += tot
         if (call.cost !== undefined && call.cost !== null) {
           mStat.totalCost = (mStat.totalCost ?? 0) + call.cost
+        }
+        if (call.networkTiming) {
+          const prevCalls = mStat.totalCalls - 1
+          const n = mStat.totalCalls
+          mStat.avgConnectionMs = ((mStat.avgConnectionMs || 0) * prevCalls + (call.networkTiming.connectionMs || 0)) / n
+          mStat.avgSendMs = ((mStat.avgSendMs || 0) * prevCalls + (call.networkTiming.sendMs || 0)) / n
+          mStat.avgWaitMs = ((mStat.avgWaitMs || 0) * prevCalls + (call.networkTiming.waitMs || 0)) / n
+          mStat.avgReceiveMs = ((mStat.avgReceiveMs || 0) * prevCalls + (call.networkTiming.receiveMs || 0)) / n
         }
       }
     }
@@ -1267,6 +1295,10 @@ export function computeTaskProviderStats(
     outputTokens,
     totalTokens,
     totalCost: totalCost ?? null,
+    avgConnectionMs: callsWithNetworkTiming > 0 ? totalConnectionMs / callsWithNetworkTiming : null,
+    avgSendMs: callsWithNetworkTiming > 0 ? totalSendMs / callsWithNetworkTiming : null,
+    avgWaitMs: callsWithNetworkTiming > 0 ? totalWaitMs / callsWithNetworkTiming : null,
+    avgReceiveMs: callsWithNetworkTiming > 0 ? totalReceiveMs / callsWithNetworkTiming : null,
     byProvider,
     byModel,
   }

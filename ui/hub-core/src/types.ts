@@ -533,6 +533,18 @@ export interface TokenUsageSummary {
   totalTokens?: number
 }
 
+export interface NetworkTiming {
+  dnsMs?: number | null
+  tcpConnectMs?: number | null
+  tlsHandshakeMs?: number | null
+  connectionMs: number
+  connectionReused: boolean
+  sendMs: number
+  waitMs: number
+  receiveMs: number
+  totalMs: number
+}
+
 export interface ProviderCallRecord {
   provider: string
   model: string
@@ -544,6 +556,7 @@ export interface ProviderCallRecord {
   retryAttempt?: number | null
   retryReason?: string | null
   isSecondary?: boolean | null
+  networkTiming?: NetworkTiming | null
 }
 
 export interface ProviderCallStats {
@@ -560,6 +573,10 @@ export interface ProviderCallStats {
   totalCost?: number | null
   retries: number
   errors: string[]
+  avgConnectionMs?: number | null
+  avgSendMs?: number | null
+  avgWaitMs?: number | null
+  avgReceiveMs?: number | null
 }
 
 export interface TaskProviderStats {
@@ -573,6 +590,10 @@ export interface TaskProviderStats {
   outputTokens: number
   totalTokens: number
   totalCost?: number | null
+  avgConnectionMs?: number | null
+  avgSendMs?: number | null
+  avgWaitMs?: number | null
+  avgReceiveMs?: number | null
   byProvider: Record<string, ProviderCallStats>
   byModel?: Record<string, ProviderCallStats>
 }

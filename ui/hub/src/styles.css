@@ -12201,3 +12201,84 @@ button.git-log-row {
   font-size: 0.85rem;
 }
 
+/* Network Waterfall Timing (Browser DevTools Style) */
+.network-waterfall-cell {
+  min-width: 150px;
+  max-width: 200px;
+}
+
+.network-waterfall-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  width: 100%;
+}
+
+.waterfall-seg {
+  height: 100%;
+  position: relative;
+  transition: opacity 0.15s ease;
+}
+
+.waterfall-seg:hover {
+  filter: brightness(1.2);
+}
+
+.waterfall-seg.seg-connect {
+  background: #38bdf8;
+}
+
+.waterfall-seg.seg-send {
+  background: #fbbf24;
+}
+
+.waterfall-seg.seg-wait {
+  background: #34d399;
+}
+
+.waterfall-seg.seg-receive {
+  background: #818cf8;
+}
+
+.waterfall-legend-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+.legend-item-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.legend-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.legend-dot.connect {
+  background: #38bdf8;
+}
+
+.legend-dot.send {
+  background: #fbbf24;
+}
+
+.legend-dot.wait {
+  background: #34d399;
+}
+
+.legend-dot.receive {
+  background: #818cf8;
+}
+
+

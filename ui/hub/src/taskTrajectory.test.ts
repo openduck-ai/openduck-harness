@@ -998,6 +998,62 @@ test('computeTaskProviderStats aggregates explicit providerCalls across steps', 
   assert.equal(metrics.providerStats.successfulCalls, 2)
 })
 
+test('computeTaskProviderStats aggregates networkTiming waterfall stats', () => {
+  const run = {
+    taskId: 'task-network-timing',
+    trajectory: {
+      steps: [
+        {
+          stepIndex: 1,
+          durationMs: 1500,
+          providerCalls: [
+            {
+              provider: 'anthropic',
+              model: 'claude-3-5-sonnet',
+              latencyMs: 1400,
+              success: true,
+              networkTiming: {
+                connectionMs: 80,
+                connectionReused: false,
+                sendMs: 20,
+                waitMs: 400,
+                receiveMs: 900,
+                totalMs: 1400,
+              },
+            },
+            {
+              provider: 'anthropic',
+              model: 'claude-3-5-sonnet',
+              latencyMs: 1000,
+              success: true,
+              networkTiming: {
+                connectionMs: 0,
+                connectionReused: true,
+                sendMs: 10,
+                waitMs: 300,
+                receiveMs: 690,
+                totalMs: 1000,
+              },
+            },
+          ],
+        },
+      ],
+    },
+  } as unknown as HarnessRunResponse
+
+  const stats = computeTaskProviderStats(run)
+  assert.equal(stats.totalCalls, 2)
+  assert.equal(stats.avgConnectionMs, 40)
+  assert.equal(stats.avgSendMs, 15)
+  assert.equal(stats.avgWaitMs, 350)
+  assert.equal(stats.avgReceiveMs, 795)
+
+  const anthropic = stats.byProvider['anthropic']
+  assert.ok(anthropic)
+  assert.equal(anthropic.avgConnectionMs, 40)
+  assert.equal(anthropic.avgWaitMs, 350)
+})
+
 test('computeTaskProviderStats falls back to synthetic stats for legacy steps', () => {
   const legacyRun = {
     taskId: 'legacy-task',
