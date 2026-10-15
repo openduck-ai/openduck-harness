@@ -850,6 +850,7 @@ fn build_project_task_system_prompt(
     with_task_notes_plan(&prompt, task_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_project_task(
     root: PathBuf,
     config: ProjectHarnessConfig,

@@ -4,6 +4,7 @@
 //! Scheduler code must not import this module.
 
 pub mod app_config;
+pub mod circuit_breaker;
 pub mod files;
 pub mod git;
 pub mod harness;

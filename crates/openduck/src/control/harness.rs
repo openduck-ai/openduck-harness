@@ -32,6 +32,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::config::env as openduck_env;
 use crate::config::Config;
+use crate::control::circuit_breaker::{CircuitState, ProviderCircuitBreaker};
 use crate::conversation::message::{Message, MessageContent};
 use crate::model_config::model_config_from_user_config;
 use crate::providers::base::Provider;
@@ -127,6 +128,7 @@ pub struct GooseAgentPolicy {
     secondary_provider: Option<Arc<dyn Provider>>,
     secondary_model_config: Option<ModelConfig>,
     partial_observer: Option<PartialThinkingObserver>,
+    circuit_breaker: ProviderCircuitBreaker,
 }
 
 impl GooseAgentPolicy {
@@ -153,6 +155,7 @@ impl GooseAgentPolicy {
             secondary_provider: None,
             secondary_model_config: None,
             partial_observer: None,
+            circuit_breaker: ProviderCircuitBreaker::with_default_config(),
         }
     }
 
@@ -163,6 +166,15 @@ impl GooseAgentPolicy {
 
     pub fn system_prompt(&self) -> &str {
         &self.system_prompt
+    }
+
+    pub fn circuit_breaker(&self) -> &ProviderCircuitBreaker {
+        &self.circuit_breaker
+    }
+
+    pub fn with_circuit_breaker(mut self, circuit_breaker: ProviderCircuitBreaker) -> Self {
+        self.circuit_breaker = circuit_breaker;
+        self
     }
 
     pub fn with_secondary_provider(
@@ -210,12 +222,16 @@ fn empty_turn_retry_delay_ms(retry_index: u32) -> u64 {
         .unwrap_or(0)
 }
 
-fn is_transient_complete_error(err: &openduck_providers::errors::ProviderError) -> bool {
-    matches!(
-        err,
-        openduck_providers::errors::ProviderError::NetworkError(_)
-            | openduck_providers::errors::ProviderError::ServerError(_)
-    )
+fn is_transient_complete_error(err: &anyhow::Error) -> bool {
+    if let Some(pe) = err.downcast_ref::<openduck_providers::errors::ProviderError>() {
+        matches!(
+            pe,
+            openduck_providers::errors::ProviderError::NetworkError(_)
+                | openduck_providers::errors::ProviderError::ServerError(_)
+        )
+    } else {
+        false
+    }
 }
 
 fn transient_retry_delay_ms(retry_index: u32) -> u64 {
@@ -370,7 +386,7 @@ async fn stream_provider_completion(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn complete_provider_with_retry(
+async fn complete_provider_call(
     provider: &Arc<dyn Provider>,
     model_config: &ModelConfig,
     system_prompt: &str,
@@ -378,16 +394,22 @@ async fn complete_provider_with_retry(
     tools: &[Tool],
     policy_name: &str,
     is_secondary: bool,
+    retry_attempt: Option<usize>,
+    retry_reason: Option<String>,
     recorded_calls: &mut Vec<openduck_harness::telemetry::ProviderCallRecord>,
     on_partial: Option<PartialThinkingObserver>,
 ) -> Result<ProviderStepResult> {
     let mut working_messages = messages.to_vec();
     let mut empty_retries: u32 = 0;
-    let mut transient_retries: u32 = 0;
     let provider_name = provider.get_name().to_string();
     let model_name = model_config.model_name.clone();
 
     loop {
+        let effective_retry_attempt = if empty_retries > 0 {
+            Some(empty_retries as usize)
+        } else {
+            retry_attempt
+        };
         let call_start = std::time::Instant::now();
         let res = match &on_partial {
             Some(observer) => {
@@ -450,7 +472,7 @@ async fn complete_provider_with_retry(
                     error: Some(err_msg.clone()),
                     token_usage: None,
                     cost: None,
-                    retry_attempt: Some((empty_retries + transient_retries) as usize),
+                    retry_attempt: effective_retry_attempt,
                     retry_reason: Some("context_length_exceeded".to_string()),
                     is_secondary: if is_secondary { Some(true) } else { None },
                     network_timing: Some(err_timing),
@@ -522,7 +544,7 @@ async fn complete_provider_with_retry(
                             error: Some(fb_err.to_string()),
                             token_usage: None,
                             cost: None,
-                            retry_attempt: Some((empty_retries + transient_retries + 1) as usize),
+                            retry_attempt: Some(retry_attempt.unwrap_or(0) + 1),
                             retry_reason: Some("context_length_pruned_failed".to_string()),
                             is_secondary: if is_secondary { Some(true) } else { None },
                             network_timing: Some(fb_timing),
@@ -530,49 +552,6 @@ async fn complete_provider_with_retry(
                         return Err(anyhow::anyhow!(fb_err));
                     }
                 }
-            }
-            Err(e)
-                if is_transient_complete_error(&e)
-                    && transient_retries < MAX_TRANSIENT_POLICY_RETRIES =>
-            {
-                transient_retries += 1;
-                let err_timing = openduck_harness::telemetry::NetworkTiming {
-                    dns_ms: None,
-                    tcp_connect_ms: None,
-                    tls_handshake_ms: None,
-                    connection_ms: 0,
-                    connection_reused: true,
-                    send_ms: latency_ms.min(5),
-                    wait_ms: latency_ms.saturating_sub(latency_ms.min(5)),
-                    receive_ms: 0,
-                    total_ms: latency_ms,
-                };
-                recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
-                    provider: provider_name.clone(),
-                    model: model_name.clone(),
-                    latency_ms,
-                    success: false,
-                    error: Some(e.to_string()),
-                    token_usage: None,
-                    cost: None,
-                    retry_attempt: Some(transient_retries as usize),
-                    retry_reason: Some("transient_error".to_string()),
-                    is_secondary: if is_secondary { Some(true) } else { None },
-                    network_timing: Some(err_timing),
-                });
-                let delay_ms = transient_retry_delay_ms(transient_retries);
-                tracing::warn!(
-                    policy = %policy_name,
-                    retry = transient_retries,
-                    max_retries = MAX_TRANSIENT_POLICY_RETRIES,
-                    delay_ms,
-                    error = %e,
-                    "Transient provider error after HTTP retries; retrying the same step after backoff"
-                );
-                if delay_ms > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                }
-                continue;
             }
             Err(e) => {
                 let err_timing = openduck_harness::telemetry::NetworkTiming {
@@ -594,12 +573,8 @@ async fn complete_provider_with_retry(
                     error: Some(e.to_string()),
                     token_usage: None,
                     cost: None,
-                    retry_attempt: if empty_retries > 0 || transient_retries > 0 {
-                        Some((empty_retries + transient_retries) as usize)
-                    } else {
-                        None
-                    },
-                    retry_reason: None,
+                    retry_attempt: effective_retry_attempt,
+                    retry_reason: retry_reason.clone(),
                     is_secondary: if is_secondary { Some(true) } else { None },
                     network_timing: Some(err_timing),
                 });
@@ -623,12 +598,8 @@ async fn complete_provider_with_retry(
                     error: None,
                     token_usage: token_usage_summary,
                     cost: usage.cost,
-                    retry_attempt: if empty_retries > 0 || transient_retries > 0 {
-                        Some((empty_retries + transient_retries) as usize)
-                    } else {
-                        None
-                    },
-                    retry_reason: None,
+                    retry_attempt: effective_retry_attempt,
+                    retry_reason: retry_reason.clone(),
                     is_secondary: if is_secondary { Some(true) } else { None },
                     network_timing: Some(network_timing),
                 });
@@ -651,7 +622,7 @@ async fn complete_provider_with_retry(
                     error: Some("Empty completion returned".to_string()),
                     token_usage: token_usage_summary,
                     cost: usage.cost,
-                    retry_attempt: Some((empty_retries + transient_retries) as usize),
+                    retry_attempt: Some(empty_retries as usize),
                     retry_reason: Some("empty_completion".to_string()),
                     is_secondary: if is_secondary { Some(true) } else { None },
                     network_timing: Some(network_timing),
@@ -678,17 +649,263 @@ async fn complete_provider_with_retry(
                     error: Some(err.to_string()),
                     token_usage: token_usage_summary,
                     cost: usage.cost,
-                    retry_attempt: if empty_retries > 0 || transient_retries > 0 {
-                        Some((empty_retries + transient_retries) as usize)
-                    } else {
-                        None
-                    },
-                    retry_reason: None,
+                    retry_attempt: effective_retry_attempt,
+                    retry_reason: retry_reason.clone(),
                     is_secondary: if is_secondary { Some(true) } else { None },
                     network_timing: Some(network_timing),
                 });
                 return Err(err);
             }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_hedged_race(
+    major_provider: Arc<dyn Provider>,
+    major_model_config: ModelConfig,
+    sec_provider: Arc<dyn Provider>,
+    sec_model_config: ModelConfig,
+    system_prompt: String,
+    messages: Vec<Message>,
+    tools: Vec<Tool>,
+    policy_name: String,
+    session_id: String,
+    circuit_breaker: ProviderCircuitBreaker,
+    partial_observer: Option<PartialThinkingObserver>,
+) -> (
+    Result<ProviderStepResult>,
+    Vec<openduck_harness::telemetry::ProviderCallRecord>,
+) {
+    let p_session = session_id.clone();
+    let s_session = session_id;
+
+    let p_provider = major_provider.clone();
+    let p_config = major_model_config.clone();
+    let p_sys = system_prompt.clone();
+    let p_msgs = messages.clone();
+    let p_tools = tools.clone();
+    let p_name = policy_name.clone();
+    let p_obs = partial_observer.clone();
+
+    let primary_fut = async move {
+        let mut recs = Vec::new();
+        let res = crate::session_context::with_session_id(
+            Some(p_session),
+            complete_provider_call(
+                &p_provider,
+                &p_config,
+                &p_sys,
+                &p_msgs,
+                &p_tools,
+                &p_name,
+                false,
+                Some(1),
+                Some("hedged_retry_concurrent".to_string()),
+                &mut recs,
+                p_obs,
+            ),
+        )
+        .await;
+        (res, recs)
+    };
+
+    let s_provider = sec_provider.clone();
+    let s_config = sec_model_config.clone();
+    let s_sys = system_prompt.clone();
+    let s_msgs = messages.clone();
+    let s_tools = tools.clone();
+    let s_name = policy_name.clone();
+    let s_obs = partial_observer.clone();
+
+    let secondary_fut = async move {
+        let mut recs = Vec::new();
+        let res = crate::session_context::with_session_id(
+            Some(s_session),
+            complete_provider_call(
+                &s_provider,
+                &s_config,
+                &s_sys,
+                &s_msgs,
+                &s_tools,
+                &s_name,
+                true,
+                None,
+                Some("hedged_race_with_primary_retry".to_string()),
+                &mut recs,
+                s_obs,
+            ),
+        )
+        .await;
+        (res, recs)
+    };
+
+    tokio::pin!(primary_fut);
+    tokio::pin!(secondary_fut);
+
+    let mut combined_records = Vec::new();
+
+    let res = tokio::select! {
+        (primary_res, p_recs) = &mut primary_fut => {
+            combined_records.extend(p_recs);
+            match primary_res {
+                Ok(step_res) => {
+                    tracing::info!(
+                        policy = %policy_name,
+                        "Major provider retry succeeded in hedged race; staying with major provider"
+                    );
+                    circuit_breaker.record_primary_success().await;
+                    Ok(step_res)
+                }
+                Err(primary_err) => {
+                    tracing::warn!(
+                        policy = %policy_name,
+                        error = %primary_err,
+                        "Major provider retry failed in hedged race; awaiting secondary provider"
+                    );
+                    let new_state = circuit_breaker.record_primary_failure(&primary_err.to_string()).await;
+                    if new_state == CircuitState::SecondaryActive {
+                        circuit_breaker.start_background_probe_if_needed(major_provider.clone(), major_model_config.clone());
+                    }
+                    let (sec_res, s_recs) = secondary_fut.await;
+                    combined_records.extend(s_recs);
+                    match sec_res {
+                        Ok(step_res) => Ok(step_res),
+                        Err(sec_err) => {
+                            Err(anyhow::anyhow!(
+                                "Both major and secondary providers failed in hedged race: {primary_err}; secondary: {sec_err}"
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+        (sec_res, s_recs) = &mut secondary_fut => {
+            combined_records.extend(s_recs);
+            match sec_res {
+                Ok(step_res) => {
+                    tracing::info!(
+                        policy = %policy_name,
+                        "Secondary provider returned first in hedged race; unblocking step execution"
+                    );
+                    let primary_check = tokio::time::timeout(std::time::Duration::from_millis(200), primary_fut).await;
+                    match primary_check {
+                        Ok((Ok(_), p_recs)) => {
+                            combined_records.extend(p_recs);
+                            tracing::info!(
+                                policy = %policy_name,
+                                "Major provider retry also completed successfully; keeping major provider healthy"
+                            );
+                            circuit_breaker.record_primary_success().await;
+                        }
+                        Ok((Err(err), p_recs)) => {
+                            combined_records.extend(p_recs);
+                            let new_state = circuit_breaker.record_primary_failure(&err.to_string()).await;
+                            if new_state == CircuitState::SecondaryActive {
+                                circuit_breaker.start_background_probe_if_needed(major_provider.clone(), major_model_config.clone());
+                            }
+                        }
+                        Err(_) => {
+                            let new_state = circuit_breaker.record_primary_failure("Major provider slower than secondary timeout").await;
+                            if new_state == CircuitState::SecondaryActive {
+                                circuit_breaker.start_background_probe_if_needed(major_provider.clone(), major_model_config.clone());
+                            }
+                        }
+                    }
+                    Ok(step_res)
+                }
+                Err(sec_err) => {
+                    tracing::warn!(
+                        policy = %policy_name,
+                        error = %sec_err,
+                        "Secondary provider failed first in hedged race; awaiting major retry"
+                    );
+                    let (primary_res, p_recs) = primary_fut.await;
+                    combined_records.extend(p_recs);
+                    match primary_res {
+                        Ok(step_res) => {
+                            circuit_breaker.record_primary_success().await;
+                            Ok(step_res)
+                        }
+                        Err(primary_err) => {
+                            let new_state = circuit_breaker.record_primary_failure(&primary_err.to_string()).await;
+                            if new_state == CircuitState::SecondaryActive {
+                                circuit_breaker.start_background_probe_if_needed(major_provider.clone(), major_model_config.clone());
+                            }
+                            Err(anyhow::anyhow!(
+                                "Both major and secondary providers failed in hedged race: primary: {primary_err}; secondary: {sec_err}"
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    (res, combined_records)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_provider_with_retry(
+    provider: &Arc<dyn Provider>,
+    model_config: &ModelConfig,
+    system_prompt: &str,
+    messages: &[Message],
+    tools: &[Tool],
+    policy_name: &str,
+    is_secondary: bool,
+    recorded_calls: &mut Vec<openduck_harness::telemetry::ProviderCallRecord>,
+    on_partial: Option<PartialThinkingObserver>,
+) -> Result<ProviderStepResult> {
+    let mut transient_retries: u32 = 0;
+    loop {
+        let retry_attempt = if transient_retries > 0 {
+            Some(transient_retries as usize)
+        } else {
+            None
+        };
+        let retry_reason = if transient_retries > 0 {
+            Some("transient_retry".to_string())
+        } else {
+            None
+        };
+
+        let res = complete_provider_call(
+            provider,
+            model_config,
+            system_prompt,
+            messages,
+            tools,
+            policy_name,
+            is_secondary,
+            retry_attempt,
+            retry_reason,
+            recorded_calls,
+            on_partial.clone(),
+        )
+        .await;
+
+        match res {
+            Ok(step_res) => return Ok(step_res),
+            Err(e)
+                if is_transient_complete_error(&e)
+                    && transient_retries < MAX_TRANSIENT_POLICY_RETRIES =>
+            {
+                transient_retries += 1;
+                let delay_ms = transient_retry_delay_ms(transient_retries);
+                tracing::warn!(
+                    policy = %policy_name,
+                    retry = transient_retries,
+                    max_retries = MAX_TRANSIENT_POLICY_RETRIES,
+                    delay_ms,
+                    error = %e,
+                    "Transient provider error after HTTP retries; retrying the same step after backoff"
+                );
+                if delay_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+            }
+            Err(e) => return Err(e),
         }
     }
 }
@@ -809,80 +1026,202 @@ impl AgentPolicy for GooseAgentPolicy {
         model_config.request_headers = Some(headers);
 
         let mut recorded_calls = Vec::new();
-        let primary_res = crate::session_context::with_session_id(
-            Some(context.session_id.clone()),
-            complete_provider_with_retry(
-                &self.provider,
-                &model_config,
-                &self.system_prompt,
-                &messages,
-                &rmcp_tools,
-                &self.name,
-                false,
-                &mut recorded_calls,
-                self.partial_observer.clone(),
-            ),
-        )
-        .await;
 
-        let mut step_res = match primary_res {
-            Ok(res) => res,
-            Err(primary_err) => {
-                if let (Some(sec_provider), Some(sec_model_config)) =
-                    (&self.secondary_provider, &self.secondary_model_config)
-                {
-                    tracing::warn!(
-                        policy = %self.name,
-                        primary_error = %primary_err,
-                        secondary_provider = %sec_provider.get_name(),
-                        secondary_model = %sec_model_config.model_name,
-                        "Primary provider failed or returned empty completion after retries; switching to secondary provider"
-                    );
+        let sec_setup = if let (Some(sec_provider), Some(sec_model_config)) =
+            (&self.secondary_provider, &self.secondary_model_config)
+        {
+            let mut sec_model_config = sec_model_config.clone();
+            let mut sec_headers = sec_model_config.request_headers.clone().unwrap_or_default();
+            sec_headers
+                .entry("x-opencode-session".to_string())
+                .or_insert_with(|| context.session_id.clone());
+            sec_headers
+                .entry("agent-session-id".to_string())
+                .or_insert_with(|| context.session_id.clone());
+            sec_model_config.request_headers = Some(sec_headers);
+            Some((sec_provider.clone(), sec_model_config))
+        } else {
+            None
+        };
 
-                    let mut sec_model_config = sec_model_config.clone();
-                    let mut sec_headers =
-                        sec_model_config.request_headers.clone().unwrap_or_default();
-                    sec_headers
-                        .entry("x-opencode-session".to_string())
-                        .or_insert_with(|| context.session_id.clone());
-                    sec_headers
-                        .entry("agent-session-id".to_string())
-                        .or_insert_with(|| context.session_id.clone());
-                    sec_model_config.request_headers = Some(sec_headers);
+        let mut step_res = if let Some((sec_provider, sec_model_config)) = sec_setup {
+            let circuit_state = self.circuit_breaker.state().await;
 
-                    let sec_res = crate::session_context::with_session_id(
-                        Some(context.session_id.clone()),
-                        complete_provider_with_retry(
-                            sec_provider,
-                            &sec_model_config,
-                            &self.system_prompt,
-                            &messages,
-                            &rmcp_tools,
-                            &self.name,
-                            true,
-                            &mut recorded_calls,
-                            self.partial_observer.clone(),
-                        ),
-                    )
-                    .await;
+            if circuit_state == CircuitState::SecondaryActive {
+                tracing::info!(
+                    policy = %self.name,
+                    secondary_provider = %sec_provider.get_name(),
+                    "Circuit state is SecondaryActive; routing directly to secondary provider"
+                );
+                self.circuit_breaker
+                    .start_background_probe_if_needed(self.provider.clone(), model_config.clone());
 
-                    match sec_res {
-                        Ok(res) => res,
-                        Err(sec_err) => {
-                            tracing::error!(
-                                policy = %self.name,
-                                primary_error = %primary_err,
-                                secondary_error = %sec_err,
-                                "Both primary and secondary providers failed in GooseAgentPolicy"
-                            );
-                            return Err(anyhow::anyhow!(
-                                "Goose provider complete failed ({}): {primary_err}; secondary provider ({}) also failed: {sec_err}",
-                                self.name,
-                                sec_provider.get_name()
-                            ));
-                        }
+                let sec_res = crate::session_context::with_session_id(
+                    Some(context.session_id.clone()),
+                    complete_provider_call(
+                        &sec_provider,
+                        &sec_model_config,
+                        &self.system_prompt,
+                        &messages,
+                        &rmcp_tools,
+                        &self.name,
+                        true,
+                        None,
+                        Some("direct_secondary_active".to_string()),
+                        &mut recorded_calls,
+                        self.partial_observer.clone(),
+                    ),
+                )
+                .await;
+
+                match sec_res {
+                    Ok(res) => res,
+                    Err(sec_err) => {
+                        tracing::error!(
+                            policy = %self.name,
+                            secondary_error = %sec_err,
+                            "Secondary provider failed while in SecondaryActive"
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Secondary provider ({}) failed: {sec_err}",
+                            sec_provider.get_name()
+                        ));
                     }
-                } else {
+                }
+            } else if circuit_state == CircuitState::HalfOpenTesting {
+                tracing::info!(
+                    policy = %self.name,
+                    major_provider = %self.provider.get_name(),
+                    "Circuit state is HalfOpenTesting; sending canary request to major provider"
+                );
+                let primary_res = crate::session_context::with_session_id(
+                    Some(context.session_id.clone()),
+                    complete_provider_call(
+                        &self.provider,
+                        &model_config,
+                        &self.system_prompt,
+                        &messages,
+                        &rmcp_tools,
+                        &self.name,
+                        false,
+                        None,
+                        Some("canary_half_open_attempt".to_string()),
+                        &mut recorded_calls,
+                        self.partial_observer.clone(),
+                    ),
+                )
+                .await;
+
+                match primary_res {
+                    Ok(res) => {
+                        tracing::info!(
+                            policy = %self.name,
+                            "Canary request on major provider succeeded; circuit restored to PrimaryHealthy"
+                        );
+                        self.circuit_breaker.record_primary_success().await;
+                        res
+                    }
+                    Err(canary_err) => {
+                        tracing::warn!(
+                            policy = %self.name,
+                            error = %canary_err,
+                            "Canary request on major provider failed; triggering hedged race"
+                        );
+                        let _ = self
+                            .circuit_breaker
+                            .record_primary_failure(&canary_err.to_string())
+                            .await;
+                        let (race_res, race_calls) = execute_hedged_race(
+                            self.provider.clone(),
+                            model_config.clone(),
+                            sec_provider.clone(),
+                            sec_model_config.clone(),
+                            self.system_prompt.clone(),
+                            messages.clone(),
+                            rmcp_tools.clone(),
+                            self.name.clone(),
+                            context.session_id.clone(),
+                            self.circuit_breaker.clone(),
+                            self.partial_observer.clone(),
+                        )
+                        .await;
+                        recorded_calls.extend(race_calls);
+                        race_res?
+                    }
+                }
+            } else {
+                let primary_res = crate::session_context::with_session_id(
+                    Some(context.session_id.clone()),
+                    complete_provider_call(
+                        &self.provider,
+                        &model_config,
+                        &self.system_prompt,
+                        &messages,
+                        &rmcp_tools,
+                        &self.name,
+                        false,
+                        None,
+                        None,
+                        &mut recorded_calls,
+                        self.partial_observer.clone(),
+                    ),
+                )
+                .await;
+
+                match primary_res {
+                    Ok(res) => {
+                        self.circuit_breaker.record_primary_success().await;
+                        res
+                    }
+                    Err(primary_err) => {
+                        tracing::warn!(
+                            policy = %self.name,
+                            primary_error = %primary_err,
+                            "Major provider call failed; launching concurrent hedged race with secondary provider"
+                        );
+                        let _ = self
+                            .circuit_breaker
+                            .record_primary_failure(&primary_err.to_string())
+                            .await;
+                        let (race_res, race_calls) = execute_hedged_race(
+                            self.provider.clone(),
+                            model_config.clone(),
+                            sec_provider.clone(),
+                            sec_model_config.clone(),
+                            self.system_prompt.clone(),
+                            messages.clone(),
+                            rmcp_tools.clone(),
+                            self.name.clone(),
+                            context.session_id.clone(),
+                            self.circuit_breaker.clone(),
+                            self.partial_observer.clone(),
+                        )
+                        .await;
+                        recorded_calls.extend(race_calls);
+                        race_res?
+                    }
+                }
+            }
+        } else {
+            let primary_res = crate::session_context::with_session_id(
+                Some(context.session_id.clone()),
+                complete_provider_with_retry(
+                    &self.provider,
+                    &model_config,
+                    &self.system_prompt,
+                    &messages,
+                    &rmcp_tools,
+                    &self.name,
+                    false,
+                    &mut recorded_calls,
+                    self.partial_observer.clone(),
+                ),
+            )
+            .await;
+
+            match primary_res {
+                Ok(res) => res,
+                Err(primary_err) => {
                     tracing::error!(
                         policy = %self.name,
                         error = %primary_err,
@@ -4823,6 +5162,358 @@ mod tests {
         assert_eq!(
             captured_session_context.lock().unwrap().as_deref(),
             Some("task-120405")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_hedged_race_major_wins_and_stays_healthy() {
+        use openduck_providers::base::MessageStream;
+        use openduck_providers::conversation::message::Message;
+        use openduck_providers::errors::ProviderError;
+        use openduck_providers::model::ModelConfig;
+        use rmcp::model::Tool;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct FlakyMajor {
+            call_count: Arc<AtomicUsize>,
+        }
+        #[async_trait]
+        impl Provider for FlakyMajor {
+            fn get_name(&self) -> &str {
+                "flaky-major"
+            }
+            fn retry_config(&self) -> openduck_providers::retry::RetryConfig {
+                openduck_providers::retry::RetryConfig {
+                    max_retries: 0,
+                    initial_interval_ms: 10,
+                    backoff_multiplier: 1.0,
+                    max_interval_ms: 10,
+                    transient_only: false,
+                }
+            }
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                let call = self.call_count.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    let s = futures::stream::iter(vec![Err(ProviderError::stream_decode_error(
+                        "first attempt failed",
+                    ))]);
+                    Ok(Box::pin(s))
+                } else {
+                    let msg = Message::assistant().with_text("Major provider retry answer");
+                    let s = futures::stream::iter(vec![Ok((Some(msg), None))]);
+                    Ok(Box::pin(s))
+                }
+            }
+        }
+
+        struct SlowSecondary;
+        #[async_trait]
+        impl Provider for SlowSecondary {
+            fn get_name(&self) -> &str {
+                "slow-secondary"
+            }
+            fn retry_config(&self) -> openduck_providers::retry::RetryConfig {
+                openduck_providers::retry::RetryConfig {
+                    max_retries: 0,
+                    initial_interval_ms: 10,
+                    backoff_multiplier: 1.0,
+                    max_interval_ms: 10,
+                    transient_only: false,
+                }
+            }
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let msg = Message::assistant().with_text("Secondary answer");
+                let s = futures::stream::iter(vec![Ok((Some(msg), None))]);
+                Ok(Box::pin(s))
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let primary = Arc::new(FlakyMajor {
+            call_count: calls.clone(),
+        });
+        let secondary = Arc::new(SlowSecondary);
+
+        let mut policy = GooseAgentPolicy::new("test-hedged", primary, ModelConfig::new("m1"))
+            .with_secondary_provider(secondary, ModelConfig::new("s1"));
+
+        let mut context = HarnessContextView::new("test-session", std::path::PathBuf::from("."));
+        context.messages = vec![openduck_harness::policy::HarnessMessage::user("Hello")];
+
+        let action = policy.step(&context, &[]).await.unwrap();
+        match action {
+            AgentAction::FinalAnswer(ans) => {
+                assert_eq!(ans, "Major provider retry answer");
+            }
+            other => panic!("Expected FinalAnswer, got {:?}", other),
+        }
+
+        assert_eq!(
+            policy.circuit_breaker().state().await,
+            CircuitState::PrimaryHealthy
+        );
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_trips_to_secondary_and_bypasses_major() {
+        use openduck_providers::base::MessageStream;
+        use openduck_providers::conversation::message::Message;
+        use openduck_providers::errors::ProviderError;
+        use openduck_providers::model::ModelConfig;
+        use rmcp::model::Tool;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct BrokenMajor {
+            call_count: Arc<AtomicUsize>,
+        }
+        #[async_trait]
+        impl Provider for BrokenMajor {
+            fn get_name(&self) -> &str {
+                "broken-major"
+            }
+            fn retry_config(&self) -> openduck_providers::retry::RetryConfig {
+                openduck_providers::retry::RetryConfig {
+                    max_retries: 0,
+                    initial_interval_ms: 10,
+                    backoff_multiplier: 1.0,
+                    max_interval_ms: 10,
+                    transient_only: false,
+                }
+            }
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                let s = futures::stream::iter(vec![Err(ProviderError::stream_decode_error(
+                    "persistent failure",
+                ))]);
+                Ok(Box::pin(s))
+            }
+        }
+
+        struct ReliableSecondary;
+        #[async_trait]
+        impl Provider for ReliableSecondary {
+            fn get_name(&self) -> &str {
+                "reliable-secondary"
+            }
+            fn retry_config(&self) -> openduck_providers::retry::RetryConfig {
+                openduck_providers::retry::RetryConfig {
+                    max_retries: 0,
+                    initial_interval_ms: 10,
+                    backoff_multiplier: 1.0,
+                    max_interval_ms: 10,
+                    transient_only: false,
+                }
+            }
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                let msg = Message::assistant().with_text("Reliable secondary answer");
+                let s = futures::stream::iter(vec![Ok((Some(msg), None))]);
+                Ok(Box::pin(s))
+            }
+        }
+
+        let major_calls = Arc::new(AtomicUsize::new(0));
+        let primary = Arc::new(BrokenMajor {
+            call_count: major_calls.clone(),
+        });
+        let secondary = Arc::new(ReliableSecondary);
+
+        let mut policy = GooseAgentPolicy::new("test-trip", primary, ModelConfig::new("m1"))
+            .with_secondary_provider(secondary, ModelConfig::new("s1"));
+
+        let mut context = HarnessContextView::new("test-session", std::path::PathBuf::from("."));
+        context.messages = vec![openduck_harness::policy::HarnessMessage::user("Step 1")];
+
+        let action1 = policy.step(&context, &[]).await.unwrap();
+        match action1 {
+            AgentAction::FinalAnswer(ans) => assert_eq!(ans, "Reliable secondary answer"),
+            other => panic!("Expected FinalAnswer, got {:?}", other),
+        }
+
+        assert_eq!(
+            policy.circuit_breaker().state().await,
+            CircuitState::SecondaryActive
+        );
+        let calls_after_step1 = major_calls.load(Ordering::SeqCst);
+        assert_eq!(calls_after_step1, 2);
+
+        context
+            .messages
+            .push(openduck_harness::policy::HarnessMessage::user("Step 2"));
+        let action2 = policy.step(&context, &[]).await.unwrap();
+        match action2 {
+            AgentAction::FinalAnswer(ans) => assert_eq!(ans, "Reliable secondary answer"),
+            other => panic!("Expected FinalAnswer, got {:?}", other),
+        }
+
+        let calls_after_step2 = major_calls.load(Ordering::SeqCst);
+        assert_eq!(calls_after_step2, 2);
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_background_probe_recovers_to_major() {
+        use openduck_providers::base::MessageStream;
+        use openduck_providers::conversation::message::Message;
+        use openduck_providers::errors::ProviderError;
+        use openduck_providers::model::ModelConfig;
+        use rmcp::model::Tool;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        struct RecoverableMajor {
+            failing: Arc<AtomicBool>,
+            call_count: Arc<AtomicUsize>,
+        }
+        #[async_trait]
+        impl Provider for RecoverableMajor {
+            fn get_name(&self) -> &str {
+                "recoverable-major"
+            }
+            fn retry_config(&self) -> openduck_providers::retry::RetryConfig {
+                openduck_providers::retry::RetryConfig {
+                    max_retries: 0,
+                    initial_interval_ms: 10,
+                    backoff_multiplier: 1.0,
+                    max_interval_ms: 10,
+                    transient_only: false,
+                }
+            }
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                if self.failing.load(Ordering::SeqCst) {
+                    let s = futures::stream::iter(vec![Err(ProviderError::stream_decode_error(
+                        "major down",
+                    ))]);
+                    Ok(Box::pin(s))
+                } else {
+                    let msg = Message::assistant().with_text("Recovered major answer");
+                    let s = futures::stream::iter(vec![Ok((Some(msg), None))]);
+                    Ok(Box::pin(s))
+                }
+            }
+        }
+
+        struct ReliableSecondary;
+        #[async_trait]
+        impl Provider for ReliableSecondary {
+            fn get_name(&self) -> &str {
+                "reliable-secondary"
+            }
+            fn retry_config(&self) -> openduck_providers::retry::RetryConfig {
+                openduck_providers::retry::RetryConfig {
+                    max_retries: 0,
+                    initial_interval_ms: 10,
+                    backoff_multiplier: 1.0,
+                    max_interval_ms: 10,
+                    transient_only: false,
+                }
+            }
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                let msg = Message::assistant().with_text("Reliable secondary answer");
+                let s = futures::stream::iter(vec![Ok((Some(msg), None))]);
+                Ok(Box::pin(s))
+            }
+        }
+
+        let major_failing = Arc::new(AtomicBool::new(true));
+        let major_calls = Arc::new(AtomicUsize::new(0));
+        let primary = Arc::new(RecoverableMajor {
+            failing: major_failing.clone(),
+            call_count: major_calls.clone(),
+        });
+        let secondary = Arc::new(ReliableSecondary);
+
+        let cb =
+            ProviderCircuitBreaker::new(crate::control::circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 2,
+                recovery_probe_interval: std::time::Duration::from_millis(50),
+                required_consecutive_successes: 1,
+                probe_timeout: std::time::Duration::from_millis(200),
+            });
+
+        let mut policy = GooseAgentPolicy::new("test-recover", primary, ModelConfig::new("m1"))
+            .with_secondary_provider(secondary, ModelConfig::new("s1"))
+            .with_circuit_breaker(cb);
+
+        let mut context = HarnessContextView::new("test-session", std::path::PathBuf::from("."));
+        context.messages = vec![openduck_harness::policy::HarnessMessage::user("Step 1")];
+
+        // Step 1: Major fails, trips circuit to SecondaryActive, probe starts
+        let action1 = policy.step(&context, &[]).await.unwrap();
+        match action1 {
+            AgentAction::FinalAnswer(ans) => assert_eq!(ans, "Reliable secondary answer"),
+            other => panic!("Expected FinalAnswer, got {:?}", other),
+        }
+        assert_eq!(
+            policy.circuit_breaker().state().await,
+            CircuitState::SecondaryActive
+        );
+
+        // Recover major provider
+        major_failing.store(false, Ordering::SeqCst);
+
+        // Wait for background probe to detect recovery (probe_interval = 50ms)
+        let mut recovered_to_half_open = false;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            if policy.circuit_breaker().state().await == CircuitState::HalfOpenTesting {
+                recovered_to_half_open = true;
+                break;
+            }
+        }
+        assert!(
+            recovered_to_half_open,
+            "Probe did not transition to HalfOpenTesting"
+        );
+
+        // Step 2: Policy runs canary request on major provider, canary succeeds, restores to PrimaryHealthy
+        context
+            .messages
+            .push(openduck_harness::policy::HarnessMessage::user("Step 2"));
+        let action2 = policy.step(&context, &[]).await.unwrap();
+        match action2 {
+            AgentAction::FinalAnswer(ans) => assert_eq!(ans, "Recovered major answer"),
+            other => panic!("Expected FinalAnswer, got {:?}", other),
+        }
+
+        assert_eq!(
+            policy.circuit_breaker().state().await,
+            CircuitState::PrimaryHealthy
         );
     }
 }
