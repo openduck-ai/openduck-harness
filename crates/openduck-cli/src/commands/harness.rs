@@ -205,6 +205,7 @@ async fn handle_run(args: RunArgs) -> Result<()> {
         let mut wt_config =
             openduck_harness::sandbox::WorktreeConfig::new(repo_root).with_branch(branch);
         wt_config.keep_worktree = args.keep_worktree;
+        wt_config.commit_message = Some(format!("Task {}: completed", task_spec.id));
         let mut wt = openduck_harness::sandbox::WorktreeSandbox::new(wt_config);
         wt.initialize().await?;
         println!("Initialized Git worktree at: {:?}", wt.worktree_path());

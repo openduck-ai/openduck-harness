@@ -96,4 +96,19 @@ async fn test_worktree_sandbox_lifecycle() {
     // Cleanup
     sandbox.cleanup().await.unwrap();
     assert!(!wt_path.exists());
+
+    // Verify the created file was committed to the branch
+    let show_output = Command::new("git")
+        .args(["show", "feature/test-worktree:new_file.txt"])
+        .current_dir(repo_root)
+        .output()
+        .expect("git show");
+    assert!(
+        show_output.status.success(),
+        "File should be committed to branch feature/test-worktree"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&show_output.stdout),
+        "created in worktree"
+    );
 }

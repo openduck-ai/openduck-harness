@@ -23,6 +23,7 @@ use openduck_harness::project::{
 use openduck_harness::replay::{Cassette, ReplayPolicy};
 use openduck_harness::runtime::{AgentHarness, HistoryFollowUp};
 use openduck_harness::sandbox::local::LocalSandbox;
+use openduck_harness::sandbox::worktree::{WorktreeConfig, WorktreeSandbox};
 use openduck_harness::sandbox::SandboxDriver;
 use openduck_sdk_types::custom_requests::SourceEntry;
 use serde::{Deserialize, Serialize};
@@ -866,7 +867,26 @@ async fn execute_project_task(
     if continuation.is_none() && history_follow_up.is_none() {
         clean_stale_task_scratchpad(&root, &task_spec.id);
     }
-    let mut sandbox = LocalSandbox::new(root);
+    let mut sandbox: Box<dyn SandboxDriver> = match config.sandbox.kind.to_lowercase().as_str() {
+        "worktree" => {
+            let branch = format!("agent/task-{}", task_spec.id.replace('/', "-"));
+            let commit_msg = format!(
+                "Task {}: {}",
+                task_spec.id,
+                task_spec.problem_statement.trim()
+            );
+            let wt_config = WorktreeConfig::new(&root)
+                .with_branch(branch.clone())
+                .with_commit_message(commit_msg);
+            tracing::info!(
+                task_id = %task_spec.id,
+                branch = %branch,
+                "Configured worktree sandbox for task"
+            );
+            Box::new(WorktreeSandbox::new(wt_config))
+        }
+        _ => Box::new(LocalSandbox::new(root)),
+    };
     sandbox.initialize().await?;
 
     if req.echo.unwrap_or(false) {
@@ -949,9 +969,9 @@ async fn execute_project_task(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy>(
+async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy, S: SandboxDriver>(
     base_policy: P,
-    sandbox: LocalSandbox,
+    sandbox: S,
     task_spec: &TaskSpec,
     max_turns: usize,
     cassette_path: Option<PathBuf>,
@@ -999,6 +1019,7 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy>(
                 let _ = cas.save_to_file(&c_path).await;
             }
         }
+        let _ = harness.sandbox_mut().cleanup().await;
         let res = run_res?;
         let cas = cassette.lock().await;
         cas.save_to_file(&c_path).await?;
@@ -1035,7 +1056,9 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy>(
             );
         }
         let mut harness = with_live_snapshot(harness, job_id, &task_spec.id);
-        let res = harness.run_task(task_spec).await?;
+        let run_res = harness.run_task(task_spec).await;
+        let _ = harness.sandbox_mut().cleanup().await;
+        let res = run_res?;
         let mut dto = to_run_dto(res, None);
         if dto.system_prompt.is_none() {
             dto.system_prompt = system_prompt;

@@ -31,6 +31,8 @@ pub struct WorktreeConfig {
     pub shared_cargo_target: bool,
     pub keep_worktree: bool,
     pub keep_branch: bool,
+    pub auto_commit: bool,
+    pub commit_message: Option<String>,
 }
 
 impl WorktreeConfig {
@@ -49,6 +51,8 @@ impl WorktreeConfig {
             shared_cargo_target: true,
             keep_worktree: false,
             keep_branch: true,
+            auto_commit: true,
+            commit_message: None,
         }
     }
 
@@ -64,6 +68,16 @@ impl WorktreeConfig {
 
     pub fn with_untracked_mode(mut self, mode: UntrackedFileMode) -> Self {
         self.untracked_mode = mode;
+        self
+    }
+
+    pub fn with_auto_commit(mut self, auto_commit: bool) -> Self {
+        self.auto_commit = auto_commit;
+        self
+    }
+
+    pub fn with_commit_message(mut self, msg: impl Into<String>) -> Self {
+        self.commit_message = Some(msg.into());
         self
     }
 }
@@ -246,6 +260,74 @@ impl WorktreeSandbox {
         let base = self.config.base_ref.as_deref().unwrap_or("HEAD");
         Self::run_git_in(&self.worktree_path, &["diff", base]).await
     }
+
+    pub async fn commit_changes(&self, message: &str) -> Result<Option<String>> {
+        let status = Self::run_git_in(&self.worktree_path, &["status", "--porcelain"]).await?;
+        if status.trim().is_empty() {
+            tracing::info!(
+                branch = %self.branch_name,
+                "No uncommitted changes in worktree to commit"
+            );
+            return Ok(None);
+        }
+
+        Self::run_git_in(&self.worktree_path, &["add", "-A"])
+            .await
+            .context("Failed to stage changes in worktree")?;
+
+        let staged = Self::run_git_in(
+            &self.worktree_path,
+            &["status", "--porcelain", "--untracked-files=no"],
+        )
+        .await?;
+        if staged.trim().is_empty() {
+            tracing::info!(
+                branch = %self.branch_name,
+                "No staged changes in worktree to commit"
+            );
+            return Ok(None);
+        }
+
+        let has_name = Self::run_git_in(&self.worktree_path, &["config", "user.name"])
+            .await
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        let has_email = Self::run_git_in(&self.worktree_path, &["config", "user.email"])
+            .await
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+
+        let mut cmd_args: Vec<String> = Vec::new();
+        if !has_name {
+            cmd_args.push("-c".to_string());
+            cmd_args.push("user.name=OpenDuck Agent".to_string());
+        }
+        if !has_email {
+            cmd_args.push("-c".to_string());
+            cmd_args.push("user.email=agent@openduck.ai".to_string());
+        }
+        cmd_args.push("commit".to_string());
+        cmd_args.push("-m".to_string());
+        cmd_args.push(message.to_string());
+
+        let arg_refs: Vec<&str> = cmd_args.iter().map(|s| s.as_str()).collect();
+        Self::run_git_in(&self.worktree_path, &arg_refs)
+            .await
+            .context("Failed to commit changes in worktree")?;
+
+        let commit_sha = Self::run_git_in(&self.worktree_path, &["rev-parse", "HEAD"])
+            .await
+            .unwrap_or_else(|_| "HEAD".to_string());
+
+        tracing::info!(
+            branch = %self.branch_name,
+            commit = %commit_sha,
+            message = %message,
+            "Committed changes in worktree to branch"
+        );
+
+        Ok(Some(commit_sha))
+    }
 }
 
 #[async_trait]
@@ -295,14 +377,33 @@ impl SandboxDriver for WorktreeSandbox {
             args.push(base);
         }
 
+        tracing::info!(
+            branch = %self.branch_name,
+            worktree_path = %path_str,
+            base_ref = ?self.config.base_ref,
+            "Creating Git branch and worktree"
+        );
+
         let add_res = Self::run_git_in(repo_root, &args).await;
         if let Err(err) = add_res {
+            tracing::info!(
+                branch = %self.branch_name,
+                worktree_path = %path_str,
+                "Branch already exists or -b failed, checking out existing branch into worktree: {}",
+                err
+            );
             // If branch already exists, try checking it out without -b
             let fallback_args = vec!["worktree", "add", path_str, &self.branch_name];
             Self::run_git_in(repo_root, &fallback_args)
                 .await
                 .with_context(|| format!("Failed to create worktree: {}", err))?;
         }
+
+        tracing::info!(
+            branch = %self.branch_name,
+            worktree_path = %path_str,
+            "Successfully initialized Git worktree"
+        );
 
         self.sync_untracked_files().await?;
         self.initialized = true;
@@ -425,6 +526,9 @@ impl SandboxDriver for WorktreeSandbox {
         let count = self.snapshot_counter.fetch_add(1, Ordering::SeqCst);
         let id = SnapshotId(format!("worktree-{}-{}-{}", label, count, Uuid::new_v4()));
 
+        // Stage all files so stash create includes untracked/new files
+        let _ = Self::run_git_in(&self.worktree_path, &["add", "-A"]).await;
+
         // Snapshot via git stash create or commit
         let stash_res = Self::run_git_in(&self.worktree_path, &["stash", "create"]).await;
         let commit_sha = match stash_res {
@@ -459,17 +563,45 @@ impl SandboxDriver for WorktreeSandbox {
     }
 
     async fn cleanup(&mut self) -> Result<()> {
-        if self.initialized && !self.config.keep_worktree {
-            let repo_root = &self.config.repo_root;
-            let path_str = self
-                .worktree_path
-                .to_str()
-                .ok_or_else(|| anyhow!("Invalid worktree path"))?;
+        if self.initialized {
+            if self.config.auto_commit {
+                let default_msg = format!("Task changes on branch {}", self.branch_name);
+                let msg = self
+                    .config
+                    .commit_message
+                    .as_deref()
+                    .unwrap_or(&default_msg);
+                if let Err(e) = self.commit_changes(msg).await {
+                    tracing::warn!(
+                        branch = %self.branch_name,
+                        error = %e,
+                        "Failed to auto-commit changes before worktree cleanup"
+                    );
+                }
+            }
 
-            let _ = Self::run_git_in(repo_root, &["worktree", "remove", "--force", path_str]).await;
+            if !self.config.keep_worktree {
+                let repo_root = &self.config.repo_root;
+                let path_str = self
+                    .worktree_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Invalid worktree path"))?;
 
-            if !self.config.keep_branch {
-                let _ = Self::run_git_in(repo_root, &["branch", "-D", &self.branch_name]).await;
+                tracing::info!(
+                    branch = %self.branch_name,
+                    worktree_path = %path_str,
+                    "Removing Git worktree"
+                );
+                let _ =
+                    Self::run_git_in(repo_root, &["worktree", "remove", "--force", path_str]).await;
+
+                if !self.config.keep_branch {
+                    tracing::info!(
+                        branch = %self.branch_name,
+                        "Deleting Git branch"
+                    );
+                    let _ = Self::run_git_in(repo_root, &["branch", "-D", &self.branch_name]).await;
+                }
             }
         }
 

@@ -2963,8 +2963,14 @@ export function ProjectHarnessTab({
                   }
                 >
                   <option value="local">Local (Host Process Sandbox)</option>
+                  <option value="worktree">Git Worktree (Isolated Branch)</option>
                   <option value="container">Container (Docker / OCI)</option>
                 </select>
+                {config.sandbox?.kind === 'worktree' && (
+                  <div style={{ marginTop: 4, fontSize: '0.8rem', color: 'var(--text-muted, #888)' }}>
+                    Tasks run in an isolated Git worktree branch without altering your active workspace.
+                  </div>
+                )}
               </div>
               <div className="form-group">
                 <label className="form-label">Container Image (When Container Sandbox)</label>
@@ -2979,6 +2985,7 @@ export function ProjectHarnessTab({
                     })
                   }
                   placeholder="e.g. ubuntu:24.04 or rust:latest"
+                  disabled={config.sandbox?.kind !== 'container'}
                 />
               </div>
             </div>
