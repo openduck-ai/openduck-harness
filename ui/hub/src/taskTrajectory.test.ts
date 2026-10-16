@@ -24,6 +24,7 @@ import {
   formatPromptMessageText,
   computeTaskProviderStats,
   liveLineText,
+  paginateAgentLogTurns,
 } from './taskTrajectory.ts'
 import type { HarnessRunResponse } from '@aaif/goose-hub-core'
 
@@ -1203,6 +1204,73 @@ test('liveLineText returns newest tool summary on latest assistant turn, or Thin
 
   // 3. Not live returns formatted status
   assert.equal(liveLineText(turnsWithTool, false, 'success'), 'Success')
+})
+
+test('paginateAgentLogTurns correctly pages turns and computes pagination bounds', () => {
+  // Empty turns
+  const empty = paginateAgentLogTurns([], 1, 25)
+  assert.equal(empty.pagedTurns.length, 0)
+  assert.equal(empty.pagination.page, 1)
+  assert.equal(empty.pagination.totalPages, 1)
+  assert.equal(empty.pagination.totalTurns, 0)
+  assert.equal(empty.pagination.startIndex, 0)
+  assert.equal(empty.pagination.endIndex, 0)
+
+  // Create 65 mock turns
+  const mockTurns = Array.from({ length: 65 }, (_, i) => ({
+    id: `turn-${i + 1}`,
+    role: 'assistant' as const,
+    kind: 'assistant' as const,
+    text: `Step ${i + 1}`,
+  }))
+
+  // Page 1 with pageSize 25
+  const page1 = paginateAgentLogTurns(mockTurns, 1, 25)
+  assert.equal(page1.pagedTurns.length, 25)
+  assert.equal(page1.pagedTurns[0].id, 'turn-1')
+  assert.equal(page1.pagedTurns[24].id, 'turn-25')
+  assert.equal(page1.pagination.page, 1)
+  assert.equal(page1.pagination.totalPages, 3)
+  assert.equal(page1.pagination.pageSize, 25)
+  assert.equal(page1.pagination.totalTurns, 65)
+  assert.equal(page1.pagination.startIndex, 0)
+  assert.equal(page1.pagination.endIndex, 25)
+
+  // Page 2
+  const page2 = paginateAgentLogTurns(mockTurns, 2, 25)
+  assert.equal(page2.pagedTurns.length, 25)
+  assert.equal(page2.pagedTurns[0].id, 'turn-26')
+  assert.equal(page2.pagedTurns[24].id, 'turn-50')
+  assert.equal(page2.pagination.page, 2)
+  assert.equal(page2.pagination.startIndex, 25)
+  assert.equal(page2.pagination.endIndex, 50)
+
+  // Page 3 (remainder of 15)
+  const page3 = paginateAgentLogTurns(mockTurns, 3, 25)
+  assert.equal(page3.pagedTurns.length, 15)
+  assert.equal(page3.pagedTurns[0].id, 'turn-51')
+  assert.equal(page3.pagedTurns[14].id, 'turn-65')
+  assert.equal(page3.pagination.page, 3)
+  assert.equal(page3.pagination.startIndex, 50)
+  assert.equal(page3.pagination.endIndex, 65)
+
+  // Clamping: page < 1 clamps to 1
+  const clampedLow = paginateAgentLogTurns(mockTurns, 0, 25)
+  assert.equal(clampedLow.pagination.page, 1)
+  assert.equal(clampedLow.pagedTurns[0].id, 'turn-1')
+
+  // Clamping: page > totalPages clamps to totalPages
+  const clampedHigh = paginateAgentLogTurns(mockTurns, 10, 25)
+  assert.equal(clampedHigh.pagination.page, 3)
+  assert.equal(clampedHigh.pagedTurns.length, 15)
+
+  // Unpaginated (pageSize <= 0) returns all turns
+  const allTurns = paginateAgentLogTurns(mockTurns, 1, 0)
+  assert.equal(allTurns.pagedTurns.length, 65)
+  assert.equal(allTurns.pagination.page, 1)
+  assert.equal(allTurns.pagination.totalPages, 1)
+  assert.equal(allTurns.pagination.startIndex, 0)
+  assert.equal(allTurns.pagination.endIndex, 65)
 })
 
 

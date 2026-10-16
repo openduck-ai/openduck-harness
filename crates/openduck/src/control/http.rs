@@ -97,8 +97,13 @@ struct ProjectListQuery {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct LimitQuery {
     limit: Option<usize>,
+    page: Option<usize>,
+    #[serde(alias = "pageSize", alias = "page_size")]
+    page_size: Option<usize>,
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -954,17 +959,43 @@ async fn list_session_messages(
         .get_session(&session_id, true)
         .await
         .map_err(|_| not_found(format!("Session '{session_id}' not found")))?;
-    let limit = query.limit.unwrap_or(200);
-    let messages = session
+    let all_messages = session
         .conversation
         .map(|conversation| conversation.messages().to_vec())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let total = all_messages.len();
+
+    let limit = query.page_size.or(query.limit).unwrap_or(200);
+    let is_paginated = query.page.is_some() || query.offset.is_some();
+
+    let paged_slice = if is_paginated {
+        let offset = if let Some(off) = query.offset {
+            off
+        } else if let Some(p) = query.page {
+            let p = p.max(1);
+            (p - 1) * limit
+        } else {
+            0
+        };
+        if offset >= total {
+            Vec::new()
+        } else {
+            let end = (offset + limit).min(total);
+            all_messages[offset..end].to_vec()
+        }
+    } else {
+        all_messages
+            .into_iter()
+            .rev()
+            .take(limit)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    };
+
+    let messages = paged_slice
         .into_iter()
-        .rev()
-        .take(limit)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
         .map(|message| {
             let text = message
                 .content
@@ -987,7 +1018,31 @@ async fn list_session_messages(
             })
         })
         .collect::<Vec<_>>();
-    Ok(Json(serde_json::json!({"messages": messages})))
+
+    let mut response = serde_json::json!({
+        "messages": messages,
+        "total": total,
+    });
+
+    if is_paginated {
+        let total_pages = if total == 0 {
+            1
+        } else {
+            (total + limit - 1) / limit
+        };
+        let current_page = query.page.map(|p| p.max(1)).unwrap_or_else(|| {
+            let off = query.offset.unwrap_or(0);
+            (off / limit.max(1)) + 1
+        });
+        response["pagination"] = serde_json::json!({
+            "page": current_page,
+            "limit": limit,
+            "total": total,
+            "totalPages": total_pages,
+        });
+    }
+
+    Ok(Json(response))
 }
 
 #[derive(Debug, Deserialize, Default)]

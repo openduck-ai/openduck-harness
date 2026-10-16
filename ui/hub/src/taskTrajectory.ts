@@ -804,6 +804,55 @@ export function filterAgentLogTurns(
   })
 }
 
+export interface AgentLogPagination {
+  page: number
+  pageSize: number
+  totalTurns: number
+  totalPages: number
+  startIndex: number
+  endIndex: number
+}
+
+export function paginateAgentLogTurns(
+  turns: AgentLogTurn[],
+  page: number,
+  pageSize: number,
+): { pagedTurns: AgentLogTurn[]; pagination: AgentLogPagination } {
+  const totalTurns = turns.length
+  if (pageSize <= 0 || !Number.isFinite(pageSize)) {
+    return {
+      pagedTurns: turns,
+      pagination: {
+        page: 1,
+        pageSize: 0,
+        totalTurns,
+        totalPages: 1,
+        startIndex: 0,
+        endIndex: totalTurns,
+      },
+    }
+  }
+
+  const safePageSize = Math.max(1, Math.floor(pageSize))
+  const totalPages = Math.max(1, Math.ceil(totalTurns / safePageSize))
+  const clampedPage = Math.min(Math.max(1, Math.floor(page || 1)), totalPages)
+  const startIndex = (clampedPage - 1) * safePageSize
+  const endIndex = Math.min(startIndex + safePageSize, totalTurns)
+  const pagedTurns = turns.slice(startIndex, endIndex)
+
+  return {
+    pagedTurns,
+    pagination: {
+      page: clampedPage,
+      pageSize: safePageSize,
+      totalTurns,
+      totalPages,
+      startIndex,
+      endIndex,
+    },
+  }
+}
+
 export interface ParsedPromptMessage {
   role: string
   content: unknown

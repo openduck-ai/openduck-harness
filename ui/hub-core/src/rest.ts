@@ -55,7 +55,19 @@ import type {
   SessionSummary,
   HarnessProjectEvent,
   HarnessJobLiveEvent,
+  TrajectoryPagingOptions,
 } from './types.ts'
+
+function formatPagingQuery(paging?: TrajectoryPagingOptions): string {
+  if (!paging) return ''
+  const params = new URLSearchParams()
+  if (paging.page !== undefined) params.set('page', String(paging.page))
+  if (paging.limit !== undefined) params.set('limit', String(paging.limit))
+  if (paging.pageSize !== undefined) params.set('pageSize', String(paging.pageSize))
+  if (paging.offset !== undefined) params.set('offset', String(paging.offset))
+  const qs = params.toString()
+  return qs ? `?${qs}` : ''
+}
 import {
   subscribeJobLiveStream,
   subscribeProjectEvents,
@@ -346,11 +358,15 @@ export function createApi(baseUrl: string, secret = '') {
       ),
     getHarnessOverview: () => request<HarnessOverview>('/api/v1/harness/overview'),
     listActiveHarnessJobs: () => request<HarnessActiveJob[]>('/api/v1/harness/jobs'),
-    inspectHarnessJob: (jobId: string) =>
-      request<HarnessJobInspect>(`/api/v1/harness/jobs/${encodeURIComponent(jobId)}`),
+    inspectHarnessJob: (jobId: string, paging?: TrajectoryPagingOptions) =>
+      request<HarnessJobInspect>(
+        `/api/v1/harness/jobs/${encodeURIComponent(jobId)}${formatPagingQuery(paging)}`,
+      ),
     listHarnessHistory: () => request<HarnessHistorySummary[]>('/api/v1/harness/history'),
-    getHarnessHistoryDetail: (runId: string) =>
-      request<HarnessRunResponse>(`/api/v1/harness/history/${encodeURIComponent(runId)}`),
+    getHarnessHistoryDetail: (runId: string, paging?: TrajectoryPagingOptions) =>
+      request<HarnessRunResponse>(
+        `/api/v1/harness/history/${encodeURIComponent(runId)}${formatPagingQuery(paging)}`,
+      ),
     listHarnessReports: (dir?: string) =>
       request<HarnessReportSummary[]>(
         `/api/v1/harness/reports${dir ? `?dir=${encodeURIComponent(dir)}` : ''}`,
@@ -482,9 +498,13 @@ export function createApi(baseUrl: string, secret = '') {
       request<HarnessActiveJob[]>(
         `/api/v1/projects/${encodeURIComponent(slug)}/harness/jobs`,
       ),
-    inspectProjectHarnessJob: (slug: string, jobId: string) =>
+    inspectProjectHarnessJob: (
+      slug: string,
+      jobId: string,
+      paging?: TrajectoryPagingOptions,
+    ) =>
       request<HarnessJobInspect>(
-        `/api/v1/projects/${encodeURIComponent(slug)}/harness/jobs/${encodeURIComponent(jobId)}`,
+        `/api/v1/projects/${encodeURIComponent(slug)}/harness/jobs/${encodeURIComponent(jobId)}${formatPagingQuery(paging)}`,
       ),
     stopProjectHarnessJob: (slug: string, jobId: string) =>
       request<{ success: boolean; message: string; taskId: string; jobId: string }>(
@@ -504,9 +524,13 @@ export function createApi(baseUrl: string, secret = '') {
       request<HarnessHistorySummary[]>(
         `/api/v1/projects/${encodeURIComponent(slug)}/harness/history`,
       ),
-    getProjectHistoryDetail: (slug: string, runId: string) =>
+    getProjectHistoryDetail: (
+      slug: string,
+      runId: string,
+      paging?: TrajectoryPagingOptions,
+    ) =>
       request<HarnessRunResponse>(
-        `/api/v1/projects/${encodeURIComponent(slug)}/harness/history/${encodeURIComponent(runId)}`,
+        `/api/v1/projects/${encodeURIComponent(slug)}/harness/history/${encodeURIComponent(runId)}${formatPagingQuery(paging)}`,
       ),
     subscribeProjectEvents: (
       slug: string,

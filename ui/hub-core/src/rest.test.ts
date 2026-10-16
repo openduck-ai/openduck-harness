@@ -255,6 +255,43 @@ test('REST client calls harness endpoints with correct routes and methods', asyn
   }
 })
 
+test('REST client passes trajectory paging options in query parameters', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: { url: string; method: string }[] = []
+  globalThis.fetch = async (input, init) => {
+    const req = new Request(input, init)
+    calls.push({ url: req.url, method: req.method })
+    return new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
+  try {
+    const api = createApi('http://host', 'secret-token')
+    await api.inspectHarnessJob('job_1', { page: 2, limit: 25 })
+    await api.getHarnessHistoryDetail('run_1.json', { page: 3, pageSize: 50, offset: 100 })
+    await api.inspectProjectHarnessJob('my-proj', 'job_1', { page: 1, limit: 10 })
+    await api.getProjectHistoryDetail('my-proj', 'run_1.json', { page: 4, limit: 20 })
+
+    assert.equal(calls[0].url, 'http://host/api/v1/harness/jobs/job_1?page=2&limit=25')
+    assert.equal(
+      calls[1].url,
+      'http://host/api/v1/harness/history/run_1.json?page=3&pageSize=50&offset=100',
+    )
+    assert.equal(
+      calls[2].url,
+      'http://host/api/v1/projects/my-proj/harness/jobs/job_1?page=1&limit=10',
+    )
+    assert.equal(
+      calls[3].url,
+      'http://host/api/v1/projects/my-proj/harness/history/run_1.json?page=4&limit=20',
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('REST client patches project task schedules', async () => {
   const originalFetch = globalThis.fetch
   let request: Request | undefined

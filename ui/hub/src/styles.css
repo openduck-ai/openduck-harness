@@ -10903,6 +10903,115 @@ button.git-log-row {
   max-width: 14rem;
 }
 
+.agent-log-pagesize {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 0.15rem 0.5rem;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.agent-log-pagesize select {
+  background: transparent;
+  border: 0;
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.28rem 0.15rem;
+  cursor: pointer;
+}
+
+.agent-log-toolbar-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.agent-log-pagination-summary {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.agent-log-pagination-summary strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.agent-log-filtered-tag {
+  opacity: 0.8;
+  font-style: italic;
+}
+
+.agent-log-bottom-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  margin-top: 1rem;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-log-bottom-pagination-info {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.agent-log-bottom-pagination-info strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.agent-log-bottom-pagination-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.agent-page-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.32rem 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 6px;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.agent-page-btn:hover:not(:disabled) {
+  border-color: var(--border-default);
+  background: var(--bg-hover, var(--bg-surface));
+}
+
+.agent-page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.agent-page-indicator {
+  padding: 0 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
 .agent-transcript-wrap {
   position: relative;
   flex: 1;
@@ -11440,15 +11549,34 @@ button.git-log-row {
   }
 
   .trajectory-viewer-container.is-log-mode .agent-log-filter,
+  .trajectory-viewer-container.is-log-mode .agent-log-pagesize,
   .trajectory-viewer-container.is-log-mode .trajectory-search-wrapper {
     flex: 1 1 100%;
     min-width: 0;
     max-width: none;
   }
 
-  .trajectory-viewer-container.is-log-mode .agent-log-filter select {
+  .trajectory-viewer-container.is-log-mode .agent-log-filter select,
+  .trajectory-viewer-container.is-log-mode .agent-log-pagesize select {
     max-width: none;
     width: 100%;
+  }
+
+  .agent-log-toolbar-bottom {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .agent-log-bottom-pagination {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.6rem;
+  }
+
+  .agent-log-bottom-pagination-nav {
+    justify-content: center;
+    flex-wrap: wrap;
   }
 
   .trajectory-viewer-container.is-log-mode .agent-log-panel {

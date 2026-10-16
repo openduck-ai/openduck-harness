@@ -6,6 +6,7 @@ import {
   liveLineText,
   presentToolCall,
   resolveThinkingOpen,
+  type AgentLogPagination,
   type AgentLogToolCall,
   type AgentLogTurn,
   type HarnessJudgmentRecord,
@@ -24,6 +25,7 @@ import {
   AlertCircle,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Loader2,
@@ -43,6 +45,9 @@ export interface AgentLogContinueRequest {
 
 interface AgentLogTranscriptProps {
   turns: AgentLogTurn[]
+  allTurns?: AgentLogTurn[]
+  pagination?: AgentLogPagination
+  onPageChange?: (page: number) => void
   live: boolean
   status: string
   sessionKey: string
@@ -100,6 +105,9 @@ function splitSummary(summary: string, path?: string): { before: string; path?: 
 
 export function AgentLogTranscript({
   turns,
+  allTurns,
+  pagination,
+  onPageChange,
   live,
   status,
   sessionKey,
@@ -127,11 +135,12 @@ export function AgentLogTranscript({
   const [detailsOpen, setDetailsOpen] = useState<Record<string, boolean>>({})
   const [toolsOpen, setToolsOpen] = useState<Record<string, boolean>>({})
 
+  const turnsToInspect = allTurns ?? turns
   let lastFinalId: string | undefined
-  let lastAssistantIndex = -1
-  turns.forEach((turn, index) => {
+  let lastAssistantTurnId: string | undefined
+  turnsToInspect.forEach(turn => {
     if (turn.kind === 'final_answer') lastFinalId = turn.id
-    if (turn.role === 'assistant') lastAssistantIndex = index
+    if (turn.role === 'assistant') lastAssistantTurnId = turn.id
   })
 
   return (
@@ -142,7 +151,7 @@ export function AgentLogTranscript({
           {turns.length === 0 ? (
             <div className="empty-card">No log entries match filter / search criteria.</div>
           ) : (
-            turns.map((turn, index) => {
+            turns.map(turn => {
               if (turn.role === 'user') {
                 return (
                   <UserTurn
@@ -153,13 +162,14 @@ export function AgentLogTranscript({
                   />
                 )
               }
-              const thinkingCurrent = isCurrentThinkingTurn(turn, live, index === lastAssistantIndex)
+              const isLatestAssistant = turn.id === lastAssistantTurnId
+              const thinkingCurrent = isCurrentThinkingTurn(turn, live, isLatestAssistant)
               const thinkingOpen = resolveThinkingOpen(thinkingChoice[turn.id], thinkingCurrent)
               return (
                 <AssistantTurn
                   key={turn.id}
                   turn={turn}
-                  isLiveStep={live && index === lastAssistantIndex}
+                  isLiveStep={live && isLatestAssistant}
                   isFinal={turn.id === lastFinalId}
                   thinkingCurrent={thinkingCurrent}
                   thinkingOpen={thinkingOpen}
@@ -197,6 +207,54 @@ export function AgentLogTranscript({
               )
             })
           )}
+          {pagination && pagination.totalPages > 1 && onPageChange && (
+            <div className="agent-log-bottom-pagination">
+              <div className="agent-log-bottom-pagination-info">
+                Showing turns <strong>{pagination.startIndex + 1}–{pagination.endIndex}</strong> of <strong>{pagination.totalTurns}</strong>
+              </div>
+              <div className="agent-log-bottom-pagination-nav">
+                <button
+                  type="button"
+                  className="agent-page-btn"
+                  onClick={() => onPageChange(1)}
+                  disabled={pagination.page <= 1}
+                  title="First page"
+                >
+                  « First
+                </button>
+                <button
+                  type="button"
+                  className="agent-page-btn"
+                  onClick={() => onPageChange(pagination.page - 1)}
+                  disabled={pagination.page <= 1}
+                  title="Previous page"
+                >
+                  <ChevronLeft size={14} /> Previous
+                </button>
+                <span className="agent-page-indicator">
+                  Page {pagination.page} of {pagination.totalPages}
+                </span>
+                <button
+                  type="button"
+                  className="agent-page-btn"
+                  onClick={() => onPageChange(pagination.page + 1)}
+                  disabled={pagination.page >= pagination.totalPages}
+                  title="Next page"
+                >
+                  Next <ChevronRight size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="agent-page-btn"
+                  onClick={() => onPageChange(pagination.totalPages)}
+                  disabled={pagination.page >= pagination.totalPages}
+                  title="Last page"
+                >
+                  Last »
+                </button>
+              </div>
+            </div>
+          )}
           <div ref={endRef} />
           </div>
         </div>
@@ -207,7 +265,7 @@ export function AgentLogTranscript({
         )}
       </div>
       <AgentLogDock
-        turns={turns}
+        turns={allTurns ?? turns}
         live={live}
         status={status}
         sessionKey={sessionKey}

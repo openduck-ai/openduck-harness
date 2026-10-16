@@ -177,6 +177,22 @@ export function ProjectHarnessTab({
   const [activeJobs, setActiveJobs] = useState<HarnessActiveJob[]>([])
   const [history, setHistory] = useState<HarnessHistorySummary[]>([])
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null)
+  const [selectedHistoryFileName, setSelectedHistoryFileName] = useState<string | null>(null)
+
+  const getSavedLogPageSize = () => {
+    try {
+      const saved = localStorage.getItem('openduck.agentLog.pageSize')
+      if (saved !== null) {
+        const parsed = parseInt(saved, 10)
+        if (!Number.isNaN(parsed) && [25, 50, 100, 0].includes(parsed)) {
+          return parsed
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    return 50
+  }
 
   // Task editing / creation
   const [isEditingTask, setIsEditingTask] = useState(false)
@@ -643,13 +659,16 @@ export function ProjectHarnessTab({
     setLogOrigin(origin)
     setSavedScrollY(window.scrollY)
     setSelectedHistoryId(item.id)
+    setSelectedHistoryFileName(item.fileName)
     setLoadingHistoryId(item.id)
     setLoadingTrajectory(true)
     setSubTab('trajectory')
     stopLiveInspect()
     setError('')
     try {
-      const run = await api.getProjectHistoryDetail(selectedProjectSlug, item.fileName)
+      const savedPageSize = getSavedLogPageSize()
+      const paging = savedPageSize > 0 ? { page: 1, limit: savedPageSize } : undefined
+      const run = await api.getProjectHistoryDetail(selectedProjectSlug, item.fileName, paging)
       setActiveTrajectoryView(run)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load historical run')
@@ -674,7 +693,9 @@ export function ProjectHarnessTab({
     setSubTab('trajectory')
     setError('')
     try {
-      const detail = await inspectProjectHarnessJob(selectedProjectSlug, job.jobId)
+      const savedPageSize = getSavedLogPageSize()
+      const paging = savedPageSize > 0 ? { page: 1, limit: savedPageSize } : undefined
+      const detail = await inspectProjectHarnessJob(selectedProjectSlug, job.jobId, paging)
       if (inspectingJobIdRef.current !== job.jobId) return
       if (detail.snapshot) {
         setActiveTrajectoryView(detail.snapshot)
@@ -807,9 +828,12 @@ export function ProjectHarnessTab({
           const historyList = await api.listProjectHistory(selectedProjectSlug)
           const latest = historyList.find(item => !taskId || item.taskId === taskId)
           if (latest) {
-            const run = await api.getProjectHistoryDetail(selectedProjectSlug, latest.fileName)
+            const savedPageSize = getSavedLogPageSize()
+            const paging = savedPageSize > 0 ? { page: 1, limit: savedPageSize } : undefined
+            const run = await api.getProjectHistoryDetail(selectedProjectSlug, latest.fileName, paging)
             setActiveTrajectoryView(run)
             setSelectedHistoryId(latest.id)
+            setSelectedHistoryFileName(latest.fileName)
           }
         } catch {
           // Retain last live snapshot if history is not yet available
@@ -3427,6 +3451,7 @@ export function ProjectHarnessTab({
             liveInspect={liveInspect}
             inspectingJobId={inspectingJobId}
             selectedHistoryId={selectedHistoryId}
+            selectedHistoryFileName={selectedHistoryFileName}
             runningTaskId={runningTaskId}
             stoppingTaskId={stoppingTaskId}
             activeJobs={activeJobs}
@@ -3434,6 +3459,27 @@ export function ProjectHarnessTab({
             onStopJob={handleStopRunningJob}
             onBackToTasks={handleBackFromTrajectory}
             backLabel={logOrigin ? `Back to ${logOrigin}` : 'Back to tasks'}
+            onPageChange={async (page: number, pageSize: number) => {
+              if (!selectedProjectSlug) return
+              const paging = pageSize > 0 ? { page, limit: pageSize } : undefined
+              if (selectedHistoryFileName) {
+                const run = await api.getProjectHistoryDetail(
+                  selectedProjectSlug,
+                  selectedHistoryFileName,
+                  paging,
+                )
+                setActiveTrajectoryView(run)
+              } else if (inspectingJobId) {
+                const detail = await inspectProjectHarnessJob(
+                  selectedProjectSlug,
+                  inspectingJobId,
+                  paging,
+                )
+                if (detail.snapshot) {
+                  setActiveTrajectoryView(detail.snapshot)
+                }
+              }
+            }}
             onContinueTask={async (taskId, extraTurns, extraPrompt) => {
               await handleRunTask(
                 taskId,

@@ -14,7 +14,9 @@ import {
   downloadTrajectoryJson,
   buildAgentLog,
   filterAgentLogTurns,
+  paginateAgentLogTurns,
   parseToolResults,
+  type AgentLogPagination,
   type TrajectoryFilterType,
   type TrajectoryViewMode,
   agentLogScrollKey,
@@ -68,6 +70,7 @@ interface TaskTrajectoryViewerProps {
   liveInspect?: boolean
   inspectingJobId?: string | null
   selectedHistoryId?: string | null
+  selectedHistoryFileName?: string | null
   runningTaskId?: string | null
   stoppingTaskId?: string | null
   activeJobs?: HarnessActiveJob[]
@@ -77,6 +80,7 @@ interface TaskTrajectoryViewerProps {
   backLabel?: string
   onContinueTask?: (taskId: string, extraTurns: number, extraPrompt?: string) => Promise<void>
   maxTurnsLimit?: number
+  onPageChange?: (page: number, pageSize: number) => Promise<void>
   onOpenContinueModal?: (
     taskId: string,
     previousSteps: number,
@@ -97,6 +101,7 @@ export function TaskTrajectoryViewer({
   liveInspect = false,
   inspectingJobId,
   selectedHistoryId,
+  selectedHistoryFileName,
   runningTaskId,
   stoppingTaskId,
   activeJobs = [],
@@ -107,6 +112,7 @@ export function TaskTrajectoryViewer({
   onContinueTask,
   onOpenContinueModal,
   maxTurnsLimit = 500,
+  onPageChange,
 }: TaskTrajectoryViewerProps) {
   const effectiveProjectSlug = projectSlug || run.projectSlug || undefined
   const finalAnswerRef = useRef<HTMLDivElement>(null)
@@ -171,7 +177,116 @@ export function TaskTrajectoryViewer({
     () => filterAgentLogTurns(agentLog, filterType, searchQuery),
     [agentLog, filterType, searchQuery],
   )
-  const logScrollKey = useMemo(() => agentLogScrollKey(filteredLogTurns), [filteredLogTurns])
+  const [logPage, setLogPage] = useState(() => run.pagination?.page ?? 1)
+  const [logPageSize, setLogPageSize] = useState<number>(() => {
+    if (run.pagination?.limit) {
+      return run.pagination.limit
+    }
+    try {
+      const saved = localStorage.getItem('openduck.agentLog.pageSize')
+      if (saved !== null) {
+        const parsed = parseInt(saved, 10)
+        if (!Number.isNaN(parsed) && [25, 50, 100, 0].includes(parsed)) {
+          return parsed
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    return 50
+  })
+  const [loadingPage, setLoadingPage] = useState(false)
+
+  useEffect(() => {
+    if (run.pagination) {
+      setLogPage(run.pagination.page)
+      setLogPageSize(run.pagination.limit)
+    }
+  }, [run.pagination?.page, run.pagination?.limit])
+
+  const logPagination: AgentLogPagination = useMemo(() => {
+    if (run.pagination) {
+      const page = run.pagination.page
+      const pageSize = run.pagination.limit
+      const totalTurns = run.pagination.total
+      const totalPages = Math.max(1, run.pagination.totalPages)
+      const startIndex = (page - 1) * pageSize
+      const endIndex = Math.min(page * pageSize, totalTurns)
+      return {
+        page,
+        pageSize,
+        totalTurns,
+        totalPages,
+        startIndex,
+        endIndex,
+      }
+    }
+    return paginateAgentLogTurns(filteredLogTurns, logPage, logPageSize).pagination
+  }, [run.pagination, filteredLogTurns, logPage, logPageSize])
+
+  const pagedLogTurns = useMemo(() => {
+    if (run.pagination) {
+      return filteredLogTurns
+    }
+    return paginateAgentLogTurns(filteredLogTurns, logPage, logPageSize).pagedTurns
+  }, [run.pagination, filteredLogTurns, logPage, logPageSize])
+
+  useEffect(() => {
+    if (liveInspect && autoScrollRef.current) {
+      if (logPagination.totalPages !== logPage) {
+        setLogPage(logPagination.totalPages)
+      }
+    } else if (logPage > logPagination.totalPages) {
+      setLogPage(logPagination.totalPages)
+    }
+  }, [liveInspect, logPagination.totalPages, logPage])
+
+  useEffect(() => {
+    if (!run.pagination) {
+      setLogPage(1)
+    }
+  }, [filterType, searchQuery, run.pagination])
+
+  const handleLogPageSizeChange = useCallback(async (newSize: number) => {
+    setLogPageSize(newSize)
+    setLogPage(1)
+    try {
+      localStorage.setItem('openduck.agentLog.pageSize', String(newSize))
+    } catch {
+      // Ignore
+    }
+    if (onPageChange) {
+      setLoadingPage(true)
+      try {
+        await onPageChange(1, newSize)
+      } finally {
+        setLoadingPage(false)
+      }
+    }
+  }, [onPageChange])
+
+  const handleLogPageChange = useCallback(async (target: number) => {
+    const clamped = Math.min(Math.max(1, target), logPagination.totalPages)
+    setLogPage(clamped)
+    if (liveInspect && clamped < logPagination.totalPages) {
+      autoScrollRef.current = false
+      setAutoScroll(false)
+      userPagedAwayRef.current = true
+    }
+    if (agentLogTranscriptRef.current) {
+      agentLogTranscriptRef.current.scrollTop = 0
+    }
+    if (onPageChange && (run.pagination || logPageSize > 0)) {
+      setLoadingPage(true)
+      try {
+        await onPageChange(clamped, logPageSize)
+      } finally {
+        setLoadingPage(false)
+      }
+    }
+  }, [logPagination.totalPages, liveInspect, onPageChange, run.pagination, logPageSize])
+
+  const logScrollKey = useMemo(() => agentLogScrollKey(pagedLogTurns), [pagedLogTurns])
   const showAgentLog = viewMode === 'log' && (steps.length > 0 || filteredLogTurns.length > 0)
   if (liveFollowKeyRef.current !== liveFollowKey) {
     liveFollowKeyRef.current = liveFollowKey
@@ -414,8 +529,9 @@ export function TaskTrajectoryViewer({
     userPagedAwayRef.current = false
     autoScrollRef.current = true
     setAutoScroll(true)
+    setLogPage(logPagination.totalPages)
     pinLogToBottom(true)
-  }, [pinLogToBottom])
+  }, [logPagination.totalPages, pinLogToBottom])
 
   // Scroll active pill into view in the scrubber rail
   useEffect(() => {
@@ -647,7 +763,26 @@ export function TaskTrajectoryViewer({
             <button
               type="button"
               className="btn-secondary export-btn"
-              onClick={() => downloadTrajectoryJson(run)}
+              onClick={async () => {
+                if (
+                  run.pagination &&
+                  api &&
+                  effectiveProjectSlug &&
+                  (selectedHistoryFileName || selectedHistoryId)
+                ) {
+                  try {
+                    const full = await api.getProjectHistoryDetail(
+                      effectiveProjectSlug,
+                      selectedHistoryFileName || selectedHistoryId!,
+                    )
+                    downloadTrajectoryJson(full)
+                    return
+                  } catch {
+                    // Fall back to current page
+                  }
+                }
+                downloadTrajectoryJson(run)
+              }}
               title="Download complete trajectory log as JSON"
             >
               <Download size={14} /> Export JSON
@@ -1067,20 +1202,35 @@ export function TaskTrajectoryViewer({
           </div>
 
           {viewMode === 'log' ? (
-            <label className="agent-log-filter">
-              <Filter size={14} aria-hidden="true" />
-              <select
-                aria-label="Filter log"
-                value={filterType}
-                onChange={event => setFilterType(event.target.value as TrajectoryFilterType)}
-              >
-                <option value="all">All ({steps.length})</option>
-                <option value="tools">Tools ({toolStepCount})</option>
-                <option value="final_answer">Answer ({answerStepCount})</option>
-                <option value="yield">Stops ({stopStepCount})</option>
-                <option value="telemetry">Telemetry ({telemetryStepCount})</option>
-              </select>
-            </label>
+            <>
+              <label className="agent-log-filter">
+                <Filter size={14} aria-hidden="true" />
+                <select
+                  aria-label="Filter log"
+                  value={filterType}
+                  onChange={event => setFilterType(event.target.value as TrajectoryFilterType)}
+                >
+                  <option value="all">All ({steps.length})</option>
+                  <option value="tools">Tools ({toolStepCount})</option>
+                  <option value="final_answer">Answer ({answerStepCount})</option>
+                  <option value="yield">Stops ({stopStepCount})</option>
+                  <option value="telemetry">Telemetry ({telemetryStepCount})</option>
+                </select>
+              </label>
+              <label className="agent-log-pagesize" title="Turns per page">
+                <Layers size={14} aria-hidden="true" />
+                <select
+                  aria-label="Turns per page"
+                  value={logPageSize}
+                  onChange={e => handleLogPageSizeChange(Number(e.target.value))}
+                >
+                  <option value={25}>25 / page</option>
+                  <option value={50}>50 / page</option>
+                  <option value={100}>100 / page</option>
+                  <option value={0}>All turns</option>
+                </select>
+              </label>
+            </>
           ) : (
             <div className="filter-pills-group">
               <button
@@ -1143,7 +1293,65 @@ export function TaskTrajectoryViewer({
           </div>
         </div>
 
-        {viewMode !== 'log' && (
+        {viewMode === 'log' ? (
+          <div className="toolbar-bottom-row agent-log-toolbar-bottom">
+            <div className="stepper-controls">
+              <button
+                type="button"
+                className="stepper-btn"
+                onClick={() => handleLogPageChange(1)}
+                disabled={loadingPage || logPage <= 1}
+                title="First page"
+              >
+                « First
+              </button>
+              <button
+                type="button"
+                className="stepper-btn"
+                onClick={() => handleLogPageChange(logPage - 1)}
+                disabled={loadingPage || logPage <= 1}
+                title="Previous page"
+              >
+                <ChevronLeft size={14} /> Prev
+              </button>
+              <span className="stepper-count-indicator">
+                Page <strong>{logPage}</strong> of{' '}
+                <strong>{logPagination.totalPages}</strong>
+                {loadingPage && <span className="stepper-loading-tag"> …</span>}
+              </span>
+              <button
+                type="button"
+                className="stepper-btn"
+                onClick={() => handleLogPageChange(logPage + 1)}
+                disabled={loadingPage || logPage >= logPagination.totalPages}
+                title="Next page"
+              >
+                Next <ChevronRight size={14} />
+              </button>
+              <button
+                type="button"
+                className="stepper-btn"
+                onClick={() => handleLogPageChange(logPagination.totalPages)}
+                disabled={loadingPage || logPage >= logPagination.totalPages}
+                title="Last page"
+              >
+                Last »
+              </button>
+            </div>
+            <div className="agent-log-pagination-summary">
+              {logPagination.totalTurns > 0 ? (
+                <>
+                  Showing turns <strong>{logPagination.startIndex + 1}–{logPagination.endIndex}</strong> of <strong>{logPagination.totalTurns}</strong>
+                  {logPagination.totalTurns < agentLog.length && (
+                    <span className="agent-log-filtered-tag"> (filtered from {agentLog.length})</span>
+                  )}
+                </>
+              ) : (
+                <span>0 turns</span>
+              )}
+            </div>
+          </div>
+        ) : (
         <>
         {/* Stepper + Global LLM Toggle Bar */}
         <div className="toolbar-bottom-row">
@@ -1281,7 +1489,10 @@ export function TaskTrajectoryViewer({
 
       {showAgentLog && (
         <AgentLogTranscript
-          turns={filteredLogTurns}
+          turns={pagedLogTurns}
+          allTurns={filteredLogTurns}
+          pagination={logPagination}
+          onPageChange={handleLogPageChange}
           live={liveInspect}
           status={String(run.status)}
           sessionKey={`${run.taskId}:${selectedHistoryId ?? ''}:${String(run.status)}:${steps.length}`}

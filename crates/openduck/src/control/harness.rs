@@ -1582,6 +1582,24 @@ pub struct HarnessReplayRequest {
     pub task_file: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PaginationMetadata {
+    pub page: usize,
+    pub limit: usize,
+    pub total: usize,
+    pub total_pages: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct TrajectoryPagingQuery {
+    pub page: Option<usize>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    #[serde(alias = "pageSize", alias = "page_size")]
+    pub page_size: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessRunResponseDto {
@@ -1614,6 +1632,52 @@ pub struct HarnessRunResponseDto {
     /// Assistant prose from that same in-progress call. Present only with partial thinking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pagination: Option<PaginationMetadata>,
+}
+
+impl HarnessRunResponseDto {
+    pub fn apply_paging(&mut self, query: TrajectoryPagingQuery) {
+        if query.page.is_none()
+            && query.limit.is_none()
+            && query.offset.is_none()
+            && query.page_size.is_none()
+        {
+            return;
+        }
+
+        let total = self.trajectory.steps.len();
+        let limit = query.limit.or(query.page_size).unwrap_or(50).max(1);
+        let total_pages = if total == 0 {
+            1
+        } else {
+            (total + limit - 1) / limit
+        };
+
+        let (page, start_idx) = if let Some(p) = query.page {
+            let p_clamped = p.clamp(1, total_pages);
+            (p_clamped, (p_clamped - 1) * limit)
+        } else if let Some(off) = query.offset {
+            let p = (off / limit) + 1;
+            (p.clamp(1, total_pages), off.min(total))
+        } else {
+            (1, 0)
+        };
+
+        let end_idx = (start_idx + limit).min(total);
+        if start_idx < total {
+            self.trajectory.steps = self.trajectory.steps[start_idx..end_idx].to_vec();
+        } else {
+            self.trajectory.steps.clear();
+        }
+
+        self.pagination = Some(PaginationMetadata {
+            page,
+            limit,
+            total,
+            total_pages,
+        });
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1665,6 +1729,14 @@ pub struct HarnessJobInspectDto {
     pub job: HarnessActiveJobDto,
     pub live: bool,
     pub snapshot: Option<HarnessRunResponseDto>,
+}
+
+impl HarnessJobInspectDto {
+    pub fn apply_paging(&mut self, query: TrajectoryPagingQuery) {
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.apply_paging(query);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1968,6 +2040,7 @@ fn empty_live_snapshot(task_id: &str) -> HarnessRunResponseDto {
         provider_stats: None,
         partial_thinking: None,
         partial_text: None,
+        pagination: None,
     }
 }
 
@@ -2071,6 +2144,7 @@ fn live_snapshot_from_steps(
         provider_stats: Some(provider_stats),
         partial_thinking: None,
         partial_text: None,
+        pagination: None,
     }
 }
 
@@ -2157,6 +2231,7 @@ pub fn to_run_dto(
         provider_stats,
         partial_thinking: None,
         partial_text: None,
+        pagination: None,
     }
 }
 
@@ -2522,6 +2597,7 @@ pub fn failed_run_dto(
             provider_stats: None,
             partial_thinking: None,
             partial_text: None,
+            pagination: None,
         }
     }
 }
@@ -2554,6 +2630,7 @@ pub fn skipped_run_dto(task_id: &str, reason: &str) -> HarnessRunResponseDto {
         provider_stats: None,
         partial_thinking: None,
         partial_text: None,
+        pagination: None,
     }
 }
 
@@ -2611,6 +2688,7 @@ pub fn cancelled_run_dto(
             provider_stats: None,
             partial_thinking: None,
             partial_text: None,
+            pagination: None,
         }
     }
 }
@@ -3037,10 +3115,12 @@ pub async fn list_active_harness_jobs() -> Json<Vec<HarnessActiveJobDto>> {
 
 pub async fn inspect_harness_job(
     AxumPath(job_id): AxumPath<String>,
+    Query(paging): Query<TrajectoryPagingQuery>,
 ) -> Result<Json<HarnessJobInspectDto>, (StatusCode, Json<serde_json::Value>)> {
-    inspect_active_job(&job_id)
-        .map(Json)
-        .ok_or_else(|| not_found(format!("No running harness job: {job_id}")))
+    let mut inspect = inspect_active_job(&job_id)
+        .ok_or_else(|| not_found(format!("No running harness job: {job_id}")))?;
+    inspect.apply_paging(paging);
+    Ok(Json(inspect))
 }
 
 pub async fn stop_active_harness_job(
@@ -3066,8 +3146,11 @@ pub async fn list_harness_history(
 
 pub async fn get_harness_history_detail(
     AxumPath(run_id): AxumPath<String>,
+    Query(paging): Query<TrajectoryPagingQuery>,
 ) -> Result<Json<HarnessRunResponseDto>, (StatusCode, Json<serde_json::Value>)> {
-    read_history_run(&run_id, &[]).map(Json).map_err(not_found)
+    let mut run = read_history_run(&run_id, &[]).map_err(not_found)?;
+    run.apply_paging(paging);
+    Ok(Json(run))
 }
 
 pub async fn get_harness_overview(
@@ -3977,6 +4060,7 @@ mod tests {
             provider_stats: None,
             partial_thinking: None,
             partial_text: None,
+            pagination: None,
         }
     }
 
@@ -5515,5 +5599,183 @@ mod tests {
             policy.circuit_breaker().state().await,
             CircuitState::PrimaryHealthy
         );
+    }
+
+    fn make_test_step(index: usize) -> TrajectoryStep {
+        TrajectoryStep {
+            step_number: index,
+            timestamp: Utc::now(),
+            action: AgentAction::FinalAnswer(format!("answer {index}")),
+            tool_results: None,
+            duration_ms: 10,
+            token_usage: None,
+            llm_request: None,
+            llm_response: None,
+            judgments: None,
+            provider_calls: None,
+        }
+    }
+
+    fn make_test_run_dto(step_count: usize) -> HarnessRunResponseDto {
+        let steps = (1..=step_count).map(make_test_step).collect();
+        HarnessRunResponseDto {
+            task_id: "test-task".to_string(),
+            status: RunStatus::Success,
+            step_count,
+            tool_calls_count: 0,
+            duration_ms: 100,
+            final_answer: Some("done".to_string()),
+            trajectory: TrajectoryRecord {
+                session_id: "session-test".to_string(),
+                task_id: "test-task".to_string(),
+                policy_name: "test-policy".to_string(),
+                started_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                success: true,
+                steps,
+                system_prompt: None,
+                active_rules: None,
+                provider_stats: None,
+            },
+            recorded_cassette_path: None,
+            system_prompt: None,
+            active_rules: None,
+            continuation: None,
+            project_slug: None,
+            provider_stats: None,
+            partial_thinking: None,
+            partial_text: None,
+            pagination: None,
+        }
+    }
+
+    #[test]
+    fn test_apply_paging_unpaginated_returns_full() {
+        let mut dto = make_test_run_dto(7);
+        dto.apply_paging(TrajectoryPagingQuery::default());
+        assert_eq!(dto.trajectory.steps.len(), 7);
+        assert!(dto.pagination.is_none());
+    }
+
+    #[test]
+    fn test_apply_paging_first_page() {
+        let mut dto = make_test_run_dto(7);
+        dto.apply_paging(TrajectoryPagingQuery {
+            page: Some(1),
+            limit: Some(3),
+            offset: None,
+            page_size: None,
+        });
+        assert_eq!(dto.trajectory.steps.len(), 3);
+        assert_eq!(dto.trajectory.steps[0].step_number, 1);
+        assert_eq!(dto.trajectory.steps[2].step_number, 3);
+        let pagination = dto.pagination.expect("pagination must be present");
+        assert_eq!(pagination.page, 1);
+        assert_eq!(pagination.limit, 3);
+        assert_eq!(pagination.total, 7);
+        assert_eq!(pagination.total_pages, 3);
+    }
+
+    #[test]
+    fn test_apply_paging_middle_and_last_page() {
+        let mut dto = make_test_run_dto(7);
+        dto.apply_paging(TrajectoryPagingQuery {
+            page: Some(2),
+            limit: Some(3),
+            offset: None,
+            page_size: None,
+        });
+        assert_eq!(dto.trajectory.steps.len(), 3);
+        assert_eq!(dto.trajectory.steps[0].step_number, 4);
+        assert_eq!(dto.trajectory.steps[2].step_number, 6);
+        let pagination = dto.pagination.expect("pagination must be present");
+        assert_eq!(pagination.page, 2);
+
+        let mut dto_last = make_test_run_dto(7);
+        dto_last.apply_paging(TrajectoryPagingQuery {
+            page: Some(3),
+            limit: Some(3),
+            offset: None,
+            page_size: None,
+        });
+        assert_eq!(dto_last.trajectory.steps.len(), 1);
+        assert_eq!(dto_last.trajectory.steps[0].step_number, 7);
+        let pagination_last = dto_last.pagination.expect("pagination must be present");
+        assert_eq!(pagination_last.page, 3);
+        assert_eq!(pagination_last.total_pages, 3);
+    }
+
+    #[test]
+    fn test_apply_paging_clamping() {
+        let mut dto_overflow = make_test_run_dto(7);
+        dto_overflow.apply_paging(TrajectoryPagingQuery {
+            page: Some(99),
+            limit: Some(3),
+            offset: None,
+            page_size: None,
+        });
+        assert_eq!(dto_overflow.trajectory.steps.len(), 1);
+        assert_eq!(dto_overflow.trajectory.steps[0].step_number, 7);
+        assert_eq!(dto_overflow.pagination.unwrap().page, 3);
+
+        let mut dto_zero = make_test_run_dto(7);
+        dto_zero.apply_paging(TrajectoryPagingQuery {
+            page: Some(0),
+            limit: Some(3),
+            offset: None,
+            page_size: None,
+        });
+        assert_eq!(dto_zero.trajectory.steps.len(), 3);
+        assert_eq!(dto_zero.trajectory.steps[0].step_number, 1);
+        assert_eq!(dto_zero.pagination.unwrap().page, 1);
+    }
+
+    #[test]
+    fn test_apply_paging_with_offset() {
+        let mut dto = make_test_run_dto(7);
+        dto.apply_paging(TrajectoryPagingQuery {
+            page: None,
+            limit: Some(2),
+            offset: Some(2),
+            page_size: None,
+        });
+        assert_eq!(dto.trajectory.steps.len(), 2);
+        assert_eq!(dto.trajectory.steps[0].step_number, 3);
+        assert_eq!(dto.trajectory.steps[1].step_number, 4);
+        let pagination = dto.pagination.expect("pagination must be present");
+        assert_eq!(pagination.page, 2);
+    }
+
+    #[test]
+    fn test_inspect_job_apply_paging() {
+        let run_dto = make_test_run_dto(5);
+        let mut inspect = HarnessJobInspectDto {
+            job: HarnessActiveJobDto {
+                job_id: "j1".to_string(),
+                task_id: "t1".to_string(),
+                job_type: "task".to_string(),
+                description: "desc".to_string(),
+                started_at: Utc::now().to_rfc3339(),
+                current_status: "running".to_string(),
+                provider: None,
+                model: None,
+                project_slug: None,
+            },
+            live: true,
+            snapshot: Some(run_dto),
+        };
+
+        inspect.apply_paging(TrajectoryPagingQuery {
+            page: Some(2),
+            limit: Some(2),
+            offset: None,
+            page_size: None,
+        });
+
+        let snapshot = inspect.snapshot.expect("snapshot must exist");
+        assert_eq!(snapshot.trajectory.steps.len(), 2);
+        assert_eq!(snapshot.trajectory.steps[0].step_number, 3);
+        assert_eq!(snapshot.trajectory.steps[1].step_number, 4);
+        assert_eq!(snapshot.pagination.unwrap().page, 2);
     }
 }

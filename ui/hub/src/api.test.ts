@@ -55,6 +55,11 @@ test('createApi always exposes inspect methods for running jobs', async () => {
     await api.inspectHarnessJob('job_1')
     assert.equal(urls[0], 'http://host/api/v1/projects/my-proj/harness/jobs/job_1')
     assert.equal(urls[1], 'http://host/api/v1/harness/jobs/job_1')
+
+    await api.inspectProjectHarnessJob('my-proj', 'job_1', { page: 2, limit: 50 })
+    await api.inspectHarnessJob('job_1', { page: 3, limit: 25 })
+    assert.equal(urls[2], 'http://host/api/v1/projects/my-proj/harness/jobs/job_1?page=2&limit=50')
+    assert.equal(urls[3], 'http://host/api/v1/harness/jobs/job_1?page=3&limit=25')
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -755,6 +755,21 @@ export interface HarnessRunResponse {
   providerStats?: TaskProviderStats | null
   partialThinking?: string | null
   partialText?: string | null
+  pagination?: HarnessPagination | null
+}
+
+export interface HarnessPagination {
+  page: number
+  limit: number
+  total: number
+  totalPages: number
+}
+
+export interface TrajectoryPagingOptions {
+  page?: number
+  limit?: number
+  pageSize?: number
+  offset?: number
 }
 
 export interface HarnessJobInspect {

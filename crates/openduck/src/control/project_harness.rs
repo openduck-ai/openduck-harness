@@ -4,7 +4,7 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use anyhow::{anyhow, Context, Result};
 use axum::{
-    extract::Path as AxumPath,
+    extract::{Path as AxumPath, Query},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     Json,
@@ -40,7 +40,7 @@ use crate::control::harness::{
     to_run_dto, try_register_active_job, upsert_live_snapshot, with_live_snapshot,
     with_task_notes_plan, HarnessActiveJobDto, HarnessCassetteSummaryDto, HarnessHistorySummaryDto,
     HarnessJobInspectDto, HarnessJobLiveEvent, HarnessProjectEvent, HarnessReportSummaryDto,
-    HarnessRunResponseDto, TaskAlreadyRunningError,
+    HarnessRunResponseDto, TaskAlreadyRunningError, TrajectoryPagingQuery,
 };
 use crate::sources;
 
@@ -1265,15 +1265,17 @@ pub async fn list_project_active_jobs(
 
 pub async fn inspect_project_harness_job(
     AxumPath((slug, job_id)): AxumPath<(String, String)>,
+    Query(paging): Query<TrajectoryPagingQuery>,
 ) -> Result<Json<HarnessJobInspectDto>, (StatusCode, Json<serde_json::Value>)> {
     let (_entry, _root) = resolve_project_root(&slug).map_err(not_found)?;
-    let inspect = inspect_active_job(&job_id)
+    let mut inspect = inspect_active_job(&job_id)
         .ok_or_else(|| not_found(format!("No running harness job: {job_id}")))?;
     if inspect.job.project_slug.as_deref() != Some(slug.as_str()) {
         return Err(not_found(format!(
             "Job {job_id} is not running in project {slug}"
         )));
     }
+    inspect.apply_paging(paging);
     Ok(Json(inspect))
 }
 
@@ -1378,14 +1380,16 @@ pub async fn list_project_history(
 
 pub async fn get_project_history_detail(
     AxumPath((slug, run_id)): AxumPath<(String, String)>,
+    Query(paging): Query<TrajectoryPagingQuery>,
 ) -> Result<Json<HarnessRunResponseDto>, (StatusCode, Json<serde_json::Value>)> {
     let (_entry, root) = resolve_project_root(&slug).map_err(not_found)?;
     let project_dir = project_runs_dir(&root);
-    let run =
+    let mut run =
         tokio::task::spawn_blocking(move || read_history_run(&run_id, &[project_dir.as_path()]))
             .await
             .map_err(|e| bad(format!("Failed to read project history: {e}")))?
             .map_err(not_found)?;
+    run.apply_paging(paging);
     Ok(Json(run))
 }
 
