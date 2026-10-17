@@ -12,6 +12,7 @@ activities:
   - Validate Hub network monitoring for DNS, ICMP, direct connectivity, and proxy routes
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
+  - Validate per-session HTTPS proxy configuration for TUI agents
   - Test load tool for knowledge injection and discovery
   - Test delegate tool for task delegation (sync and async)
   - Test multi-turn thinking preservation for providers that reject replayed reasoning_content
@@ -88,6 +89,19 @@ instructions: |
   - Enable/disable extensions
   - Test extension interactions
   - Verify isolation between extensions
+
+  With the tui_agent extension enabled and Grok installed, start a session using
+  `tui_agent_start(agent: "grok", https_proxy: "http://127.0.0.1:2087")`.
+  Verify the session's tmux environment contains both `HTTPS_PROXY` and `https_proxy`
+  with that value using `tmux -L openduck show-environment -t <session_id>`.
+  If a proxy is listening at that address, submit a prompt and verify Grok responds.
+  Stop the session with `tui_agent_stop`. Record missing prerequisites as SKIPPED.
+  Repeat with `harness.tui_sessions.grok.https_proxy` set in the test project's
+  `.openduck/config.yaml`, passing that project as `cwd` and omitting the start
+  tool's `https_proxy` parameter. Verify both environment variables match the file.
+  Check that an explicit start parameter overrides the file and that
+  `harness.tui_sessions.default.https_proxy` applies when the agent entry is absent.
+  Restore the project's original configuration and stop all test sessions.
 
   ### Phase 3: Delegate & Load Testing
   Test the unified delegation and knowledge-loading tools:

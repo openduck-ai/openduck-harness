@@ -5,12 +5,21 @@ export default defineConfig({
   plugins: [react()],
   base: '/hub/',
   optimizeDeps: {
-    exclude: ['@aaif/goose-hub-core'],
+    exclude: [
+      '@aaif/goose-hub-core',
+      '@aaif/goose-hub-core/rest',
+      '@aaif/goose-hub-core/types',
+      '@aaif/goose-hub-core/url',
+      '@aaif/goose-hub-core/cron',
+    ],
   },
   server: {
     host: '0.0.0.0',
     port: 5173,
     fs: { allow: ['..'] },
+    watch: {
+      ignored: ['!**/hub-core/**'],
+    },
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:3000',

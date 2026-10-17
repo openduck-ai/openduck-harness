@@ -139,6 +139,7 @@ openduck-context-management = { path = "../openduck-context-management" }
 openduck-providers = { path = "../openduck-providers", default-features = false }
 openduck-download-manager = { path = "../openduck-download-manager" }
 openduck-harness = { path = "../openduck-harness", default-features = false }
+openduck-mcp = { path = "../openduck-mcp", default-features = false }
 openduck-sdk-types = { path = "../openduck-sdk-types" }
 openduck-agent = { path = "../openduck-agent" }
 rand = { workspace = true }
@@ -268,7 +269,6 @@ opentelemetry_sdk = { workspace = true, features = ["testing"] }
 openduck-test-support = { path = "../openduck-test-support", default-features = false }
 bytes = { workspace = true }
 http = { workspace = true }
-openduck-mcp = { path = "../openduck-mcp", default-features = false }
 insta = { version = "1", default-features = false }
 dtor = { version = "1.0.5", default-features = false, features = ["proc_macro"] }
 tower = { version = "0.5.2", default-features = false, features = ["util"] }

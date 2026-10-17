@@ -56,6 +56,10 @@ import type {
   HarnessProjectEvent,
   HarnessJobLiveEvent,
   TrajectoryPagingOptions,
+  TuiSessionSummary,
+  StartTuiSessionInput,
+  PromptTuiSessionInput,
+  TuiTurnResult,
 } from './types.ts'
 
 function formatPagingQuery(paging?: TrajectoryPagingOptions): string {
@@ -95,9 +99,12 @@ export async function readErrorMessage(response: Response): Promise<string> {
   return text
 }
 
-function requestTimeoutMs(path: string): number | null {
+function requestTimeoutMs(path: string, method = 'GET'): number | null {
   const route = path.toLowerCase()
   if (route === '/api/v1/network/status') return 40_000
+  if (method === 'POST' && /\/tui-sessions(?:\/[^/]+\/prompt)?$/.test(route)) {
+    return null
+  }
   if (
     route.includes('/run') ||
     route.includes('/eval') ||
@@ -146,7 +153,7 @@ export function createApi(baseUrl: string, secret = '') {
     const response = await fetchWithTimeout(
       apiUrl(baseUrl, path),
       { ...init, headers },
-      requestTimeoutMs(path),
+      requestTimeoutMs(path, init.method),
     )
     if (!response.ok) throw new Error(await readErrorMessage(response))
     return response.status === 204 ? (undefined as T) : response.json() as Promise<T>
@@ -310,6 +317,41 @@ export function createApi(baseUrl: string, secret = '') {
       request<ExecCommandOutput>(
         `/api/v1/projects/${encodeURIComponent(slug)}/terminal/exec`,
         { method: 'POST', body: JSON.stringify(input) },
+      ),
+    listTuiSessions: (slug: string, preview = true) =>
+      request<TuiSessionSummary[]>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/tui-sessions?preview=${preview}`,
+      ),
+    startTuiSession: (slug: string, input: StartTuiSessionInput) =>
+      request<{
+        sessionId: string
+        agent: string
+        pid: number
+        attachCommand: string
+        initialScreen: string
+        initialTurn?: TuiTurnResult
+      }>(`/api/v1/projects/${encodeURIComponent(slug)}/tui-sessions`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    promptTuiSession: (slug: string, id: string, input: PromptTuiSessionInput) =>
+      request<TuiTurnResult>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/tui-sessions/${encodeURIComponent(id)}/prompt`,
+        { method: 'POST', body: JSON.stringify(input) },
+      ),
+    keysTuiSession: (slug: string, id: string, keys: string[]) =>
+      request<{ success: boolean }>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/tui-sessions/${encodeURIComponent(id)}/keys`,
+        { method: 'POST', body: JSON.stringify({ keys }) },
+      ),
+    readTuiSession: (slug: string, id: string, scrollback = 120, ansi = false) =>
+      request<TuiTurnResult>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/tui-sessions/${encodeURIComponent(id)}?scrollback=${scrollback}&ansi=${ansi}`,
+      ),
+    stopTuiSession: (slug: string, id: string) =>
+      request<{ success: boolean }>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/tui-sessions/${encodeURIComponent(id)}`,
+        { method: 'DELETE' },
       ),
     getGitStatus: (slug: string) =>
       request<GitStatusResponse>(

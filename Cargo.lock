@@ -7612,6 +7612,7 @@ name = "openduck-mcp"
 version = "1.47.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.23.1",
  "chromiumoxide",
  "chrono",
@@ -7623,6 +7624,7 @@ dependencies = [
  "indoc",
  "lopdf",
  "once_cell",
+ "openduck-harness",
  "process-wrap",
  "regex",
  "reqwest 0.13.4",
@@ -7639,6 +7641,7 @@ dependencies = [
  "tracing-subscriber",
  "umya-spreadsheet",
  "url",
+ "uuid",
  "which 8.0.5",
 ]
 

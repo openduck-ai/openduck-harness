@@ -55,6 +55,7 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 - **15+ LLM Providers & Reasoning Models**: Anthropic, OpenAI, Google Gemini (with thought signature extraction), Ollama (local models), OpenRouter, Azure Foundry, AWS Bedrock, Databricks, Snowflake, and Qwen (with reasoning effort mapping for Qwen 3.8 Flash, QwQ, and thinking variants).
 - **HTTP & SOCKS Proxy Support**: Connect providers through HTTP or SOCKS5 proxies configured via declarative files, environment variables, or the Web Hub UI.
 - **Model Context Protocol (MCP)**: Native support for 70+ community MCP extensions plus built-in extensions:
+  - `tui_agent` / `tui_session`: Persistent interactive coding agent TUI & tmux driver (`agy`, `grok`, `codex`, `claude`, `custom`) with bracketed paste, interactive modal/keystroke answering, lossless side-channel transcript correlation, and live human attachment.
   - `agy`: Antigravity CLI integration for delegated subagent task execution.
   - `developer`: Local shell command execution, file reading, and editing.
   - `computercontroller`: Headless browser scraping and automated web interaction.
@@ -200,7 +201,18 @@ openduck session --resume
 openduck session --resume --name "auth-refactor"
 
 # Pass built-in or custom MCP extensions
-openduck session --with-builtin developer,agy
+openduck session --with-builtin developer,agy,tui_agent
+```
+
+### 🖥️ Persistent Agent TUI & Tmux Sessions
+Drive external coding agents interactively with zero cold-start, multi-line bracketed paste, and live terminal attachability:
+
+```bash
+# Start an OpenDuck session with the tui_agent driver enabled
+openduck session --with-builtin tui_agent
+
+# Attach live to a running agent session (agy, grok, codex, or claude)
+tmux -L openduck attach -t <session_id>
 ```
 
 ### Headless Instruction Execution
@@ -273,7 +285,7 @@ crates/
 ├── openduck-harness         # Harness runtime, sandbox drivers, eval engine, replay cassettes
 ├── openduck-agent           # Pluggable agent policies and state machines
 ├── openduck-cli             # CLI entrypoints (`openduck`, `goose`, `duck`)
-├── openduck-mcp             # MCP extensions (agy, developer, computer controller, polymarket, memory)
+├── openduck-mcp             # MCP extensions (tui_session, agy, developer, computer controller, polymarket, memory)
 ├── openduck-providers       # LLM provider implementations (Anthropic, OpenAI, Gemini, Ollama, etc.)
 ├── openduck-provider-types  # Canonical provider request/response type definitions
 ├── openduck-sdk             # Cross-language SDK bindings & UniFFI (Python, Kotlin/Maven, Swift)
@@ -301,7 +313,7 @@ OpenDuck stores configuration under standard XDG directories:
 - **Data & Sessions**: `~/.local/share/openduck/` (legacy fallback: `~/.local/share/goose/`)
 - **State & Run**: `~/.local/state/openduck/` (legacy fallback: `~/.local/state/goose/`)
 
-For a detailed breakdown of all configuration files in `~/.config/openduck/` (including `config.yaml`, `secrets.yaml`, `notifications.yaml`, `permission.yaml`, and custom providers), see the [Configuration Files Guide](documentation/docs/guides/config-files.md).
+For a detailed breakdown of all configuration files in `~/.config/openduck/` (including `config.yaml`, `secrets.yaml`, `notifications.yaml`, `permission.yaml`, and custom providers), see the [Configuration Files Guide](documentation/docs/guides/config-files.md). For persistent agent CLI TUI sessions and proxy/lifecycle configuration, see the [Interactive TUI Sessions Guide](documentation/docs/guides/tui-sessions.md) and [TUI Driver Extension Reference](documentation/docs/mcp/tui-agent-mcp.md).
 
 ### Key Environment Variables
 

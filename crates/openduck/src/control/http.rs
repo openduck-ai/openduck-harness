@@ -1203,6 +1203,78 @@ async fn exec_project_terminal(
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
 }
 
+async fn start_project_tui_session(
+    AxumPath(slug): AxumPath<String>,
+    Json(req): Json<super::terminal::StartTuiSessionRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let entry = sources::read_project(&slug).map_err(not_found)?;
+    let project = project_dto(&entry).map_err(bad)?;
+    let result = super::terminal::start_project_tui_session(Path::new(&project.path), req)
+        .await
+        .map_err(bad)?;
+    Ok(Json(result))
+}
+
+async fn list_project_tui_sessions(
+    AxumPath(slug): AxumPath<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let entry = sources::read_project(&slug).map_err(not_found)?;
+    let project = project_dto(&entry).map_err(bad)?;
+    let preview = query
+        .get("preview")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    let sessions = super::terminal::list_project_tui_sessions(Path::new(&project.path), preview)
+        .await
+        .map_err(bad)?;
+    Ok(Json(serde_json::to_value(sessions).map_err(bad)?))
+}
+
+async fn prompt_project_tui_session(
+    AxumPath((_slug, id)): AxumPath<(String, String)>,
+    Json(req): Json<super::terminal::PromptTuiSessionRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let result = super::terminal::prompt_project_tui_session(&id, req)
+        .await
+        .map_err(bad)?;
+    Ok(Json(serde_json::to_value(result).map_err(bad)?))
+}
+
+async fn keys_project_tui_session(
+    AxumPath((_slug, id)): AxumPath<(String, String)>,
+    Json(req): Json<super::terminal::KeysTuiSessionRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    super::terminal::keys_project_tui_session(&id, req)
+        .await
+        .map_err(bad)?;
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+async fn read_project_tui_session(
+    AxumPath((_slug, id)): AxumPath<(String, String)>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let scrollback = query.get("scrollback").and_then(|s| s.parse::<i32>().ok());
+    let ansi = query
+        .get("ansi")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    let result = super::terminal::read_project_tui_session(&id, scrollback, ansi)
+        .await
+        .map_err(bad)?;
+    Ok(Json(serde_json::to_value(result).map_err(bad)?))
+}
+
+async fn stop_project_tui_session(
+    AxumPath((_slug, id)): AxumPath<(String, String)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    super::terminal::stop_project_tui_session(&id)
+        .await
+        .map_err(bad)?;
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
 fn project_dir(slug: &str) -> Result<PathBuf, (StatusCode, Json<serde_json::Value>)> {
     let entry = sources::read_project(slug).map_err(not_found)?;
     let project = project_dto(&entry).map_err(bad)?;
@@ -1592,6 +1664,22 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
         .route(
             "/api/v1/projects/{slug}/terminal/exec",
             post(exec_project_terminal),
+        )
+        .route(
+            "/api/v1/projects/{slug}/tui-sessions",
+            get(list_project_tui_sessions).post(start_project_tui_session),
+        )
+        .route(
+            "/api/v1/projects/{slug}/tui-sessions/{id}",
+            get(read_project_tui_session).delete(stop_project_tui_session),
+        )
+        .route(
+            "/api/v1/projects/{slug}/tui-sessions/{id}/prompt",
+            post(prompt_project_tui_session),
+        )
+        .route(
+            "/api/v1/projects/{slug}/tui-sessions/{id}/keys",
+            post(keys_project_tui_session),
         )
         .route("/api/v1/projects/{slug}/git/status", get(git_status))
         .route("/api/v1/projects/{slug}/git/log", get(git_log))

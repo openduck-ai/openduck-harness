@@ -251,6 +251,26 @@ pub fn discover_advisor_configs(
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TuiSessionDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "httpsProxy")]
+    pub https_proxy: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "idle_timeout_mins",
+        alias = "idleTimeoutMins"
+    )]
+    pub idle_timeout_mins: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "exited_retention_mins",
+        alias = "exitedRetentionMins"
+    )]
+    pub exited_retention_mins: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HarnessGlobalSettings {
     #[serde(
         default,
@@ -306,6 +326,8 @@ pub struct HarnessGlobalSettings {
     pub advisor_timeout_seconds: Option<u64>,
     #[serde(default)]
     pub advisors: HashMap<String, AdvisorProxyConfig>,
+    #[serde(default, alias = "tuiSessions")]
+    pub tui_sessions: HashMap<String, TuiSessionDefaults>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge: Option<crate::project::JudgeConfig>,
 }
@@ -366,8 +388,19 @@ pub fn parse_harness_global_settings_str(content: &str) -> HarnessGlobalSettings
     let mut settings = HarnessGlobalSettings::default();
     if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(content) {
         if let Some(harness_val) = val.get("harness") {
-            if let Ok(parsed) = serde_yaml::from_value::<HarnessGlobalSettings>(harness_val.clone())
+            if let Ok(mut parsed) =
+                serde_yaml::from_value::<HarnessGlobalSettings>(harness_val.clone())
             {
+                parsed.advisors = parsed
+                    .advisors
+                    .into_iter()
+                    .map(|(k, v)| (k.to_lowercase(), v))
+                    .collect();
+                parsed.tui_sessions = parsed
+                    .tui_sessions
+                    .into_iter()
+                    .map(|(k, v)| (k.to_lowercase(), v))
+                    .collect();
                 settings = parsed;
             }
         }
@@ -405,6 +438,9 @@ pub fn parse_harness_global_settings_str(content: &str) -> HarnessGlobalSettings
             }
             for (k, v) in top_parsed.advisors {
                 settings.advisors.entry(k.to_lowercase()).or_insert(v);
+            }
+            for (k, v) in top_parsed.tui_sessions {
+                settings.tui_sessions.entry(k.to_lowercase()).or_insert(v);
             }
         }
         if settings.max_turns.is_none() {
@@ -455,6 +491,9 @@ pub fn discover_global_harness_settings(
             }
             for (k, v) in loaded.advisors {
                 result.advisors.entry(k.to_lowercase()).or_insert(v);
+            }
+            for (k, v) in loaded.tui_sessions {
+                result.tui_sessions.entry(k.to_lowercase()).or_insert(v);
             }
         }
     }

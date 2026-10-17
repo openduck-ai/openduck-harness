@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     middleware::Next,
     response::Response,
+    Json,
 };
 use subtle::ConstantTimeEq;
 
@@ -16,7 +17,7 @@ pub async fn check_acp_token(
     State(state): State<String>,
     request: Request,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
     if request.method() == axum::http::Method::OPTIONS {
         return Ok(next.run(request).await);
     }
@@ -41,6 +42,11 @@ pub async fn check_acp_token(
             path = %request.uri().path(),
             "ACP authentication failed: missing or invalid secret key"
         );
-        Err(StatusCode::UNAUTHORIZED)
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "error": "Unauthorized: missing or invalid X-Secret-Key header or token query parameter"
+            })),
+        ))
     }
 }

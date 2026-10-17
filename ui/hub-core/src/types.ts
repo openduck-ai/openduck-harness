@@ -349,6 +349,60 @@ export interface ExecCommandOutput {
   cwd: string
 }
 
+export type AgentCliKind = 'agy' | 'grok' | 'codex' | 'claude' | 'custom'
+
+export interface TuiSessionState {
+  status: 'initializing' | 'idle_prompt' | 'working' | 'waiting_approval' | 'exited'
+  statusLine?: string
+  promptSnippet?: string
+  exitCode?: number
+}
+
+export interface TuiSessionSummary {
+  sessionId: string
+  kind: AgentCliKind
+  pid?: number
+  cwd: string
+  state: TuiSessionState
+  attachCommand: string
+  createdAtUnixSecs: number
+  lastActivityUnixSecs?: number
+  exitedAtUnixSecs?: number
+  screenPreview?: string
+}
+
+export interface StartTuiSessionInput {
+  agent: AgentCliKind
+  cwd?: string
+  model?: string
+  effort?: string
+  autoApprove?: boolean
+  resumeId?: string
+  initialPrompt?: string
+  sessionId?: string
+  extraArgs?: string[]
+  httpsProxy?: string
+  idleTimeoutMins?: number
+  exitedRetentionMins?: number
+}
+
+export interface PromptTuiSessionInput {
+  prompt: string
+  wait?: boolean
+  timeoutSecs?: number
+}
+
+export interface TuiTurnResult {
+  sessionId: string
+  agent: AgentCliKind
+  state: TuiSessionState
+  response: string
+  screenSnapshot: string
+  extractionSource: string
+  durationMs: number
+  attachCommand: string
+}
+
 export interface GitFileChange {
   path: string
   originalPath?: string

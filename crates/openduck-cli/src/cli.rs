@@ -12,7 +12,7 @@ use openduck::source_roots::SourceRoot;
 use openduck_mcp::mcp_server_runner::{serve, McpCommand};
 use openduck_mcp::{
     AgyServer, AutoVisualiserRouter, ComputerControllerServer, GrokServer, MemoryServer,
-    PolymarketServer, TutorialServer,
+    PolymarketServer, TuiAgentServer, TutorialServer,
 };
 
 #[cfg(feature = "telemetry")]
@@ -1412,6 +1412,7 @@ async fn handle_mcp_command(server: McpCommand) -> Result<()> {
         McpCommand::Grok => serve(GrokServer::new()).await?,
         McpCommand::Memory => serve(MemoryServer::new()).await?,
         McpCommand::Polymarket => serve(PolymarketServer::new()).await?,
+        McpCommand::TuiAgent => serve(TuiAgentServer::new()).await?,
         McpCommand::Tutorial => serve(TutorialServer::new()).await?,
     }
     Ok(())

@@ -350,6 +350,35 @@ test('REST client drafts a project task from the chat', async () => {
   }
 })
 
+test('TUI start and prompt calls can wait for a turn while screen polling keeps its timeout', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Request[] = []
+  const signals: (AbortSignal | null | undefined)[] = []
+  globalThis.fetch = async (input, init) => {
+    calls.push(new Request(input, init))
+    signals.push(init?.signal)
+    return new Response('{}', { status: 200 })
+  }
+  try {
+    const api = createApi('http://host', 'secret')
+    await api.startTuiSession('my-proj', { agent: 'grok', initialPrompt: 'hello' })
+    await api.promptTuiSession('my-proj', 'grok_123', { prompt: 'hello', wait: true })
+    await api.listTuiSessions('my-proj')
+    await api.readTuiSession('my-proj', 'grok_123')
+
+    assert.equal(signals[0] ?? null, null)
+    assert.equal(signals[1] ?? null, null)
+    assert.ok(signals[2])
+    assert.ok(signals[3])
+    assert.equal(calls[1].url, 'http://host/api/v1/projects/my-proj/tui-sessions/grok_123/prompt')
+    assert.equal(calls[1].method, 'POST')
+    assert.equal(calls[1].headers.get('X-Secret-Key'), 'secret')
+    assert.deepEqual(await calls[1].json(), { prompt: 'hello', wait: true })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('ordinary REST calls still use the short timeout', async () => {
   const originalFetch = globalThis.fetch
   let signal: AbortSignal | null | undefined

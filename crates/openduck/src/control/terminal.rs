@@ -117,6 +117,160 @@ pub async fn execute_project_command(
     })
 }
 
+use once_cell::sync::Lazy;
+use openduck_mcp::tui_session::{
+    TuiSessionConfig, TuiSessionManager, TuiSessionSummary, TuiTurnResult,
+};
+use std::sync::Arc;
+
+static TUI_SESSION_MANAGER: Lazy<Arc<TuiSessionManager>> =
+    Lazy::new(|| Arc::new(TuiSessionManager::default()));
+
+pub fn get_tui_session_manager() -> Arc<TuiSessionManager> {
+    TUI_SESSION_MANAGER.clone()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartTuiSessionRequest {
+    pub agent: String,
+    pub cwd: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub auto_approve: Option<bool>,
+    pub resume_id: Option<String>,
+    pub initial_prompt: Option<String>,
+    pub session_id: Option<String>,
+    pub extra_args: Option<Vec<String>>,
+    pub https_proxy: Option<String>,
+    pub idle_timeout_mins: Option<u64>,
+    pub exited_retention_mins: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptTuiSessionRequest {
+    pub prompt: String,
+    pub wait: Option<bool>,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeysTuiSessionRequest {
+    pub keys: Vec<String>,
+}
+
+pub async fn start_project_tui_session(
+    project_root: &Path,
+    req: StartTuiSessionRequest,
+) -> Result<serde_json::Value> {
+    let working_dir = if let Some(cwd_rel) = req.cwd.as_deref().filter(|s| !s.trim().is_empty()) {
+        resolve_project_path(project_root, cwd_rel)?
+    } else {
+        project_root.canonicalize()?
+    };
+
+    let kind = std::str::FromStr::from_str(&req.agent)
+        .map_err(|e: anyhow::Error| anyhow!(e.to_string()))?;
+
+    let session_id = req
+        .session_id
+        .unwrap_or_else(|| format!("{}_{}", kind, chrono::Utc::now().timestamp_millis()));
+
+    let config = TuiSessionConfig {
+        session_id: session_id.clone(),
+        kind,
+        cwd: working_dir,
+        model: req.model,
+        effort: req.effort,
+        auto_approve: req.auto_approve.unwrap_or(true),
+        resume_id: req.resume_id,
+        cols: 160,
+        rows: 48,
+        extra_args: req.extra_args.unwrap_or_default(),
+        https_proxy: req.https_proxy,
+        env: Vec::new(),
+        idle_timeout_mins: req.idle_timeout_mins,
+        exited_retention_mins: req.exited_retention_mins,
+    };
+
+    let manager = get_tui_session_manager();
+    let handle = manager.start_session(config).await?;
+
+    let mut initial_turn = None;
+    if let Some(prompt) = req.initial_prompt {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        if let Ok(turn) = handle
+            .send_prompt(&prompt, true, Duration::from_secs(600))
+            .await
+        {
+            initial_turn = Some(turn);
+        }
+    }
+
+    let screen = handle
+        .backend
+        .capture_screen(&session_id, false, Some(30))
+        .await
+        .unwrap_or_default();
+
+    Ok(serde_json::json!({
+        "sessionId": session_id,
+        "agent": kind.to_string(),
+        "pid": handle.pid,
+        "attachCommand": handle.backend.attach_command(&session_id),
+        "initialScreen": screen,
+        "initialTurn": initial_turn,
+    }))
+}
+
+pub async fn list_project_tui_sessions(
+    _project_root: &Path,
+    preview: bool,
+) -> Result<Vec<TuiSessionSummary>> {
+    let manager = get_tui_session_manager();
+    Ok(manager.list_sessions(preview).await)
+}
+
+pub async fn reclaim_project_tui_sessions() -> Result<Vec<String>> {
+    let manager = get_tui_session_manager();
+    Ok(manager.reclaim_stale_sessions().await)
+}
+
+pub async fn prompt_project_tui_session(
+    session_id: &str,
+    req: PromptTuiSessionRequest,
+) -> Result<TuiTurnResult> {
+    let manager = get_tui_session_manager();
+    let handle = manager.get_session(session_id).await?;
+    let timeout = Duration::from_secs(req.timeout_secs.unwrap_or(600));
+    handle
+        .send_prompt(&req.prompt, req.wait.unwrap_or(true), timeout)
+        .await
+}
+
+pub async fn keys_project_tui_session(session_id: &str, req: KeysTuiSessionRequest) -> Result<()> {
+    let manager = get_tui_session_manager();
+    let handle = manager.get_session(session_id).await?;
+    handle.send_keys(&req.keys).await
+}
+
+pub async fn read_project_tui_session(
+    session_id: &str,
+    scrollback_lines: Option<i32>,
+    include_ansi: bool,
+) -> Result<TuiTurnResult> {
+    let manager = get_tui_session_manager();
+    let handle = manager.get_session(session_id).await?;
+    handle.read_state(scrollback_lines, include_ansi).await
+}
+
+pub async fn stop_project_tui_session(session_id: &str) -> Result<()> {
+    let manager = get_tui_session_manager();
+    manager.stop_session(session_id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

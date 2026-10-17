@@ -11,6 +11,7 @@ pub enum McpCommand {
     Grok,
     Memory,
     Polymarket,
+    TuiAgent,
     Tutorial,
 }
 
@@ -18,13 +19,14 @@ impl FromStr for McpCommand {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().replace(' ', "").as_str() {
+        match s.to_lowercase().replace([' ', '_', '-'], "").as_str() {
             "agy" => Ok(McpCommand::Agy),
             "autovisualiser" => Ok(McpCommand::AutoVisualiser),
             "computercontroller" => Ok(McpCommand::ComputerController),
             "grok" => Ok(McpCommand::Grok),
             "memory" => Ok(McpCommand::Memory),
             "polymarket" => Ok(McpCommand::Polymarket),
+            "tuiagent" => Ok(McpCommand::TuiAgent),
             "tutorial" => Ok(McpCommand::Tutorial),
             _ => Err(format!("Invalid command: {}", s)),
         }
@@ -40,6 +42,7 @@ impl McpCommand {
             McpCommand::Grok => "grok",
             McpCommand::Memory => "memory",
             McpCommand::Polymarket => "polymarket",
+            McpCommand::TuiAgent => "tui_agent",
             McpCommand::Tutorial => "tutorial",
         }
     }

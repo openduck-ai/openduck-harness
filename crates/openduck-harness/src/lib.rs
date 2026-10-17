@@ -45,8 +45,9 @@ pub use telemetry::{
     TrajectoryStep,
 };
 pub use types::{
-    discover_advisor_configs, effective_max_turns_limit, load_advisor_configs_file,
-    parse_advisor_configs_str, standard_advisor_config_paths, AdvisorProxyConfig, ExecOptions,
-    ExecOutput, RunStatus, SnapshotId, ToolCallRequest, ToolCallResponse, ToolDefinition,
-    DEFAULT_MAX_TURNS_LIMIT,
+    discover_advisor_configs, discover_global_harness_settings, effective_max_turns_limit,
+    load_advisor_configs_file, load_harness_global_settings_file, parse_advisor_configs_str,
+    parse_harness_global_settings_str, standard_advisor_config_paths, AdvisorProxyConfig,
+    ExecOptions, ExecOutput, HarnessGlobalSettings, RunStatus, SnapshotId, ToolCallRequest,
+    ToolCallResponse, ToolDefinition, TuiSessionDefaults, DEFAULT_MAX_TURNS_LIMIT,
 };

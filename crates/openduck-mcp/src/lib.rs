@@ -21,6 +21,7 @@ mod memory;
 pub mod peekaboo;
 pub mod polymarket;
 pub mod subprocess;
+pub mod tui_session;
 pub mod tutorial;
 
 pub use agy::AgyServer;
@@ -29,6 +30,7 @@ pub use computercontroller::ComputerControllerServer;
 pub use grok::GrokServer;
 pub use memory::MemoryServer;
 pub use polymarket::PolymarketServer;
+pub use tui_session::TuiAgentServer;
 pub use tutorial::TutorialServer;
 
 /// Type definition for a function that spawns and serves a builtin extension server
@@ -68,6 +70,7 @@ pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, SpawnServerFn>> = Lazy
         builtin!(grok, GrokServer),
         builtin!(memory, MemoryServer),
         builtin!(polymarket, PolymarketServer),
+        builtin!(tui_agent, TuiAgentServer),
         builtin!(tutorial, TutorialServer),
     ])
 });
