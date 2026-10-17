@@ -50,6 +50,8 @@ import { SubtaskEditor, TaskDraftChat } from './TaskDraftPanel.tsx'
 import {
   applyTaskDraft,
   blankSubtask,
+  calculateTaskMaxTurnsFromSubtasks,
+  recalculateSubtasksTurns,
   shouldReplaceGeneratedTaskId,
   subtaskSaveError,
   subtasksForSave,
@@ -1221,6 +1223,7 @@ export function ProjectHarnessTab({
         ...prev,
         maxTurns: res.suggestedMaxTurns,
         timeoutSeconds: res.suggestedTimeoutSeconds,
+        subtasks: recalculateSubtasksTurns(prev.subtasks, res.suggestedMaxTurns, maxTurnsLimit),
       }))
       setSuccessMsg(
         feedbackToSend
@@ -1246,6 +1249,7 @@ export function ProjectHarnessTab({
       ...prev,
       maxTurns: newTurns,
       timeoutSeconds: newTimeout,
+      subtasks: recalculateSubtasksTurns(prev.subtasks, newTurns, maxTurnsLimit),
     }))
     setSuccessMsg(`Budget manually adjusted to ${newTurns} turns (${newTimeout}s)`)
   }
@@ -2343,10 +2347,11 @@ export function ProjectHarnessTab({
                       value={taskForm.maxTurns || 25}
                       onChange={e => {
                         const maxTurns = Math.max(1, Math.min(maxTurnsLimit, Number(e.target.value) || 25))
-                        setTaskForm({
-                          ...taskForm,
+                        setTaskForm(prev => ({
+                          ...prev,
                           maxTurns,
-                        })
+                          subtasks: recalculateSubtasksTurns(prev.subtasks, maxTurns, maxTurnsLimit),
+                        }))
                       }}
                     />
                   </div>
@@ -2397,18 +2402,42 @@ export function ProjectHarnessTab({
                 <SubtaskEditor
                   subtasks={taskForm.subtasks ?? []}
                   maxTurnsLimit={maxTurnsLimit}
-                  onChange={next =>
-                    setTaskForm({
-                      ...taskForm,
+                  onChange={next => {
+                    const newMaxTurns = calculateTaskMaxTurnsFromSubtasks(next, taskForm.maxTurns, maxTurnsLimit)
+                    setTaskForm(prev => ({
+                      ...prev,
                       subtasks: next.length ? next : undefined,
-                    })
-                  }
-                  onAdd={() =>
-                    setTaskForm({
-                      ...taskForm,
-                      subtasks: [...(taskForm.subtasks ?? []), blankSubtask((taskForm.subtasks ?? []).length)],
-                    })
-                  }
+                      maxTurns: next.length ? newMaxTurns : prev.maxTurns,
+                    }))
+                  }}
+                  onAdd={() => {
+                    const currentSubtasks = taskForm.subtasks ?? []
+                    if (currentSubtasks.length === 0) {
+                      const firstSubtask = blankSubtask(0, taskForm.maxTurns || 25)
+                      setTaskForm(prev => ({
+                        ...prev,
+                        subtasks: [firstSubtask],
+                      }))
+                    } else if (currentSubtasks.length === 1) {
+                      const totalTurns = taskForm.maxTurns || 25
+                      const subtask2 = blankSubtask(1, 1)
+                      const recalculated = recalculateSubtasksTurns([currentSubtasks[0], subtask2], totalTurns, maxTurnsLimit)
+                      setTaskForm(prev => ({
+                        ...prev,
+                        subtasks: recalculated,
+                      }))
+                    } else {
+                      const avgTurns = Math.max(1, Math.round((taskForm.maxTurns || 25) / (currentSubtasks.length + 1)))
+                      const newSubtask = blankSubtask(currentSubtasks.length, avgTurns)
+                      const nextSubtasks = [...currentSubtasks, newSubtask]
+                      const newMaxTurns = calculateTaskMaxTurnsFromSubtasks(nextSubtasks, taskForm.maxTurns, maxTurnsLimit)
+                      setTaskForm(prev => ({
+                        ...prev,
+                        subtasks: nextSubtasks,
+                        maxTurns: newMaxTurns,
+                      }))
+                    }
+                  }}
                 />
 
                 <div className="form-group">

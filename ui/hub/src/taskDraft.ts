@@ -58,12 +58,12 @@ export function blankExpectedOutput(): SubtaskExpectedOutput {
   return { description: '', kind: 'note' }
 }
 
-export function blankSubtask(index: number): SubtaskSpec {
+export function blankSubtask(index: number, defaultTurns: number = 8): SubtaskSpec {
   return {
     id: `subtask-${index + 1}`,
     title: '',
     description: '',
-    maxTurns: 8,
+    maxTurns: defaultTurns,
     expectedOutputs: [blankExpectedOutput()],
   }
 }
@@ -128,4 +128,79 @@ export function subtaskSaveError(subtasks: SubtaskSpec[] | undefined): string | 
 function emptyToUndefined(value: string | undefined): string | undefined {
   const trimmed = value?.trim()
   return trimmed ? trimmed : undefined
+}
+
+/**
+ * Calculates the total task max turns from subtasks.
+ * When subtasks are present, task max turns is the sum of all subtask max turns.
+ */
+export function calculateTaskMaxTurnsFromSubtasks(
+  subtasks: SubtaskSpec[] | undefined,
+  currentTaskMaxTurns?: number,
+  maxTurnsLimit: number = 500,
+): number {
+  if (!subtasks || subtasks.length === 0) {
+    return Math.max(1, Math.min(maxTurnsLimit, currentTaskMaxTurns || 25))
+  }
+  const sum = subtasks.reduce((acc, subtask) => {
+    const turns =
+      typeof subtask.maxTurns === 'number' && subtask.maxTurns > 0
+        ? Math.round(subtask.maxTurns)
+        : 8
+    return acc + turns
+  }, 0)
+  return Math.max(1, Math.min(maxTurnsLimit, sum))
+}
+
+/**
+ * Re-calculates each subtask's maxTurns proportionally when the parent task's max turns changes.
+ * Guarantees that:
+ * 1. Each subtask gets at least 1 turn.
+ * 2. Total turns across subtasks matches totalTurns (clamped to [count, maxTurnsLimit]).
+ * 3. Proportions between existing subtasks are preserved.
+ */
+export function recalculateSubtasksTurns(
+  subtasks: SubtaskSpec[] | undefined,
+  totalTurns: number,
+  maxTurnsLimit: number = 500,
+): SubtaskSpec[] | undefined {
+  if (!subtasks || subtasks.length === 0) return undefined
+
+  const count = subtasks.length
+  const clampedTotal = Math.max(count, Math.min(maxTurnsLimit, Math.round(totalTurns) || count))
+
+  if (count === 1) {
+    return [{ ...subtasks[0], maxTurns: clampedTotal }]
+  }
+
+  const currentTurns = subtasks.map(s =>
+    typeof s.maxTurns === 'number' && s.maxTurns > 0 ? s.maxTurns : 8,
+  )
+  const currentSum = currentTurns.reduce((acc, t) => acc + t, 0)
+
+  const quotas = subtasks.map((_, i) =>
+    currentSum > 0 ? (clampedTotal * currentTurns[i]) / currentSum : clampedTotal / count,
+  )
+
+  const baseTurns = quotas.map(q => Math.max(1, Math.floor(q)))
+  const allocated = baseTurns.reduce((acc, t) => acc + t, 0)
+  const remainder = clampedTotal - allocated
+
+  if (remainder > 0) {
+    const fractionalParts = quotas.map((q, idx) => ({
+      idx,
+      frac: q - Math.floor(q),
+    }))
+    // Sort descending by fractional part, breaking ties by index
+    fractionalParts.sort((a, b) => b.frac - a.frac || a.idx - b.idx)
+
+    for (let i = 0; i < remainder; i++) {
+      baseTurns[fractionalParts[i % count].idx] += 1
+    }
+  }
+
+  return subtasks.map((subtask, i) => ({
+    ...subtask,
+    maxTurns: baseTurns[i],
+  }))
 }

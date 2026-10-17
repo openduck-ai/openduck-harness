@@ -3,6 +3,8 @@ import test from 'node:test'
 import type { ProjectTaskDefinition, TaskDraft } from '@aaif/goose-hub-core'
 import {
   applyTaskDraft,
+  calculateTaskMaxTurnsFromSubtasks,
+  recalculateSubtasksTurns,
   shouldReplaceGeneratedTaskId,
   subtaskSaveError,
   subtasksForSave,
@@ -125,4 +127,68 @@ test('a file or command check needs its target before save', () => {
     'Subtask 1 has a command check without a command',
   )
   assert.equal(subtaskSaveError(undefined), null)
+})
+
+test('calculateTaskMaxTurnsFromSubtasks calculates task turns based on subtasks', () => {
+  // Empty or undefined subtasks preserves current turns or default
+  assert.equal(calculateTaskMaxTurnsFromSubtasks(undefined, 30), 30)
+  assert.equal(calculateTaskMaxTurnsFromSubtasks([], 45), 45)
+  assert.equal(calculateTaskMaxTurnsFromSubtasks(undefined, undefined), 25)
+
+  // Sums maxTurns of subtasks
+  const subtasks = [
+    { id: 's1', title: 'A', description: 'A', maxTurns: 10 },
+    { id: 's2', title: 'B', description: 'B', maxTurns: 15 },
+    { id: 's3', title: 'C', description: 'C', maxTurns: 25 },
+  ]
+  assert.equal(calculateTaskMaxTurnsFromSubtasks(subtasks), 50)
+
+  // Missing or zero turns fall back to default
+  const subtasksWithMissing = [
+    { id: 's1', title: 'A', description: 'A', maxTurns: 12 },
+    { id: 's2', title: 'B', description: 'B' },
+  ]
+  assert.equal(calculateTaskMaxTurnsFromSubtasks(subtasksWithMissing), 20)
+
+  // Clamps to maxTurnsLimit
+  assert.equal(calculateTaskMaxTurnsFromSubtasks(subtasks, undefined, 40), 40)
+})
+
+test('recalculateSubtasksTurns recalculates subtasks turns when task turns change', () => {
+  // Empty or undefined returns undefined
+  assert.equal(recalculateSubtasksTurns(undefined, 25), undefined)
+  assert.equal(recalculateSubtasksTurns([], 25), undefined)
+
+  // Single subtask gets full budget
+  const single = [{ id: 's1', title: 'Only', description: '', maxTurns: 8 }]
+  const singleRes = recalculateSubtasksTurns(single, 35)
+  assert.equal(singleRes?.[0].maxTurns, 35)
+
+  // Two subtasks split evenly with remainder to first
+  const twoEqual = [
+    { id: 's1', title: 'A', description: '', maxTurns: 8 },
+    { id: 's2', title: 'B', description: '', maxTurns: 8 },
+  ]
+  const twoRes = recalculateSubtasksTurns(twoEqual, 25)
+  assert.equal(twoRes?.[0].maxTurns, 13)
+  assert.equal(twoRes?.[1].maxTurns, 12)
+  assert.equal((twoRes?.[0].maxTurns ?? 0) + (twoRes?.[1].maxTurns ?? 0), 25)
+
+  // Proportional distribution preserves ratio
+  const proportional = [
+    { id: 's1', title: 'A', description: '', maxTurns: 10 },
+    { id: 's2', title: 'B', description: '', maxTurns: 20 },
+    { id: 's3', title: 'C', description: '', maxTurns: 30 },
+  ]
+  const propRes = recalculateSubtasksTurns(proportional, 120)
+  assert.equal(propRes?.[0].maxTurns, 20)
+  assert.equal(propRes?.[1].maxTurns, 40)
+  assert.equal(propRes?.[2].maxTurns, 60)
+
+  // Every subtask gets at least 1 turn even when budget is low
+  const lowBudget = recalculateSubtasksTurns(proportional, 2)
+  assert.equal(lowBudget?.length, 3)
+  assert.equal(lowBudget?.[0].maxTurns, 1)
+  assert.equal(lowBudget?.[1].maxTurns, 1)
+  assert.equal(lowBudget?.[2].maxTurns, 1)
 })
