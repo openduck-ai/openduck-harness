@@ -28,17 +28,20 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 
 ### 🧪 1. Agent Harness & Evaluation Runtime
 - **Decoupled Agent Policies**: Modular `AgentPolicy` trait cleanly separating agent decision logic (ReAct, state machine, external adapters) from the execution runtime.
-- **Pluggable Sandboxing (`SandboxDriver`)**: Run tasks in host-isolated environments (`LocalSandbox`, Docker/OCI `ContainerSandbox`) with workspace snapshots, checkpoints, and rollbacks.
+- **Pluggable Sandboxing (`SandboxDriver`)**: Run tasks in host-isolated environments (`LocalSandbox`, isolated Git branch `WorktreeSandbox` with symlinked untracked configs, shared `CARGO_TARGET_DIR`, and optional auto-commit, or Docker/OCI `ContainerSandbox`) with workspace snapshots, checkpoints, and rollbacks.
+- **Pluggable Harness Tool Extensions (`HarnessToolExtension`)**: Extend `AgentHarness` directly with custom tool suites—including `TuiAgentHarnessExtension` (`tui_agent_start`, `tui_agent_prompt`, `tui_agent_read_screen`, `tui_agent_send_keys`, `tui_agent_stop`, `tui_agent_list`) so harness tasks can delegate work to persistent interactive coding agents.
+- **AI-Assisted Task Drafting & Subtask Decomposition**: Draft structured task specifications and dependency-ordered subtask plans with acceptance criteria, `ExpectedOutputVerifier` checks, and dynamic `max_turns` synchronization between parent tasks and subtasks.
 - **Evaluation & Benchmark Suite (`openduck harness eval`)**: Run batch benchmark suites (JSONL datasets, YAML recipes, SWE-bench style tasks) with parallel execution, metric scoring (pass/fail, turns, latency, token costs), and trajectory export.
 - **Deterministic Record & Replay (`openduck harness replay`)**: Record agent LLM completions and MCP tool interactions into VCR-style cassettes for zero-cost, reproducible regression testing and offline debugging.
 - **Task Continuation & Follow-up Execution**: Resume, re-run, or branch follow-up executions directly from task history and replay cassettes with preserved context.
-- **Provider Telemetry & Real-Time Statistics**: Track token consumption (prompt/completion/cached), request latencies, time to first token (TTFT), volume, and estimated costs across harness task executions.
-- **Automated Verifiers & Safety Controls**: Built-in `CommandVerifier` (test runner output) and `DiffVerifier` (git patch diff against expected golden state), along with configurable `max_turns` limits (`OPENDUCK_MAX_TURNS`) and graceful handling of malformed tool calls.
+- **Provider Telemetry, Network Timing & Adaptive Failover**: Track token consumption (prompt/completion/cached), request latencies, time to first token (TTFT), network phase timings, volume, and estimated costs across harness task executions, backed by a **Provider Circuit Breaker** with automatic adaptive failover and recovery to secondary targets.
+- **Automated Verifiers & Safety Controls**: Built-in `CommandVerifier` (test runner output), `DiffVerifier` (git patch diff against expected golden state), and `ExpectedOutputVerifier` (subtask output validation), along with configurable `max_turns` limits (`OPENDUCK_MAX_TURNS`), anti-stagnation guards, and graceful handling of malformed tool calls.
 
 ### 🚀 2. Enterprise Agent System & Multi-Project Workspace
 - **Project Dashboard**: Register and manage multiple software projects with automatic directory binding, metadata tags, and insight summaries.
-- **Visual Git Management**: Built-in Git control module with an interactive commit graph, branch & tag ref tooltips, file diff viewer, status inspection, and automated commit message generation.
-- **Project-Level Task Harness**: Define repeatable task specs in `.openduck/tasks/` configured via `.openduck/harness.yaml`.
+- **Visual Git Management**: Built-in Git control module with an interactive commit graph, branch & tag ref tooltips, file diff viewer, worktree management, status inspection, and automated commit message generation.
+- **Project-Level Task Harness**: Define, draft, and execute repeatable task specs in `.openduck/tasks/` configured via `.openduck/harness.yaml`.
+- **Interactive Project Terminal & TUI Sessions**: Manage persistent `tmux`-backed agent TUI sessions (`agy`, `claude`, `codex`, `grok`, `custom`) directly from each project workspace.
 - **Integrated Markdown & File Explorer**: Inspect repository files with rich Markdown previews directly in the Web Hub.
 - **Historical Tool Argument Snipping**: Automatic compaction of historical tool call arguments in `openduck-context-management` to curb token inflation and drastically reduce step latency in long trajectories.
 
@@ -53,9 +56,9 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 
 ### 🔌 5. Broad Model Context & Protocol Ecosystem
 - **15+ LLM Providers & Reasoning Models**: Anthropic, OpenAI, Google Gemini (with thought signature extraction), Ollama (local models), OpenRouter, Azure Foundry, AWS Bedrock, Databricks, Snowflake, and Qwen (with reasoning effort mapping for Qwen 3.8 Flash, QwQ, and thinking variants).
-- **HTTP & SOCKS Proxy Support**: Connect providers through HTTP or SOCKS5 proxies configured via declarative files, environment variables, or the Web Hub UI.
+- **HTTP & SOCKS Proxy Support & Network Diagnostics**: Connect providers through HTTP or SOCKS5 proxies configured via declarative files, environment variables, or the Web Hub UI, with built-in network health monitoring and endpoint reachability diagnostics.
 - **Model Context Protocol (MCP)**: Native support for 70+ community MCP extensions plus built-in extensions:
-  - `tui_agent` / `tui_session`: Persistent interactive coding agent TUI & tmux driver (`agy`, `grok`, `codex`, `claude`, `custom`) with bracketed paste, interactive modal/keystroke answering, lossless side-channel transcript correlation, and live human attachment.
+  - `tui_agent` / `tui_session`: Persistent interactive coding agent TUI & tmux driver (`agy`, `grok`, `codex`, `claude`, `custom`) with bracketed paste, interactive modal/keystroke answering, lossless side-channel transcript correlation, live human attachment, and native `AgentHarness` tool integration.
   - `agy`: Antigravity CLI integration for delegated subagent task execution.
   - `developer`: Local shell command execution, file reading, and editing.
   - `computercontroller`: Headless browser scraping and automated web interaction.
@@ -64,7 +67,7 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 
 ### 🖥️ 6. Unified Multi-Interface Suite
 - **OpenDuck CLI**: Full-featured terminal interface (`session`, `run`, `harness`, `serve`, `schedule`, `term`, `doctor`).
-- **OpenDuck Web Hub (`ui/hub`)**: Enterprise web dashboard for project workspaces, visual git, task harness runner, live telemetry stats, transcript logs, and in-browser config management.
+- **OpenDuck Web Hub (`ui/hub`)**: Enterprise web dashboard for project workspaces, visual git, task harness runner & drafting, interactive TUI sessions, live telemetry & network diagnostics, paginated transcript logs, and in-browser config management.
 - **OpenDuck Desktop (`ui/desktop`)**: Native Electron desktop application for macOS, Windows, and Linux.
 - **OpenDuck Mobile PWA (`ui/mobile`)**: Mobile web client for steering agents and approving permissions on the go.
 - **Cross-Language SDKs**: First-class client libraries for TypeScript (`@openduck/sdk`), Python, Rust, JVM/Kotlin (`io.github.aaif-goose:gdk`), and Swift.
@@ -85,26 +88,27 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 |   └── Cross-Language SDKs (TypeScript `@openduck/sdk`, Python, Kotlin, Rust)      |
 +-----------------------------------------------------------------------------------+
 |  [ Control Plane & Server (`openduck serve` / ACP & REST) ]                       |
-|   ├── Project Workspace Registry & Markdown Source Store                          |
-|   ├── Interactive Git Management (Graph, Diffs, Commit Gen)                       |
-|   ├── In-Browser App & Provider Configuration Manager (Env Overrides, Proxies)    |
+|   ├── Project Workspace Registry, TUI Session Manager & Markdown Source Store     |
+|   ├── Interactive Git Management (Graph, Worktrees, Diffs, Commit Gen)            |
+|   ├── In-Browser Config Manager, Network Diagnostics & Circuit Breaker Failover   |
 |   ├── Task Scheduler (Cron, Task Locking, Concurrency Control)                    |
 |   ├── SMTP Notification & Email Alert Engine                                      |
 |   └── Auth & Multi-Session Database (SQLite `sessions.db`, `control.db`)          |
 +-----------------------------------------------------------------------------------+
 |  [ Agent Harness Runtime (`openduck-harness`) ]                                   |
 |   ├── Pluggable Agent Policies (`AgentPolicy`: ReAct, State Machine, Adapters)    |
-|   ├── Sandbox Drivers (`SandboxDriver`: LocalSandbox, Docker ContainerSandbox)    |
-|   ├── Evaluation & Benchmark Engine (`EvalRunner`, `TaskSpec`, Verifiers)         |
+|   ├── Sandbox Drivers (`SandboxDriver`: Local, Git Worktree, Docker Container)    |
+|   ├── Pluggable Tool Extensions (`HarnessToolExtension`: TuiAgent, Advisors)      |
+|   ├── Task Drafting, Subtask Decomposition & Evaluation Engine (`EvalRunner`)     |
 |   ├── Task Continuations & Historical Follow-Up Execution                         |
-|   ├── Provider Telemetry & Trajectory Metrics (Tokens, Latency, Costs, TTFT)      |
+|   ├── Provider Telemetry, Network Timing & Trajectory Metrics (Tokens, TTFT)      |
 |   └── Deterministic Record & Replay Layer (`Cassette`, `MockProvider`)            |
 +-----------------------------------------------------------------------------------+
 |  [ Context & Optimization Layer (`openduck-context-management`) ]                 |
 |   └── Compaction, Pruning & Historical Tool Call Argument Snipping                |
 +-----------------------------------------------------------------------------------+
 |  [ Tool & Extensibility Layer ]                                                   |
-|   ├── Model Context Protocol (MCP) Servers (Built-in: agy, dev, browser, memory)  |
+|   ├── Model Context Protocol (MCP) Servers (tui_session, agy, dev, browser, etc.) |
 |   └── 15+ LLM Providers (OpenAI, Anthropic, Gemini, Ollama, Qwen, Azure, Proxies) |
 +-----------------------------------------------------------------------------------+
 ```
@@ -230,7 +234,10 @@ openduck harness eval --dataset benchmarks/swe_tasks.jsonl --concurrency 4 --out
 # 2. Execute a single task and record execution to a cassette
 openduck harness run --prompt "Fix broken test in tests/auth.rs" --record cassettes/auth_fix.json
 
-# 3. Deterministically replay a recorded cassette offline (no API costs)
+# 3. Execute a task inside an isolated Git worktree on a dedicated branch
+openduck harness run --prompt "Refactor error handling in git module" --worktree --worktree-branch "feature/git-errors"
+
+# 4. Deterministically replay a recorded cassette offline (no API costs)
 openduck harness replay --cassette cassettes/auth_fix.json
 ```
 
@@ -251,11 +258,12 @@ openduck schedule run-now --id <JOB_ID>
 ### OpenDuck Web Hub (`ui/hub`)
 The Web Hub is an enterprise agent management dashboard that connects to `openduck serve`:
 - **Project Workspaces**: Easily switch between registered repositories.
-- **Git Graph & Visualizer**: Interactive commit log, branch heads, tags, and file diff views.
-- **Harness Task Runner & Continuations**: Run and monitor harness tasks, follow up on historical runs, benchmark evaluations, and replay cassettes with live logs.
-- **Provider Stats Dashboard**: Real-time telemetry monitoring for token consumption, latency, TTFT, request volume, and costs across providers and models.
-- **Coding-Agent Transcript View**: Granular agent execution logs with collapsible reasoning/thinking blocks, live status indicators, and auto-scrolling.
-- **In-Browser Configuration Editor**: Inspect and edit OpenDuck settings, provider configurations, and model options directly from the browser with active environment override indicators.
+- **Git Graph & Worktree Visualizer**: Interactive commit log, branch heads, tags, worktree status, and file diff views.
+- **Harness Task Runner, AI Drafting & Continuations**: Draft structured tasks and dependency-ordered subtasks with synchronized `max_turns` budgets, run tasks in isolated Git worktrees with optional auto-commit, follow up on historical runs, and replay cassettes.
+- **Interactive Project Terminal & TUI Sessions**: Launch, monitor, and attach to persistent `tmux`-backed coding agent TUI sessions (`agy`, `claude`, `codex`, `grok`, `custom`) directly in the browser.
+- **Provider Stats & Network Timing Dashboard**: Real-time telemetry monitoring for token consumption, latency, TTFT, network phase timings, request volume, and costs across providers and models.
+- **Paginated Trajectory & Coding-Agent Transcript View**: Server-side paginated trajectory viewer (`TaskTrajectoryViewer`) with configurable page sizes, collapsible reasoning/thinking blocks, parsed TUI session state cards, and live status indicators.
+- **In-Browser Configuration & Network Diagnostics**: Inspect and edit OpenDuck settings, provider configurations, and proxies directly from the browser (`ServerSettings` & `NetworkStatusPanel`) with active environment override indicators and live connectivity diagnostics.
 - **URL Navigation & Deep-Linking**: State synchronized with URL query parameters (`page`, `project`, `tab`, `split`) with full browser history support.
 - **Chat & Session Manager**: Stream live ACP responses with tool approvals.
 - **Schedules & Email Alerts**: Configure automated cron jobs and SMTP notification recipients.
@@ -313,7 +321,7 @@ OpenDuck stores configuration under standard XDG directories:
 - **Data & Sessions**: `~/.local/share/openduck/` (legacy fallback: `~/.local/share/goose/`)
 - **State & Run**: `~/.local/state/openduck/` (legacy fallback: `~/.local/state/goose/`)
 
-For a detailed breakdown of all configuration files in `~/.config/openduck/` (including `config.yaml`, `secrets.yaml`, `notifications.yaml`, `permission.yaml`, and custom providers), see the [Configuration Files Guide](documentation/docs/guides/config-files.md). For persistent agent CLI TUI sessions and proxy/lifecycle configuration, see the [Interactive TUI Sessions Guide](documentation/docs/guides/tui-sessions.md) and [TUI Driver Extension Reference](documentation/docs/mcp/tui-agent-mcp.md).
+For a detailed breakdown of all configuration files in `~/.config/openduck/` (including `config.yaml`, `secrets.yaml`, `notifications.yaml`, `permission.yaml`, and custom providers), see the [Configuration Files Guide](documentation/docs/guides/config-files.md). For isolated Git worktree task execution, see the [Git Worktree Task Runner Guide](documentation/docs/guides/git-worktree-task-runner.md). For persistent agent CLI TUI sessions and proxy/lifecycle configuration, see the [Interactive TUI Sessions Guide](documentation/docs/guides/tui-sessions.md) and [TUI Driver Extension Reference](documentation/docs/mcp/tui-agent-mcp.md).
 
 ### Key Environment Variables
 
