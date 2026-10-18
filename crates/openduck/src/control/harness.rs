@@ -1648,11 +1648,7 @@ impl HarnessRunResponseDto {
 
         let total = self.trajectory.steps.len();
         let limit = query.limit.or(query.page_size).unwrap_or(50).max(1);
-        let total_pages = if total == 0 {
-            1
-        } else {
-            (total + limit - 1) / limit
-        };
+        let total_pages = if total == 0 { 1 } else { total.div_ceil(limit) };
 
         let (page, start_idx) = if let Some(p) = query.page {
             let p_clamped = p.clamp(1, total_pages);
@@ -3576,8 +3572,14 @@ async fn execute_standalone_task(
                 cas_obj.task_spec = Some(task_spec.clone());
                 let cassette = Arc::new(Mutex::new(cas_obj));
                 let policy = ReplayPolicy::new_record(base_policy, cassette.clone());
-                let mut agent_harness =
-                    AgentHarness::new(policy, sandbox).with_max_turns(max_turns);
+                let tui_ext = Arc::new(
+                    crate::control::tui_agent_extension::TuiAgentHarnessExtension::new(
+                        crate::control::terminal::get_tui_session_manager(),
+                    ),
+                );
+                let mut agent_harness = AgentHarness::new(policy, sandbox)
+                    .with_max_turns(max_turns)
+                    .with_tool_extension(tui_ext.clone());
                 if let Some(ref judge) = global_judge {
                     agent_harness = agent_harness.with_judge_engine(
                         openduck_harness::judge::DecisionEngine::from_config(judge),
@@ -3591,8 +3593,14 @@ async fn execute_standalone_task(
 
                 Ok(to_run_dto(res, Some(record_path)))
             } else {
-                let mut agent_harness =
-                    AgentHarness::new(base_policy, sandbox).with_max_turns(max_turns);
+                let tui_ext = Arc::new(
+                    crate::control::tui_agent_extension::TuiAgentHarnessExtension::new(
+                        crate::control::terminal::get_tui_session_manager(),
+                    ),
+                );
+                let mut agent_harness = AgentHarness::new(base_policy, sandbox)
+                    .with_max_turns(max_turns)
+                    .with_tool_extension(tui_ext);
                 if let Some(ref judge) = global_judge {
                     agent_harness = agent_harness.with_judge_engine(
                         openduck_harness::judge::DecisionEngine::from_config(judge),
@@ -3621,8 +3629,14 @@ async fn execute_standalone_task(
                 cas_obj.task_spec = Some(task_spec.clone());
                 let cassette = Arc::new(Mutex::new(cas_obj));
                 let policy = ReplayPolicy::new_record(base_policy, cassette.clone());
+                let tui_ext = Arc::new(
+                    crate::control::tui_agent_extension::TuiAgentHarnessExtension::new(
+                        crate::control::terminal::get_tui_session_manager(),
+                    ),
+                );
                 let mut agent_harness = AgentHarness::new(policy, sandbox)
                     .with_max_turns(max_turns)
+                    .with_tool_extension(tui_ext.clone())
                     .with_max_context_tokens(context_limit);
                 if let Some(ref judge) = global_judge {
                     agent_harness = agent_harness.with_judge_engine(
@@ -3637,8 +3651,14 @@ async fn execute_standalone_task(
 
                 Ok(to_run_dto(res, Some(record_path)))
             } else {
+                let tui_ext = Arc::new(
+                    crate::control::tui_agent_extension::TuiAgentHarnessExtension::new(
+                        crate::control::terminal::get_tui_session_manager(),
+                    ),
+                );
                 let mut agent_harness = AgentHarness::new(base_policy, sandbox)
                     .with_max_turns(max_turns)
+                    .with_tool_extension(tui_ext)
                     .with_max_context_tokens(context_limit);
                 if let Some(ref judge) = global_judge {
                     agent_harness = agent_harness.with_judge_engine(

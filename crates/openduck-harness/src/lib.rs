@@ -37,8 +37,8 @@ pub use runtime::{
     checkpoint_from_trajectory, compact_context_messages, compacted_summary_from_steps,
     estimate_context_tokens, estimate_message_tokens, extract_context_facts,
     format_structured_context_summary, prune_context_messages, snip_tool_call_arguments,
-    snip_tool_output, trajectory_steps_to_messages, AgentHarness, HistoryFollowUp, StepObserver,
-    TaskExecutionResult,
+    snip_tool_output, trajectory_steps_to_messages, AgentHarness, HarnessToolExtension,
+    HistoryFollowUp, StepObserver, TaskExecutionResult,
 };
 pub use telemetry::{
     ProviderCallRecord, ProviderCallStats, TaskProviderStats, TrajectoryLogger, TrajectoryRecord,

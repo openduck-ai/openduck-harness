@@ -196,7 +196,7 @@ async fn handle_run(args: RunArgs) -> Result<()> {
         anyhow::bail!("Must provide either --task <path> or --prompt <text>");
     };
 
-    let mut sandbox: Box<dyn SandboxDriver> = if args.worktree {
+    let sandbox: Box<dyn SandboxDriver> = if args.worktree {
         let repo_root = std::env::current_dir()?;
         let branch = args
             .worktree_branch
@@ -257,7 +257,14 @@ async fn handle_run(args: RunArgs) -> Result<()> {
             cas_obj.task_spec = Some(task_spec.clone());
             let cassette = Arc::new(Mutex::new(cas_obj));
             let policy = ReplayPolicy::new_record(base_policy, cassette.clone());
-            let mut harness = AgentHarness::new(policy, sandbox).with_max_turns(args.max_turns);
+            let tui_ext = Arc::new(
+                openduck::control::tui_agent_extension::TuiAgentHarnessExtension::new(
+                    openduck::control::terminal::get_tui_session_manager(),
+                ),
+            );
+            let mut harness = AgentHarness::new(policy, sandbox)
+                .with_max_turns(args.max_turns)
+                .with_tool_extension(tui_ext);
 
             let res = harness.run_task(&task_spec).await?;
 
@@ -269,8 +276,14 @@ async fn handle_run(args: RunArgs) -> Result<()> {
                 println!("Final Answer:\n{}", ans);
             }
         } else {
-            let mut harness =
-                AgentHarness::new(base_policy, sandbox).with_max_turns(args.max_turns);
+            let tui_ext = Arc::new(
+                openduck::control::tui_agent_extension::TuiAgentHarnessExtension::new(
+                    openduck::control::terminal::get_tui_session_manager(),
+                ),
+            );
+            let mut harness = AgentHarness::new(base_policy, sandbox)
+                .with_max_turns(args.max_turns)
+                .with_tool_extension(tui_ext);
             let res = harness.run_task(&task_spec).await?;
             println!("Task finished with status: {:?}", res.status);
             if let Some(ans) = res.final_answer {

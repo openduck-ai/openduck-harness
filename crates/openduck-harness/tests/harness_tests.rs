@@ -134,6 +134,7 @@ async fn test_policy_step_failure_after_success_keeps_prior_steps() {
                         "content": "partial progress"
                     }),
                     error: None,
+                    metadata: None,
                 }]));
             }
             Err(anyhow!("Goose provider complete failed: Network error"))
@@ -175,6 +176,7 @@ async fn test_agent_harness_task_execution() {
                 "content": "42"
             }),
             error: None,
+            metadata: None,
         }]),
         AgentAction::FinalAnswer("Task completed successfully".into()),
     ];
@@ -212,6 +214,7 @@ async fn test_step_observer_is_notified_after_each_step() {
                 "content": "42"
             }),
             error: None,
+            metadata: None,
         }]),
         AgentAction::FinalAnswer("done".into()),
     ];
@@ -261,6 +264,7 @@ async fn test_deterministic_replay_cassette() {
                 "content": "recorded"
             }),
             error: None,
+            metadata: None,
         }]),
         AgentAction::FinalAnswer("Done".into()),
     ];
@@ -320,6 +324,7 @@ async fn test_eval_runner_suite() {
                             "content": "bar"
                         }),
                         error: None,
+                        metadata: None,
                     }]),
                     AgentAction::FinalAnswer("All done".into()),
                 ],
@@ -347,6 +352,7 @@ async fn test_malformed_tool_call_executes_sibling_and_records_error() {
                         "content": "worked"
                     }),
                     error: None,
+                    metadata: None,
                 },
                 ToolCallRequest::with_error(
                     "call-malformed",
@@ -393,4 +399,82 @@ async fn test_malformed_tool_call_executes_sibling_and_records_error() {
     assert!(step1_results[1]
         .output
         .contains("hit the output token limit"));
+}
+
+#[tokio::test]
+async fn test_harness_tool_extension_registration_and_execution() {
+    use openduck_harness::runtime::HarnessToolExtension;
+    use openduck_harness::types::ToolCallResponse;
+    use std::path::Path;
+
+    struct DummyExtension;
+
+    #[async_trait::async_trait]
+    impl HarnessToolExtension for DummyExtension {
+        fn tools(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                name: "custom_echo".into(),
+                description: "Echos input back".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "text": { "type": "string" }
+                    }
+                }),
+            }]
+        }
+
+        async fn execute(
+            &self,
+            call: &ToolCallRequest,
+            _workspace_root: &Path,
+        ) -> Option<ToolCallResponse> {
+            if call.name == "custom_echo" {
+                let text = call
+                    .arguments
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                Some(ToolCallResponse {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    output: format!("custom: {}", text),
+                    is_error: false,
+                })
+            } else {
+                None
+            }
+        }
+    }
+
+    let policy = MockPolicy::new(
+        "ext-mock",
+        vec![
+            AgentAction::CallTools(vec![ToolCallRequest {
+                id: "call-ext".into(),
+                name: "custom_echo".into(),
+                arguments: serde_json::json!({"text": "hello extension"}),
+                error: None,
+                metadata: None,
+            }]),
+            AgentAction::FinalAnswer("Extension verified".into()),
+        ],
+    );
+
+    let sandbox = LocalSandbox::ephemeral().unwrap();
+    let mut harness =
+        AgentHarness::new(policy, sandbox).with_tool_extension(Arc::new(DummyExtension));
+
+    let task = TaskSpec::new("ext-1", "ext-suite", "Test extension dispatch");
+    let result = harness.run_task(&task).await.expect("run_task failed");
+
+    assert_eq!(result.status, RunStatus::Success);
+    assert_eq!(result.tool_calls_count, 1);
+    let step0_results = result.trajectory.steps[0]
+        .tool_results
+        .as_ref()
+        .expect("missing tool results");
+    assert_eq!(step0_results[0].name, "custom_echo");
+    assert_eq!(step0_results[0].output, "custom: hello extension");
+    assert!(!step0_results[0].is_error);
 }

@@ -296,10 +296,14 @@ async fn check_one(
                 return Err(format!("Command check is missing a command ({label})"));
             }
             let expected_code = output.expected_exit_code.unwrap_or(0);
-            let mut opts = ExecOptions::default();
-            opts.timeout_seconds = Some(300);
             let ran = sandbox
-                .exec_command(command, &opts)
+                .exec_command(
+                    command,
+                    &ExecOptions {
+                        timeout_seconds: Some(300),
+                        ..Default::default()
+                    },
+                )
                 .await
                 .map_err(|err| format!("Command `{command}` failed to run: {err} ({label})"))?;
             if ran.exit_code != expected_code {

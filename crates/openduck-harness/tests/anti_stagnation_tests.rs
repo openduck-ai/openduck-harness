@@ -69,6 +69,7 @@ fn test_modifying_command_classification() {
         name: "write_file".into(),
         arguments: serde_json::json!({"path": "a.txt", "content": "hi"}),
         error: None,
+        metadata: None,
     };
     assert!(is_modifying_call(&write_call));
 
@@ -77,6 +78,7 @@ fn test_modifying_command_classification() {
         name: "write_file".into(),
         arguments: serde_json::json!({"path": ".agent/notes-gps-progress.md", "content": "findings"}),
         error: None,
+        metadata: None,
     };
     assert!(!is_modifying_call(&write_notes_call));
 
@@ -85,6 +87,7 @@ fn test_modifying_command_classification() {
         name: "write_file".into(),
         arguments: serde_json::json!({"path": ".agent/scratch-gps-plan.md", "content": "plan"}),
         error: None,
+        metadata: None,
     };
     assert!(!is_modifying_call(&write_scratch_call));
 
@@ -93,6 +96,7 @@ fn test_modifying_command_classification() {
         name: "read_file".into(),
         arguments: serde_json::json!({"path": "a.txt"}),
         error: None,
+        metadata: None,
     };
     assert!(!is_modifying_call(&read_call));
 
@@ -101,6 +105,7 @@ fn test_modifying_command_classification() {
         name: "list_dir".into(),
         arguments: serde_json::json!({"path": "."}),
         error: None,
+        metadata: None,
     };
     assert!(!is_modifying_call(&list_call));
 
@@ -109,6 +114,7 @@ fn test_modifying_command_classification() {
         name: "grep_search".into(),
         arguments: serde_json::json!({"query": "fn test"}),
         error: None,
+        metadata: None,
     };
     assert!(!is_modifying_call(&grep_call));
 
@@ -196,6 +202,7 @@ impl AgentPolicy for StagnantPolicy {
                     "content": "Solved!"
                 }),
                 error: None,
+                metadata: None,
             }]));
         }
 
@@ -209,6 +216,7 @@ impl AgentPolicy for StagnantPolicy {
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "src/main.rs"}),
             error: None,
+            metadata: None,
         }]))
     }
 }
@@ -285,6 +293,7 @@ impl AgentPolicy for InfiniteReadOnlyPolicy {
                 "query": format!("query_{}", current)
             }),
             error: None,
+            metadata: None,
         }]))
     }
 }
@@ -334,6 +343,7 @@ async fn test_duplicate_call_interception() {
         name: "grep_search".into(),
         arguments: serde_json::json!({"query": "handle_location", "path": "src/client.rs"}),
         error: None,
+        metadata: None,
     };
 
     assert_eq!(detector.record_and_count(&call), 1);
@@ -430,6 +440,7 @@ impl AgentPolicy for PeriodicReviewCheckPolicy {
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "src/main.rs"}),
             error: None,
+            metadata: None,
         }]))
     }
 }
@@ -503,6 +514,7 @@ impl AgentPolicy for ConsultAdvisorTestPolicy {
                 "command": "non_existent_binary_xyz"
             }),
             error: None,
+            metadata: None,
         }]))
     }
 }
@@ -570,6 +582,7 @@ impl AgentPolicy for ConsultAdvisorEchoPolicy {
                 "timeout": 60
             }),
             error: None,
+            metadata: None,
         }]))
     }
 }
@@ -640,6 +653,7 @@ impl AgentPolicy for ConsultAdvisorProxyTestPolicy {
                 "all_proxy": "socks5://127.0.0.1:1088"
             }),
             error: None,
+            metadata: None,
         }]))
     }
 }
@@ -725,6 +739,7 @@ impl AgentPolicy for ConsultAgySpecificProxyPolicy {
                 "timeout": 2
             }),
             error: None,
+            metadata: None,
         }]))
     }
 }
@@ -857,6 +872,7 @@ impl AgentPolicy for EvasiveNotesPolicy {
                     "content": "Progress note findings"
                 }),
                 error: None,
+                metadata: None,
             }]))
         } else {
             Ok(AgentAction::CallTools(vec![ToolCallRequest {
@@ -866,6 +882,7 @@ impl AgentPolicy for EvasiveNotesPolicy {
                     "path": "src/main.rs"
                 }),
                 error: None,
+                metadata: None,
             }]))
         }
     }
@@ -956,6 +973,7 @@ fn test_semantic_structured_facts_extraction() {
             name: "read_file".into(),
             arguments: serde_json::json!({"path": "src/lib.rs"}),
             error: None,
+            metadata: None,
         }],
     ));
     messages.push(HarnessMessage::tool_response(vec![ToolCallResponse {
@@ -976,6 +994,7 @@ fn test_semantic_structured_facts_extraction() {
                 "content": "pub fn hello() -> bool { true }"
             }),
             error: None,
+            metadata: None,
         }],
     ));
     messages.push(HarnessMessage::tool_response(vec![ToolCallResponse {
@@ -993,6 +1012,7 @@ fn test_semantic_structured_facts_extraction() {
             name: "shell".into(),
             arguments: serde_json::json!({"command": "cargo test"}),
             error: None,
+            metadata: None,
         }],
     ));
     messages.push(HarnessMessage::tool_response(vec![ToolCallResponse {
@@ -1214,30 +1234,35 @@ impl AgentPolicy for RepeatedReadPolicy {
                 name: "read_file".into(),
                 arguments: serde_json::json!({"path": "src/main.rs"}),
                 error: None,
+                metadata: None,
             }])),
             1 => Ok(AgentAction::CallTools(vec![ToolCallRequest {
                 id: "read-2".into(),
                 name: "shell".into(),
                 arguments: serde_json::json!({"command": "cat src/main.rs"}),
                 error: None,
+                metadata: None,
             }])),
             2 => Ok(AgentAction::CallTools(vec![ToolCallRequest {
                 id: "read-3".into(),
                 name: "shell".into(),
                 arguments: serde_json::json!({"command": "sed -n '1,10p' src/main.rs"}),
                 error: None,
+                metadata: None,
             }])),
             3 => Ok(AgentAction::CallTools(vec![ToolCallRequest {
                 id: "mod-1".into(),
                 name: "shell".into(),
                 arguments: serde_json::json!({"command": "echo 'fn new() {}' >> src/main.rs"}),
                 error: None,
+                metadata: None,
             }])),
             _ => Ok(AgentAction::CallTools(vec![ToolCallRequest {
                 id: "read-4".into(),
                 name: "read_file".into(),
                 arguments: serde_json::json!({"path": "src/main.rs"}),
                 error: None,
+                metadata: None,
             }])),
         }
     }
@@ -1293,6 +1318,7 @@ fn test_scratchpad_notes_pinned_across_compaction() {
                     "content": "# Architecture Plan\n- Step 1: Add DTO\n- Step 2: Wire engine\n- Step 3: Run e2e tests"
                 }),
                 error: None,
+                metadata: None,
             }],
         ),
         HarnessMessage::tool_response(vec![openduck_harness::types::ToolCallResponse {
@@ -1440,18 +1466,21 @@ async fn test_target_based_reads_not_prevented_across_mixed_tools() {
                     name: "read_file".into(),
                     arguments: serde_json::json!({"path": "src/lib.rs"}),
                     error: None,
+                    metadata: None,
                 }])),
                 1 => Ok(AgentAction::CallTools(vec![ToolCallRequest {
                     id: "c2".into(),
                     name: "shell".into(),
                     arguments: serde_json::json!({"command": format!("sed -n '1,20p' {}/src/lib.rs", ws)}),
                     error: None,
+                    metadata: None,
                 }])),
                 2 => Ok(AgentAction::CallTools(vec![ToolCallRequest {
                     id: "c3".into(),
                     name: "shell".into(),
                     arguments: serde_json::json!({"command": "awk 'NR>=1 && NR<=10' ./src/lib.rs"}),
                     error: None,
+                    metadata: None,
                 }])),
                 _ => Ok(AgentAction::FinalAnswer("Done".into())),
             }
@@ -1542,6 +1571,7 @@ async fn test_exploration_budget_contract_and_nudge() {
                     name: "read_file".into(),
                     arguments: serde_json::json!({"path": format!("file{}.txt", s)}),
                     error: None,
+                    metadata: None,
                 }]))
             } else {
                 Ok(AgentAction::FinalAnswer("Completed".into()))
@@ -1599,6 +1629,7 @@ fn test_compact_context_preserves_advisor_and_plan() {
                     "prompt": "Should I use reqwest for SMS or raw socket?"
                 }),
                 error: None,
+                metadata: None,
             }],
         ),
         HarnessMessage::tool_response(vec![ToolCallResponse {
@@ -1768,6 +1799,7 @@ impl AgentPolicy for RepeatConsultPolicy {
             name: "consult_advisor".into(),
             arguments,
             error: None,
+            metadata: None,
         }]))
     }
 }

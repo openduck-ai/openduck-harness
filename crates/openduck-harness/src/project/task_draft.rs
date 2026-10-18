@@ -609,19 +609,21 @@ fn strip_step_prefix(line: &str) -> Option<&str> {
         return Some(rest);
     }
     if let Some(index) = line.find(['.', ')']) {
-        let head = &line[..index];
+        let head = line.get(..index).unwrap_or("");
         if !head.is_empty()
             && head.chars().all(|ch| ch.is_ascii_digit())
-            && line[index + 1..].starts_with([' ', '\t'])
+            && line
+                .get(index + 1..)
+                .is_some_and(|s| s.starts_with([' ', '\t']))
         {
-            return Some(&line[index + 1..]);
+            return line.get(index + 1..);
         }
     }
     let lower = line.to_ascii_lowercase();
     for prefix in ["step ", "phase ", "task "] {
         if let Some(rest) = lower.strip_prefix(prefix) {
             if let Some(pos) = rest.find([':', '-']) {
-                let label = rest[..pos].trim();
+                let label = rest.get(..pos).map(str::trim).unwrap_or("");
                 if !label.is_empty()
                     && label
                         .chars()

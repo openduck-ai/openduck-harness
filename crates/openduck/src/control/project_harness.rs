@@ -989,8 +989,14 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy, S: S
         cas_obj.task_spec = Some(task_spec.clone());
         let cassette = Arc::new(Mutex::new(cas_obj));
         let policy = ReplayPolicy::new_record(base_policy, cassette.clone());
+        let tui_ext = Arc::new(
+            crate::control::tui_agent_extension::TuiAgentHarnessExtension::new(
+                crate::control::terminal::get_tui_session_manager(),
+            ),
+        );
         let mut harness = AgentHarness::new(policy, sandbox)
             .with_max_turns(max_turns)
+            .with_tool_extension(tui_ext)
             .with_system_prompt(system_prompt.clone())
             .with_active_rules(active_rules.clone())
             .with_continuation(continuation.clone())
@@ -1032,8 +1038,14 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy, S: S
         }
         Ok(dto)
     } else {
+        let tui_ext = Arc::new(
+            crate::control::tui_agent_extension::TuiAgentHarnessExtension::new(
+                crate::control::terminal::get_tui_session_manager(),
+            ),
+        );
         let mut harness = AgentHarness::new(base_policy, sandbox)
             .with_max_turns(max_turns)
+            .with_tool_extension(tui_ext)
             .with_system_prompt(system_prompt.clone())
             .with_active_rules(active_rules.clone())
             .with_continuation(continuation)

@@ -1025,11 +1025,7 @@ async fn list_session_messages(
     });
 
     if is_paginated {
-        let total_pages = if total == 0 {
-            1
-        } else {
-            (total + limit - 1) / limit
-        };
+        let total_pages = if total == 0 { 1 } else { total.div_ceil(limit) };
         let current_page = query.page.map(|p| p.max(1)).unwrap_or_else(|| {
             let off = query.offset.unwrap_or(0);
             (off / limit.max(1)) + 1

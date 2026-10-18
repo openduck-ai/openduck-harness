@@ -257,7 +257,6 @@ pub fn format_messages(messages: &[Message], nested_function_response_media: boo
                             parts.push(json!(part));
                         }
                     },
-                    MessageContentBlock::Thinking(_) => {}
                     MessageContentBlock::Image(image) => {
                         parts.push(json!({
                             "inline_data": {

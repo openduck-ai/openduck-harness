@@ -28,6 +28,7 @@ fn tool_step(
             name: name.to_string(),
             arguments: args,
             error: None,
+            metadata: None,
         }]),
         tool_results: Some(vec![ToolCallResponse {
             id: format!("c{index}"),

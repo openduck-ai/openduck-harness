@@ -33,6 +33,16 @@ pub struct TaskExecutionResult {
 
 pub type StepObserver = Arc<dyn Fn(&[TrajectoryStep]) + Send + Sync>;
 
+#[async_trait::async_trait]
+pub trait HarnessToolExtension: Send + Sync {
+    fn tools(&self) -> Vec<ToolDefinition>;
+    async fn execute(
+        &self,
+        call: &ToolCallRequest,
+        workspace_root: &Path,
+    ) -> Option<ToolCallResponse>;
+}
+
 /// Prior conversation to replay, plus the prompt that starts the new run.
 #[derive(Debug, Clone)]
 pub struct HistoryFollowUp {
@@ -44,6 +54,7 @@ pub struct AgentHarness<P: AgentPolicy, S: SandboxDriver> {
     policy: P,
     sandbox: S,
     tools: Vec<ToolDefinition>,
+    tool_extensions: Vec<Arc<dyn HarnessToolExtension>>,
     max_turns: usize,
     stagnation_threshold: usize,
     exploration_budget: Option<usize>,
@@ -89,6 +100,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             policy,
             sandbox,
             tools,
+            tool_extensions: Vec::new(),
             max_turns,
             stagnation_threshold,
             exploration_budget,
@@ -118,6 +130,16 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
 
     pub fn with_judge(mut self, judge: Arc<crate::judge::DecisionEngine>) -> Self {
         self.judge = judge;
+        self
+    }
+
+    pub fn with_tool_extension(mut self, ext: Arc<dyn HarnessToolExtension>) -> Self {
+        for tool in ext.tools() {
+            if !self.tools.iter().any(|t| t.name == tool.name) {
+                self.tools.push(tool);
+            }
+        }
+        self.tool_extensions.push(ext);
         self
     }
 
@@ -628,12 +650,25 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                 }
             }
             "consult_advisor" | "consult_expert" => self.consult_advisor(call).await,
-            other => ToolCallResponse {
-                id: call.id.clone(),
-                name: call.name.clone(),
-                output: format!("Unknown tool: {}", other),
-                is_error: true,
-            },
+            other => {
+                let workspace_root = self.sandbox.workspace_root().to_path_buf();
+                let mut ext_response = None;
+                for ext in &self.tool_extensions {
+                    if let Some(resp) = ext.execute(call, &workspace_root).await {
+                        ext_response = Some(resp);
+                        break;
+                    }
+                }
+                match ext_response {
+                    Some(resp) => resp,
+                    None => ToolCallResponse {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        output: format!("Unknown tool: {}", other),
+                        is_error: true,
+                    },
+                }
+            }
         };
         response.output = truncate_tool_output(response.output);
         response
@@ -3024,6 +3059,20 @@ fn tokenize_shell_command(segment: &str) -> Vec<String> {
     tokens
 }
 
+/// Checks if a shell command is doing fragmented sliced reads on files (e.g. `sed -n 'X,Yp'`).
+pub fn is_shell_fragmented_read(cmd: &str) -> bool {
+    let lower = cmd.to_lowercase();
+    (lower.contains("sed -n")
+        || lower.contains("sed '")
+        || lower.contains("sed \"")
+        || lower.contains("awk "))
+        && (lower.contains("p'")
+            || lower.contains("p\"")
+            || lower.contains("nr")
+            || lower.contains("print"))
+        && !is_modifying_shell_command(cmd)
+}
+
 #[cfg(test)]
 mod compaction_tests {
     use super::compact_context_messages;
@@ -3108,18 +3157,4 @@ mod compaction_tests {
         });
         assert!(kept_write && kept_write_result);
     }
-}
-
-/// Checks if a shell command is doing fragmented sliced reads on files (e.g. `sed -n 'X,Yp'`).
-pub fn is_shell_fragmented_read(cmd: &str) -> bool {
-    let lower = cmd.to_lowercase();
-    (lower.contains("sed -n")
-        || lower.contains("sed '")
-        || lower.contains("sed \"")
-        || lower.contains("awk "))
-        && (lower.contains("p'")
-            || lower.contains("p\"")
-            || lower.contains("nr")
-            || lower.contains("print"))
-        && !is_modifying_shell_command(cmd)
 }
