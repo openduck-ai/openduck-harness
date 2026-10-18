@@ -25,8 +25,109 @@ import {
   computeTaskProviderStats,
   liveLineText,
   paginateAgentLogTurns,
+  tuiStatusesForTool,
 } from './taskTrajectory.ts'
 import type { HarnessRunResponse } from '@aaif/goose-hub-core'
+
+test('TUI tool summaries identify session operations', () => {
+  assert.equal(describeToolCall('tui_agent__tui_agent_start', { agent: 'codex' }), 'Start codex TUI session')
+  for (const [operation, summary] of [
+    ['prompt', 'Prompt TUI session s1'],
+    ['read', 'Read TUI session s1'],
+    ['keys', 'Send keys to TUI session s1'],
+    ['stop', 'Stop TUI session s1'],
+    ['list', 'List TUI agent sessions'],
+  ]) {
+    assert.equal(describeToolCall(`tui_agent_${operation}`, { session_id: 's1' }), summary)
+  }
+})
+
+test('TUI status parses MCP text envelopes and preserves approval details', () => {
+  const output = JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({
+    sessionId: 'codex-1', agent: 'codex',
+    state: { status: 'waiting_approval', prompt_snippet: 'Allow command?' },
+    attachCommand: 'tmux -L openduck attach -t codex-1',
+  }) }] })
+  const run = {
+    trajectory: { steps: [{ stepIndex: 0,
+      agentAction: { CallTools: [{ id: 't1', name: 'tui_agent__tui_agent_read', arguments: { session_id: 'codex-1' } }] },
+      toolResults: [{ id: 't1', name: 'tui_agent__tui_agent_read', output }],
+    }] },
+  } as unknown as HarnessRunResponse
+  const tool = buildAgentLog(run)[0].toolCalls![0]
+  assert.deepEqual(tuiStatusesForTool(tool), [{
+    sessionId: 'codex-1', agent: 'codex', status: 'waiting_approval',
+    label: 'Waiting for approval', detail: 'Allow command?',
+    attachCommand: 'tmux -L openduck attach -t codex-1',
+  }])
+})
+
+test('TUI status handles start results, session lists, and all pane states', () => {
+  const session = (status: string) => ({ sessionId: 's1', kind: 'grok', state: { status } })
+  assert.equal(tuiStatusesForTool({ name: 'tui_agent_start', output: JSON.stringify({
+    session_id: 's1', agent: 'grok', state: { status: 'initializing' }, initial_turn: null,
+  }) })[0].label, 'Initializing')
+  assert.equal(tuiStatusesForTool({ name: 'tui_agent_start', output: JSON.stringify({
+    session_id: 's1', initial_turn: session('idle_prompt'),
+  }) })[0].label, 'Ready for input')
+  const states = tuiStatusesForTool({ name: 'tui_agent_list', output: JSON.stringify([
+    session('initializing'), session('idle_prompt'),
+    { ...session('working'), state: { status: 'working', status_line: 'Running cargo fmt' } },
+    { ...session('exited'), state: { status: 'exited', exit_code: 2 } },
+  ]) })
+  assert.deepEqual(states.map(state => state.label), ['Initializing', 'Ready for input', 'Working', 'Exited'])
+  assert.equal(states[2].detail, 'Running cargo fmt')
+  assert.equal(states[3].detail, 'Exit code 2')
+})
+
+test('TUI status handles stop tool output and camelCase aliases', () => {
+  assert.deepEqual(
+    tuiStatusesForTool({
+      name: 'tui_agent_stop',
+      output: "Session 'sess-99' stopped",
+    }),
+    [{
+      sessionId: 'sess-99',
+      status: 'exited',
+      label: 'Exited',
+      detail: 'Session stopped',
+    }],
+  )
+
+  const camelCasePayload = JSON.stringify({
+    sessionId: 's-camel',
+    agent: 'agy',
+    state: {
+      status: 'working',
+      statusLine: 'Compiling project',
+    },
+  })
+  assert.deepEqual(
+    tuiStatusesForTool({
+      name: 'tui_agent_prompt',
+      output: camelCasePayload,
+    }),
+    [{
+      sessionId: 's-camel',
+      agent: 'agy',
+      status: 'working',
+      label: 'Working',
+      detail: 'Compiling project',
+      attachCommand: undefined,
+    }],
+  )
+})
+
+test('TUI status ignores missing, failed, malformed, and unrelated output', () => {
+  for (const tool of [
+    { name: 'tui_agent_read' },
+    { name: 'tui_agent_read', output: 'not JSON' },
+    { name: 'tui_agent_list', output: '[]' },
+    { name: 'tui_agent_read', output: '{"state":{"status":"unknown"}}' },
+    { name: 'tui_agent_read', output: '{"sessionId":"s1","state":{"status":"working"}}', isError: true },
+    { name: 'shell', output: '{"sessionId":"s1","state":{"status":"working"}}' },
+  ]) assert.deepEqual(tuiStatusesForTool(tool), [])
+})
 
 test('parseAgentAction handles Rust serde FinalAnswer format', () => {
   const action1 = { FinalAnswer: 'Task completed successfully with tests passing.' }

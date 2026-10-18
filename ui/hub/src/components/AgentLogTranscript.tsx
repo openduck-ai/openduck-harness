@@ -6,6 +6,7 @@ import {
   liveLineText,
   presentToolCall,
   resolveThinkingOpen,
+  tuiStatusesForTool,
   type AgentLogPagination,
   type AgentLogToolCall,
   type AgentLogTurn,
@@ -501,6 +502,7 @@ function ToolRow({
   copyPrefix: string
 }) {
   const presented = presentToolCall(tool)
+  const tuiStatuses = tuiStatusesForTool(tool)
   const failed = Boolean(tool.isError)
   const pending = tool.output === undefined && !failed
   const summary = splitSummary(presented.summary, presented.path)
@@ -548,6 +550,14 @@ function ToolRow({
         {errorLine && <span className="agent-tool-error">{errorLine}</span>}
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
       </button>
+      {tuiStatuses.map((session, index) => (
+        <div key={`${session.sessionId}-${index}`} className={`agent-tui-status is-${session.status}`}>
+          <span className="agent-tui-status-label">{session.label}</span>
+          <span>{session.agent ? `${session.agent} · ` : ''}{session.sessionId}</span>
+          {session.detail && <span className="agent-tui-status-detail">{session.detail}</span>}
+          {open && session.attachCommand && <code>{session.attachCommand}</code>}
+        </div>
+      ))}
       {open && (
         <div className="agent-tool-body">
           <div className="agent-tool-raw-name">{tool.name}</div>

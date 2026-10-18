@@ -13,6 +13,7 @@ activities:
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
   - Validate per-session HTTPS proxy configuration for TUI agents
+  - Validate recorded TUI agent status in task run Agent Logs
   - Test load tool for knowledge injection and discovery
   - Test delegate tool for task delegation (sync and async)
   - Test multi-turn thinking preservation for providers that reject replayed reasoning_content
@@ -102,6 +103,15 @@ instructions: |
   Check that an explicit start parameter overrides the file and that
   `harness.tui_sessions.default.https_proxy` applies when the agent entry is absent.
   Restore the project's original configuration and stop all test sessions.
+
+  Run a project task that calls `tui_agent_start`, `tui_agent_prompt`,
+  `tui_agent_read`, and `tui_agent_list`. Inspect its Agent Log in the Hub.
+  Verify TUI tool rows identify the operation and session, and recorded state is
+  visible without expanding raw output: Initializing, Ready for input, Working,
+  Waiting for approval, or Exited. When available, verify working status text,
+  approval prompts, and exit codes are shown. Expand a row to verify its attach
+  command and original output remain available. Check the saved run after reload.
+  Record unavailable pane states or missing UI prerequisites as SKIPPED.
 
   ### Phase 3: Delegate & Load Testing
   Test the unified delegation and knowledge-loading tools:

@@ -213,6 +213,18 @@ export function describeToolCall(name: string, args?: Record<string, unknown> | 
       const prompt = stringArg(record, 'prompt')
       return prompt ? `Ask ${advisor}: ${truncateToolDesc(prompt, 72)}` : `Consult ${advisor}`
     }
+    case 'tui_agent_start':
+      return `Start ${stringArg(record, 'agent') ?? 'agent'} TUI session`
+    case 'tui_agent_prompt':
+      return `Prompt TUI session ${stringArg(record, 'session_id') ?? ''}`.trim()
+    case 'tui_agent_read':
+      return `Read TUI session ${stringArg(record, 'session_id') ?? ''}`.trim()
+    case 'tui_agent_keys':
+      return `Send keys to TUI session ${stringArg(record, 'session_id') ?? ''}`.trim()
+    case 'tui_agent_list':
+      return 'List TUI agent sessions'
+    case 'tui_agent_stop':
+      return `Stop TUI session ${stringArg(record, 'session_id') ?? ''}`.trim()
     default: {
       const purpose = HARNESS_TOOL_PURPOSE[tool]
       if (purpose) return purpose
@@ -324,6 +336,98 @@ export interface AgentLogToolCall {
   arguments?: Record<string, unknown> | string
   output?: string
   isError?: boolean
+}
+
+export interface AgentLogTuiStatus {
+  sessionId: string
+  agent?: string
+  status: string
+  label: string
+  detail?: string
+  attachCommand?: string
+}
+
+const TUI_STATUS_LABELS: Record<string, string> = {
+  initializing: 'Initializing',
+  idle_prompt: 'Ready for input',
+  working: 'Working',
+  waiting_approval: 'Waiting for approval',
+  exited: 'Exited',
+}
+
+export function tuiStatusesForTool(tool: AgentLogToolCall): AgentLogTuiStatus[] {
+  const shortName = shortToolName(tool.name)
+  if (!shortName.startsWith('tui_agent_') || !tool.output || tool.isError) return []
+
+  if (shortName === 'tui_agent_stop') {
+    const rawText = typeof tool.output === 'string' ? tool.output : ''
+    const match = rawText.match(/Session ['"]?([^'"]+)['"]? stopped/i)
+    const sessionId = match ? match[1] : stringArg(toolArgsRecord(tool.arguments), 'session_id', 'sessionId')
+    if (sessionId) {
+      return [{
+        sessionId,
+        status: 'exited',
+        label: 'Exited',
+        detail: 'Session stopped',
+      }]
+    }
+  }
+
+  function parsePayload(value: unknown): AgentLogTuiStatus[] {
+    if (typeof value === 'string') {
+      try {
+        return parsePayload(JSON.parse(value))
+      } catch {
+        return []
+      }
+    }
+    if (Array.isArray(value)) return value.flatMap(parsePayload)
+    const record = asRecord(value)
+    if (!record) return []
+    if (Array.isArray(record.content)) {
+      return record.content.flatMap(block => {
+        const content = asRecord(block)
+        return content?.type === 'text' ? parsePayload(content.text) : []
+      })
+    }
+    const initialTurn = record.initial_turn ?? record.initialTurn
+    if (initialTurn) {
+      const initial = parsePayload(initialTurn)
+      if (initial.length > 0) return initial
+    }
+    const state = asRecord(record.state)
+    const status = state
+      ? stringField(state, 'status')
+      : typeof record.state === 'string'
+        ? record.state
+        : undefined
+    const sessionId = stringField(record, 'sessionId', 'session_id')
+    if (!status || !sessionId || !TUI_STATUS_LABELS[status]) {
+      return []
+    }
+    const exitCode =
+      typeof state?.exit_code === 'number'
+        ? state.exit_code
+        : typeof state?.exitCode === 'number'
+          ? state.exitCode
+          : undefined
+    return [{
+      sessionId,
+      agent: stringField(record, 'agent', 'kind'),
+      status,
+      label: TUI_STATUS_LABELS[status],
+      detail: status === 'working'
+        ? stringField(state, 'status_line', 'statusLine')
+        : status === 'waiting_approval'
+          ? stringField(state, 'prompt_snippet', 'promptSnippet')
+          : status === 'exited' && typeof exitCode === 'number'
+            ? `Exit code ${exitCode}`
+            : undefined,
+      attachCommand: stringField(record, 'attachCommand', 'attach_command'),
+    }]
+  }
+
+  return parsePayload(tool.output)
 }
 
 export type AgentLogTurnKind =

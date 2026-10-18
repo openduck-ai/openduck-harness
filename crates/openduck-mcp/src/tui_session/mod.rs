@@ -255,6 +255,17 @@ impl TuiAgentServer {
             .await
             .unwrap_or_default();
 
+        let alive = handle
+            .backend
+            .is_alive(&session_id)
+            .await
+            .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+        let state = if alive {
+            handle.profile.classify_screen(&screen)
+        } else {
+            TuiPaneState::Exited { exit_code: None }
+        };
+
         let payload = serde_json::json!({
             "session_id": session_id,
             "agent": kind.to_string(),
@@ -262,6 +273,7 @@ impl TuiAgentServer {
             "attach_command": attach_cmd,
             "initial_screen": screen,
             "initial_turn": initial_turn,
+            "state": state,
         });
 
         Ok(CallToolResult::success(vec![ContentBlock::text(

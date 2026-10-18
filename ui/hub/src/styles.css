@@ -11298,6 +11298,59 @@ button.git-log-row {
   padding: 0.55rem 0.7rem 0.7rem;
 }
 
+.agent-tui-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.agent-tui-status-label {
+  font-weight: 600;
+}
+
+.agent-tui-status.is-waiting_approval .agent-tui-status-label {
+  color: var(--accent-amber, #fbbf24);
+}
+
+.agent-tui-status.is-working .agent-tui-status-label {
+  color: var(--accent-sky, #38bdf8);
+}
+
+.agent-tui-status.is-idle_prompt .agent-tui-status-label {
+  color: var(--accent-emerald, #34d399);
+}
+
+.agent-tui-status.is-initializing .agent-tui-status-label {
+  color: var(--accent-purple, #c084fc);
+}
+
+.agent-tui-status.is-exited .agent-tui-status-label {
+  color: var(--text-muted, #677b94);
+}
+
+.agent-tui-status-detail {
+  flex-basis: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-tui-status code {
+  flex-basis: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-surface);
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  color: var(--accent-lime);
+}
+
 .agent-transcript .agent-tool-raw-name {
   font-family: var(--font-mono);
   font-size: 0.72rem;
