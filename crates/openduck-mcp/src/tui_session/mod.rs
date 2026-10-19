@@ -233,15 +233,25 @@ impl TuiAgentServer {
             )
         })?;
 
-        // Wait up to 3 seconds for initial composer prompt to settle
         let mut initial_turn = None;
         if let Some(prompt) = params.initial_prompt {
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            if kind != AgentCliKind::Agy {
+                tokio::time::sleep(Duration::from_millis(800)).await;
+            }
             match handle
                 .send_prompt(&prompt, true, Duration::from_secs(600))
                 .await
             {
                 Ok(turn) => initial_turn = Some(turn),
+                Err(e) if kind == AgentCliKind::Agy => {
+                    return Err(ErrorData::new(
+                        ErrorCode::INTERNAL_ERROR,
+                        format!(
+                            "Session '{session_id}' started, but initial prompt submission failed: {e}. Inspect this session before resending."
+                        ),
+                        None,
+                    ));
+                }
                 Err(e) => {
                     tracing::warn!("Failed initial prompt injection: {e}");
                 }

@@ -8,8 +8,8 @@ use tokio::sync::{Mutex, RwLock};
 
 use super::backend::{MultiplexerBackend, TmuxBackend};
 use super::profiles::{
-    profile_for_kind, AgentTuiProfile, TuiPaneState, TuiSessionConfig, TuiSessionSummary,
-    TuiTurnResult,
+    profile_for_kind, AgentCliKind, AgentTuiProfile, TuiPaneState, TuiSessionConfig,
+    TuiSessionSummary, TuiTurnResult,
 };
 use super::screen::{strip_ansi_codes, QuiescenceDetector};
 
@@ -48,20 +48,30 @@ impl TuiSessionHandle {
             .store(chrono::Utc::now().timestamp() as u64, Ordering::Relaxed);
         let start_time = Instant::now();
 
+        if self.config.kind == AgentCliKind::Agy {
+            if prompt.trim().is_empty() {
+                return Err(anyhow!("agy prompt must not be empty"));
+            }
+            self.wait_for_agy_composer(true, timeout.min(Duration::from_secs(15)))
+                .await?;
+        }
+
         // Inject prompt using bracketed paste mode to prevent early submission on newlines
         self.backend
             .paste_text(&self.config.session_id, prompt, true)
             .await
             .context("Failed to paste prompt into TUI session")?;
 
-        // Give the TUI event loop a moment to ingest the paste buffer
-        tokio::time::sleep(Duration::from_millis(80)).await;
-
-        // Submit the input composer
-        self.backend
-            .send_keys(&self.config.session_id, &["Enter".to_string()])
-            .await
-            .context("Failed to send Enter key to TUI session")?;
+        if self.config.kind == AgentCliKind::Agy {
+            self.submit_agy_prompt(timeout.saturating_sub(start_time.elapsed()))
+                .await?;
+        } else {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            self.backend
+                .send_keys(&self.config.session_id, &["Enter".to_string()])
+                .await
+                .context("Failed to send Enter key to TUI session")?;
+        }
 
         if !wait {
             let screen = self
@@ -175,6 +185,84 @@ impl TuiSessionHandle {
             duration_ms: start_time.elapsed().as_millis() as u64,
             attach_command: self.backend.attach_command(&self.config.session_id),
         })
+    }
+
+    async fn wait_for_agy_composer(&self, expect_empty: bool, timeout: Duration) -> Result<String> {
+        let deadline = Instant::now() + timeout;
+        let mut previous = None;
+        let mut stable_since = Instant::now();
+        while Instant::now() < deadline {
+            let screen = self
+                .backend
+                .capture_screen(&self.config.session_id, false, Some(100))
+                .await?;
+            if self.profile.classify_screen(&screen) == TuiPaneState::IdlePrompt {
+                if let Some(text) = self.profile.composer_text(&screen) {
+                    if text.is_empty() == expect_empty {
+                        if previous.as_ref() != Some(&text) {
+                            stable_since = Instant::now();
+                            previous = Some(text.clone());
+                        } else if stable_since.elapsed() >= Duration::from_millis(500) {
+                            return Ok(text);
+                        }
+                    } else {
+                        previous = None;
+                    }
+                } else {
+                    previous = None;
+                }
+            } else {
+                previous = None;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Err(anyhow!(
+            "Session '{}': agy input composer did not become ready; prompt was not submitted",
+            self.config.session_id
+        ))
+    }
+
+    async fn submit_agy_prompt(&self, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout.min(Duration::from_secs(10));
+        let pasted = self
+            .wait_for_agy_composer(false, deadline.saturating_duration_since(Instant::now()))
+            .await?;
+        for _ in 0..3 {
+            if Instant::now() >= deadline {
+                break;
+            }
+            self.backend
+                .send_keys(&self.config.session_id, &["Enter".to_string()])
+                .await?;
+            let check_until = (Instant::now() + Duration::from_secs(1)).min(deadline);
+            let mut still_pending = false;
+            while Instant::now() < check_until {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let screen = self
+                    .backend
+                    .capture_screen(&self.config.session_id, false, Some(100))
+                    .await?;
+                match self.profile.classify_screen(&screen) {
+                    TuiPaneState::Working { .. } | TuiPaneState::WaitingApproval { .. } => {
+                        return Ok(());
+                    }
+                    TuiPaneState::IdlePrompt => match self.profile.composer_text(&screen) {
+                        Some(text) if text.is_empty() => return Ok(()),
+                        Some(text) if text == pasted => still_pending = true,
+                        _ => still_pending = false,
+                    },
+                    _ => still_pending = false,
+                }
+            }
+            // Retry only while the original text is visibly still in the idle composer.
+            if !still_pending {
+                break;
+            }
+        }
+        Err(anyhow!(
+            "Session '{}': could not confirm agy submitted the prompt after Enter; inspect the TUI before resending",
+            self.config.session_id
+        ))
     }
 
     pub async fn send_keys(&self, keys: &[String]) -> Result<()> {

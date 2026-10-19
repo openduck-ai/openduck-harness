@@ -332,6 +332,7 @@ pub struct MockPane {
     pub screen: String,
     pub pasted: Vec<(String, bool)>,
     pub keys_sent: Vec<String>,
+    pub enter_keys_to_ignore: usize,
     pub alive: bool,
     pub cols: u16,
     pub rows: u16,
@@ -340,6 +341,12 @@ pub struct MockPane {
 impl MockMultiplexerBackend {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn ignore_next_enter_keys(&self, id: &str, count: usize) {
+        if let Some(pane) = self.panes.lock().unwrap().get_mut(id) {
+            pane.enter_keys_to_ignore = count;
+        }
     }
 
     pub fn set_screen(&self, id: &str, screen: impl Into<String>) {
@@ -384,6 +391,7 @@ impl MultiplexerBackend for MockMultiplexerBackend {
                 screen: "────────────────────────────────────────────\n>\n────────────────────────────────────────────".to_string(),
                 pasted: Vec::new(),
                 keys_sent: Vec::new(),
+                enter_keys_to_ignore: 0,
                 alive: true,
                 cols,
                 rows,
@@ -398,6 +406,9 @@ impl MultiplexerBackend for MockMultiplexerBackend {
             .get_mut(id)
             .ok_or_else(|| anyhow!("Mock pane {id} not found"))?;
         pane.pasted.push((text.to_string(), bracketed));
+        pane.screen = format!(
+            "────────────────────────────────────────────\n> {text}\n────────────────────────────────────────────"
+        );
         Ok(())
     }
 
@@ -408,6 +419,10 @@ impl MultiplexerBackend for MockMultiplexerBackend {
             .ok_or_else(|| anyhow!("Mock pane {id} not found"))?;
         pane.keys_sent.extend(keys.iter().cloned());
         if keys.iter().any(|k| k == "Enter") {
+            if pane.enter_keys_to_ignore > 0 {
+                pane.enter_keys_to_ignore -= 1;
+                return Ok(());
+            }
             if let Some((last_prompt, _)) = pane.pasted.last() {
                 pane.screen = format!(
                     "> {last_prompt}\nMock response for: {last_prompt}\n────────────────────────────────────────────\n>\n────────────────────────────────────────────"

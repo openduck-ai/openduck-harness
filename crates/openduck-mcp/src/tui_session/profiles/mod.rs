@@ -177,6 +177,9 @@ pub trait AgentTuiProfile: Send + Sync {
     fn build_launch_command(&self, config: &TuiSessionConfig) -> Result<Vec<String>>;
     fn classify_screen(&self, screen_text: &str) -> TuiPaneState;
     fn strip_chrome(&self, captured_scrollback: &str, submitted_prompt: &str) -> String;
+    fn composer_text(&self, _screen_text: &str) -> Option<String> {
+        None
+    }
     fn current_transcript_offset(&self, _cwd: &Path, _pid: u32, _resume_id: Option<&str>) -> u64 {
         0
     }

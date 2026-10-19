@@ -3,7 +3,7 @@ use super::{
     strip_common_tui_chrome, user_home, AgentCliKind, AgentTuiProfile, TuiPaneState,
     TuiSessionConfig,
 };
-use crate::tui_session::screen::ScreenSnapshot;
+use crate::tui_session::screen::{is_horizontal_rule_line, ScreenSnapshot};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::env;
@@ -212,7 +212,7 @@ impl AgentTuiProfile for AgyTuiProfile {
                 status_line: Some(status),
             };
         }
-        if detect_composer_idle_prompt(&bottom) {
+        if self.composer_text(screen_text).is_some() || detect_composer_idle_prompt(&bottom) {
             return TuiPaneState::IdlePrompt;
         }
         TuiPaneState::Initializing
@@ -220,6 +220,28 @@ impl AgentTuiProfile for AgyTuiProfile {
 
     fn strip_chrome(&self, captured_scrollback: &str, submitted_prompt: &str) -> String {
         strip_common_tui_chrome(captured_scrollback, submitted_prompt)
+    }
+
+    fn composer_text(&self, screen_text: &str) -> Option<String> {
+        let snapshot = ScreenSnapshot::new(screen_text.to_string());
+        let lines = snapshot.lines();
+        let bottom = lines
+            .iter()
+            .rposition(|line| is_horizontal_rule_line(line))?;
+        let top = lines[..bottom]
+            .iter()
+            .rposition(|line| is_horizontal_rule_line(line))?;
+        let mut composer = lines[top + 1..bottom].iter();
+        let first = composer.next()?.trim_start().strip_prefix('>')?;
+        Some(
+            std::iter::once(first)
+                .chain(composer.copied())
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string(),
+        )
     }
 
     fn current_transcript_offset(&self, cwd: &Path, _pid: u32, resume_id: Option<&str>) -> u64 {

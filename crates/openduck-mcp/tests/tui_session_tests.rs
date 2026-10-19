@@ -8,6 +8,119 @@ use openduck_mcp::tui_session::{
     TuiSessionConfig, TuiSessionManager,
 };
 
+async fn mock_agy_session(
+    backend: Arc<MockMultiplexerBackend>,
+    cwd: &std::path::Path,
+) -> openduck_mcp::tui_session::session::TuiSessionHandle {
+    use std::sync::atomic::AtomicU64;
+    use tokio::sync::Mutex;
+
+    let config = TuiSessionConfig {
+        session_id: "agy_submit".to_string(),
+        kind: AgentCliKind::Agy,
+        cwd: cwd.to_path_buf(),
+        ..Default::default()
+    };
+    let pid = backend
+        .spawn_pane(&config.session_id, &[], cwd, 120, 30, &[])
+        .await
+        .unwrap();
+    openduck_mcp::tui_session::session::TuiSessionHandle {
+        config,
+        backend,
+        profile: profile_for_kind(AgentCliKind::Agy),
+        pid,
+        created_at_unix_secs: 0,
+        last_activity_unix_secs: AtomicU64::new(0),
+        exited_at_unix_secs: Mutex::new(None),
+        transcript_offset: Mutex::new(0),
+        last_screen: Mutex::new(String::new()),
+        last_state: Mutex::new(TuiPaneState::Initializing),
+    }
+}
+
+#[test]
+fn test_agy_composer_distinguishes_pending_input_from_history() {
+    let profile = profile_for_kind(AgentCliKind::Agy);
+    let pending = "> old prompt\nOld response\n────────────────────\n> review\n  the project\n────────────────────\n? for shortcuts";
+    assert_eq!(
+        profile.composer_text(pending).as_deref(),
+        Some("review\nthe project")
+    );
+    let empty = "> old prompt\nOld response\n────────────────────\n>\n────────────────────\n? for shortcuts";
+    assert_eq!(profile.composer_text(empty).as_deref(), Some(""));
+    assert_eq!(profile.composer_text("Starting agy..."), None);
+
+    let long_input = format!(
+        "────────────────────\n> review\n{}\n────────────────────",
+        "more text\n".repeat(20)
+    );
+    assert_eq!(
+        profile.classify_screen(&long_input),
+        TuiPaneState::IdlePrompt
+    );
+}
+
+#[tokio::test]
+async fn test_agy_retries_enter_only_while_prompt_remains_in_composer() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_agy_session(backend.clone(), dir.path()).await;
+    backend.ignore_next_enter_keys("agy_submit", 1);
+
+    let turn = handle
+        .send_prompt("review\nthe project", false, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let pane = backend.get_pane("agy_submit").unwrap();
+    assert_eq!(pane.pasted.len(), 1);
+    assert_eq!(pane.keys_sent, vec!["Enter", "Enter"]);
+    assert_eq!(turn.state, TuiPaneState::IdlePrompt);
+    assert_eq!(
+        handle
+            .profile
+            .composer_text(&turn.screen_snapshot)
+            .as_deref(),
+        Some("")
+    );
+}
+
+#[tokio::test]
+async fn test_agy_reports_unsubmitted_prompt_instead_of_completion() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_agy_session(backend.clone(), dir.path()).await;
+    backend.ignore_next_enter_keys("agy_submit", 3);
+
+    let error = handle
+        .send_prompt("review the project", true, Duration::from_secs(10))
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("could not confirm agy submitted"));
+    let pane = backend.get_pane("agy_submit").unwrap();
+    assert_eq!(pane.pasted.len(), 1);
+    assert_eq!(pane.keys_sent.len(), 3);
+}
+
+#[tokio::test]
+async fn test_agy_waits_for_ready_composer_before_pasting() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_agy_session(backend.clone(), dir.path()).await;
+    backend.set_screen("agy_submit", "Starting agy...");
+
+    let error = handle
+        .send_prompt("review the project", false, Duration::from_millis(200))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("did not become ready"));
+    let pane = backend.get_pane("agy_submit").unwrap();
+    assert!(pane.pasted.is_empty());
+    assert!(pane.keys_sent.is_empty());
+}
+
 #[tokio::test]
 async fn test_harness_file_configures_new_tui_sessions() {
     let dir = tempdir().unwrap();
