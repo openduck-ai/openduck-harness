@@ -11,6 +11,7 @@ pub mod harness;
 pub mod http;
 pub mod insight;
 pub mod jobs;
+pub mod memory_log;
 pub mod network;
 pub mod project_harness;
 pub mod project_roots;

@@ -333,4 +333,73 @@ impl NotificationService {
         );
         Ok(())
     }
+
+    pub fn alert_skip_reason(&self, recipients: &[String]) -> Option<&'static str> {
+        if recipients.is_empty() {
+            Some("no administrator email")
+        } else if !self.config.email.enabled {
+            Some("email is disabled")
+        } else if self.provider.is_none() {
+            Some("no SMTP provider configured")
+        } else {
+            None
+        }
+    }
+
+    pub async fn send_alert(
+        &self,
+        recipients: &[String],
+        subject: &str,
+        text_body: &str,
+    ) -> Result<()> {
+        if recipients.is_empty() {
+            tracing::warn!("Skipping alert email: no recipients");
+            return Ok(());
+        }
+        if !self.config.email.enabled {
+            tracing::warn!(
+                recipients = ?recipients,
+                subject,
+                "Skipping alert email: email is disabled in configuration"
+            );
+            return Ok(());
+        }
+        let Some(provider) = &self.provider else {
+            tracing::warn!(
+                recipients = ?recipients,
+                subject,
+                "Skipping alert email: no SMTP provider configured"
+            );
+            return Ok(());
+        };
+
+        let from_addr = self
+            .config
+            .email
+            .smtp
+            .as_ref()
+            .map(|smtp| smtp.from.clone())
+            .unwrap_or_else(|| "openduck@localhost".to_string());
+        let html_body = Some(format!("<pre>{}</pre>", escape_html(text_body)));
+        let message = EmailMessage {
+            from: from_addr,
+            to: recipients.to_vec(),
+            subject: subject.to_string(),
+            text_body: text_body.to_string(),
+            html_body,
+        };
+        tracing::info!(
+            from = %message.from,
+            recipients = ?message.to,
+            subject = %message.subject,
+            "Sending administrator alert email"
+        );
+        provider.send(message).await
+    }
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }

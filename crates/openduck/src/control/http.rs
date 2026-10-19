@@ -1823,6 +1823,10 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
             get(super::harness::get_harness_overview),
         )
         .route(
+            "/api/v1/harness/memory-log",
+            get(super::memory_log::get_memory_log),
+        )
+        .route(
             "/api/v1/harness/reports",
             get(super::harness::list_harness_reports),
         )

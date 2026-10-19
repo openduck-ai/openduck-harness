@@ -420,6 +420,29 @@ test('network monitoring authenticates the request and preserves cancellation', 
   }
 })
 
+test('memory monitor log authenticates the request and preserves cancellation', async () => {
+  const originalFetch = globalThis.fetch
+  const controller = new AbortController()
+  let request: Request | undefined
+  globalThis.fetch = async (input, init) => {
+    request = new Request(input, init)
+    return new Response(JSON.stringify({ blocked: false, path: '/tmp/memory_monitor.jsonl', entries: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    await createApi('http://host', 'secret').getMemoryLog(25, controller.signal)
+    assert.equal(request?.url, 'http://host/api/v1/harness/memory-log?limit=25')
+    assert.equal(request?.headers.get('X-Secret-Key'), 'secret')
+    assert.equal(request?.signal.aborted, false)
+    controller.abort()
+    assert.equal(request?.signal.aborted, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('REST client sends extraPrompt when running a dynamic-prompt task', async () => {
   const originalFetch = globalThis.fetch
   let request: Request | undefined

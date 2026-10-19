@@ -5,6 +5,7 @@ import { useTheme } from '../contexts/ThemeContext'
 import { OpenDuckConfigPanel } from './OpenDuckConfigPanel'
 import { ProjectRootsEditor } from './ProjectRootsEditor'
 import { useProjectRoots } from './useProjectRoots'
+import { MemoryMonitorPanel } from './MemoryMonitorPanel'
 import { NetworkStatusPanel } from './NetworkStatusPanel'
 
 interface ServerSettingsProps {
@@ -242,6 +243,7 @@ export function ServerSettings({
       </div>
 
       <NetworkStatusPanel api={api} isConnected={isConnected} />
+      <MemoryMonitorPanel api={api} isConnected={isConnected} />
       <OpenDuckConfigPanel api={api} isConnected={isConnected} />
     </div>
   )

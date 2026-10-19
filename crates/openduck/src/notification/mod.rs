@@ -346,4 +346,40 @@ email:
         assert_eq!(sent.len(), 3);
         assert_eq!(sent[2].to, vec!["admin@example.com".to_string()]);
     }
+
+    #[tokio::test]
+    async fn send_alert_emails_the_administrator() {
+        let mock_provider = Arc::new(MockEmailProvider::new());
+        let config = NotificationConfig {
+            email: EmailConfig {
+                enabled: true,
+                smtp: Some(SmtpConfig {
+                    host: "smtp.example.com".into(),
+                    port: 587,
+                    use_tls: true,
+                    username: None,
+                    password: None,
+                    from: "noreply@example.com".into(),
+                }),
+                rules: vec![],
+                default_recipients: vec![],
+                projects: std::collections::HashMap::new(),
+            },
+        };
+        let service = NotificationService::with_provider(config, mock_provider.clone());
+        service
+            .send_alert(
+                &["admin@example.com".into()],
+                "[ALERT] memory",
+                "Available memory is low",
+            )
+            .await
+            .unwrap();
+        let sent = mock_provider.messages();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].to, vec!["admin@example.com".to_string()]);
+        assert_eq!(sent[0].subject, "[ALERT] memory");
+        assert!(sent[0].text_body.contains("Available memory is low"));
+        assert!(sent[0].html_body.as_ref().unwrap().contains("<pre>"));
+    }
 }

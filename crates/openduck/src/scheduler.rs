@@ -481,6 +481,14 @@ impl Scheduler {
                     return;
                 }
 
+                if crate::memory_gate::is_blocked() {
+                    tracing::warn!(
+                        job_id = %task_job_id,
+                        "Skipping scheduled job because harness memory is about to run out"
+                    );
+                    return;
+                }
+
                 let current_time = Utc::now();
                 {
                     let mut jobs_guard = current_jobs_arc.lock().await;
@@ -928,6 +936,9 @@ impl Scheduler {
     }
 
     pub async fn start_now(&self, sched_id: &str) -> Result<StartNowResult, SchedulerError> {
+        if let Err(error) = crate::memory_gate::ensure_open() {
+            return Err(SchedulerError::AnyhowError(anyhow!(error)));
+        }
         let job_to_run = {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
@@ -1006,6 +1017,9 @@ impl Scheduler {
     }
 
     pub async fn run_now(&self, sched_id: &str) -> Result<String, SchedulerError> {
+        if let Err(error) = crate::memory_gate::ensure_open() {
+            return Err(SchedulerError::AnyhowError(anyhow!(error)));
+        }
         let job_to_run = {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {

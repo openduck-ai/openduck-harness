@@ -1118,3 +1118,23 @@ export interface NetworkStatus {
   noProxy: string | null
 }
 
+export interface MemoryLogEntry {
+  at: string
+  level: string
+  event: string
+  message: string
+  availableMib?: number
+  limitMib?: number
+  processRssMib?: number
+  cgroupLimited?: boolean
+  blocked?: boolean
+  pausedTasks?: number
+  stoppedSchedules?: number
+}
+
+export interface MemoryLog {
+  blocked: boolean
+  path: string
+  entries: MemoryLogEntry[]
+}
+

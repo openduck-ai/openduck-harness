@@ -2273,6 +2273,30 @@ impl std::fmt::Display for TaskAlreadyRunningError {
 
 impl std::error::Error for TaskAlreadyRunningError {}
 
+#[derive(Debug)]
+pub enum ActiveJobRegisterError {
+    AlreadyRunning(TaskAlreadyRunningError),
+    MemoryPressure(crate::memory_gate::MemoryPressureError),
+}
+
+impl std::fmt::Display for ActiveJobRegisterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyRunning(err) => write!(f, "{err}"),
+            Self::MemoryPressure(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for ActiveJobRegisterError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::AlreadyRunning(err) => Some(err),
+            Self::MemoryPressure(err) => Some(err),
+        }
+    }
+}
+
 fn find_running_project_task<'a>(
     jobs: &'a HashMap<String, HarnessActiveJobDto>,
     job: &HarnessActiveJobDto,
@@ -2287,7 +2311,18 @@ fn find_running_project_task<'a>(
     })
 }
 
-pub fn register_active_job(job: HarnessActiveJobDto) {
+pub fn register_active_job(
+    job: HarnessActiveJobDto,
+) -> Result<(), crate::memory_gate::MemoryPressureError> {
+    {
+        let mut lock = HARNESS_ACTIVE_JOBS
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if crate::memory_gate::is_blocked() {
+            return Err(crate::memory_gate::MemoryPressureError);
+        }
+        lock.insert(job.job_id.clone(), job.clone());
+    }
     if let Some(slug) = &job.project_slug {
         broadcast_project_event(HarnessProjectEvent::TaskStatusChanged {
             project_slug: slug.clone(),
@@ -2296,22 +2331,27 @@ pub fn register_active_job(job: HarnessActiveJobDto) {
             status: job.current_status.clone(),
         });
     }
-    if let Ok(mut lock) = HARNESS_ACTIVE_JOBS.write() {
-        lock.insert(job.job_id.clone(), job.clone());
-    }
     upsert_live_snapshot(&job.job_id, empty_live_snapshot(&job.task_id));
+    Ok(())
 }
 
-pub fn try_register_active_job(job: HarnessActiveJobDto) -> Result<(), TaskAlreadyRunningError> {
+pub fn try_register_active_job(job: HarnessActiveJobDto) -> Result<(), ActiveJobRegisterError> {
     {
         let mut lock = HARNESS_ACTIVE_JOBS
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if crate::memory_gate::is_blocked() {
+            return Err(ActiveJobRegisterError::MemoryPressure(
+                crate::memory_gate::MemoryPressureError,
+            ));
+        }
         if let Some(existing) = find_running_project_task(&lock, &job) {
-            return Err(TaskAlreadyRunningError {
-                task_id: job.task_id,
-                job_id: existing.job_id.clone(),
-            });
+            return Err(ActiveJobRegisterError::AlreadyRunning(
+                TaskAlreadyRunningError {
+                    task_id: job.task_id,
+                    job_id: existing.job_id.clone(),
+                },
+            ));
         }
         lock.insert(job.job_id.clone(), job.clone());
     }
@@ -3113,6 +3153,22 @@ pub struct HarnessOverviewResponse {
 
 // ---------------- REST HANDLERS ----------------
 
+fn unavailable(
+    err: crate::memory_gate::MemoryPressureError,
+) -> (StatusCode, Json<serde_json::Value>) {
+    tracing::warn!(
+        error = %err,
+        "Refusing harness task because memory is about to run out"
+    );
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "error": err.to_string(),
+            "code": "memory_pressure",
+        })),
+    )
+}
+
 fn bad<T: std::fmt::Display>(e: T) -> (StatusCode, Json<serde_json::Value>) {
     let message = format!("{e:#}");
     tracing::error!(error = %message, "Harness request failed");
@@ -3373,7 +3429,8 @@ pub async fn run_harness_eval(
         provider: req.provider.clone(),
         model: req.model.clone(),
         project_slug: None,
-    });
+    })
+    .map_err(unavailable)?;
 
     let items = if dataset_path.extension().and_then(|e| e.to_str()) == Some("yaml")
         || dataset_path.extension().and_then(|e| e.to_str()) == Some("yml")
@@ -3485,7 +3542,8 @@ pub async fn run_harness_task(
         provider: req.provider.clone(),
         model: req.model.clone(),
         project_slug: None,
-    });
+    })
+    .map_err(unavailable)?;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     let spawn_job_id = job_id.clone();
@@ -3749,7 +3807,8 @@ pub async fn run_harness_replay(
         provider: None,
         model: None,
         project_slug: None,
-    });
+    })
+    .map_err(unavailable)?;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     let spawn_job_id = job_id.clone();
@@ -4367,7 +4426,8 @@ mod tests {
             provider: None,
             model: None,
             project_slug: Some("demo".into()),
-        });
+        })
+        .unwrap();
 
         let all = get_active_jobs_list();
         assert!(all.iter().any(|j| j.job_id == job_id));
@@ -4392,7 +4452,8 @@ mod tests {
             provider: None,
             model: None,
             project_slug: Some("demo".into()),
-        });
+        })
+        .unwrap();
 
         let inspect = inspect_active_job(&job_id).expect("job should be inspectable");
         assert!(inspect.live);
@@ -4461,6 +4522,9 @@ mod tests {
 
         try_register_active_job(job(first_id.clone(), &task_id)).unwrap();
         let err = try_register_active_job(job(new_harness_job_id("dup"), &task_id)).unwrap_err();
+        let ActiveJobRegisterError::AlreadyRunning(err) = err else {
+            panic!("expected already-running error");
+        };
         assert_eq!(err.task_id, task_id);
         assert_eq!(err.job_id, first_id);
 
@@ -4508,7 +4572,8 @@ mod tests {
             provider: None,
             model: None,
             project_slug: None,
-        });
+        })
+        .unwrap();
 
         let handle = tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;

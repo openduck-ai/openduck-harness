@@ -30,6 +30,7 @@ import type {
   ConfigScalar,
   HarnessSettingsUpdate,
   JudgeSettingsUpdate,
+  MemoryLog,
   NetworkStatus,
   Project,
   ProjectDetail,
@@ -172,6 +173,11 @@ export function createApi(baseUrl: string, secret = '') {
     getAppConfig: () => request<AppConfigDocument>('/api/v1/config'),
     getNetworkStatus: (signal?: AbortSignal) =>
       request<NetworkStatus>('/api/v1/network/status', { signal }),
+    getMemoryLog: (limit = 100, signal?: AbortSignal) =>
+      request<MemoryLog>(
+        `/api/v1/harness/memory-log?limit=${encodeURIComponent(String(limit))}`,
+        { signal },
+      ),
     getProvidersConfig: () => request<ProvidersConfigResponse>('/api/v1/config/providers'),
     updateProvidersConfig: (body: ProviderConfigPutBody) =>
       request<ProvidersConfigResponse>('/api/v1/config/providers', {

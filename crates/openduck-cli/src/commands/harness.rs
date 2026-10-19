@@ -23,6 +23,9 @@ pub enum HarnessCommand {
 
     /// Deterministically replay a previously recorded cassette
     Replay(ReplayArgs),
+
+    /// Show recent harness memory monitor events
+    MemoryLog(MemoryLogArgs),
 }
 
 #[derive(Debug, Args)]
@@ -100,6 +103,17 @@ pub struct RunArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct MemoryLogArgs {
+    /// Number of recent events to show
+    #[arg(long, default_value_t = 100)]
+    pub limit: usize,
+
+    /// Print the log as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct ReplayArgs {
     /// Path to the recorded cassette file (.json)
     #[arg(short, long)]
@@ -115,7 +129,29 @@ pub async fn handle_harness_command(command: HarnessCommand) -> Result<()> {
         HarnessCommand::Eval(args) => handle_eval(args).await,
         HarnessCommand::Run(args) => handle_run(args).await,
         HarnessCommand::Replay(args) => handle_replay(args).await,
+        HarnessCommand::MemoryLog(args) => handle_memory_log(args),
     }
+}
+
+fn handle_memory_log(args: MemoryLogArgs) -> Result<()> {
+    let view = openduck::memory_log::recent_recorded(args.limit);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&view)?);
+        return Ok(());
+    }
+    println!("blocked: {}", if view.blocked { "yes" } else { "no" });
+    println!("log: {}", view.path);
+    if view.entries.is_empty() {
+        println!("No memory monitor events recorded.");
+        return Ok(());
+    }
+    for entry in &view.entries {
+        println!(
+            "{} {} {} {}",
+            entry.at, entry.level, entry.event, entry.message
+        );
+    }
+    Ok(())
 }
 
 async fn handle_eval(args: EvalArgs) -> Result<()> {

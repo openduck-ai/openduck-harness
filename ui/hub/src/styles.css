@@ -12492,3 +12492,43 @@ button.git-log-row {
 .network-history-bars span { width: 6px; border-radius: 2px; }
 .network-history-ok { background: #16a34a; }
 .network-history-failed { background: #dc2626; }
+
+.memory-log-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.memory-log-state.open .status-dot {
+  background: var(--accent-emerald);
+  box-shadow: 0 0 8px var(--accent-emerald);
+}
+
+.memory-log-path { overflow-wrap: anywhere; }
+
+.memory-log-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.memory-log-entry {
+  display: grid;
+  grid-template-columns: minmax(9rem, 11.5rem) minmax(6.5rem, 8.5rem) minmax(0, 1fr);
+  gap: 8px 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-default);
+  font-size: 13px;
+}
+
+.memory-log-entry small { display: block; margin-top: 4px; }
+.memory-log-event { font-weight: 600; }
+.memory-log-level-warn .memory-log-event { color: var(--accent-amber); }
+.memory-log-level-error .memory-log-event { color: var(--accent-rose); }
+
+@media (max-width: 720px) {
+  .memory-log-entry { grid-template-columns: 1fr; }
+}

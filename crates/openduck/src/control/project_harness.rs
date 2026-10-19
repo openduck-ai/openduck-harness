@@ -38,9 +38,9 @@ use crate::control::harness::{
     read_history_run, register_abort_handle, register_active_job, remove_active_job,
     resolve_harness_policy, stop_active_job, subscribe_job_live_events, subscribe_project_events,
     to_run_dto, try_register_active_job, upsert_live_snapshot, with_live_snapshot,
-    with_task_notes_plan, HarnessActiveJobDto, HarnessCassetteSummaryDto, HarnessHistorySummaryDto,
-    HarnessJobInspectDto, HarnessJobLiveEvent, HarnessProjectEvent, HarnessReportSummaryDto,
-    HarnessRunResponseDto, TaskAlreadyRunningError, TrajectoryPagingQuery,
+    with_task_notes_plan, ActiveJobRegisterError, HarnessActiveJobDto, HarnessCassetteSummaryDto,
+    HarnessHistorySummaryDto, HarnessJobInspectDto, HarnessJobLiveEvent, HarnessProjectEvent,
+    HarnessReportSummaryDto, HarnessRunResponseDto, TrajectoryPagingQuery,
 };
 use crate::sources;
 
@@ -64,14 +64,31 @@ fn conflict(body: serde_json::Value) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::CONFLICT, Json(body))
 }
 
-fn launch_error(e: anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
-    if let Some(err) = e.downcast_ref::<TaskAlreadyRunningError>() {
-        return conflict(serde_json::json!({
+fn unavailable(err: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
+    tracing::warn!(
+        error = %err,
+        "Refusing project harness task because memory is about to run out"
+    );
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
             "error": err.to_string(),
-            "code": "task_already_running",
-            "taskId": err.task_id,
-            "jobId": err.job_id,
-        }));
+            "code": "memory_pressure",
+        })),
+    )
+}
+
+fn launch_error(e: anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
+    if let Some(err) = e.downcast_ref::<ActiveJobRegisterError>() {
+        return match err {
+            ActiveJobRegisterError::AlreadyRunning(err) => conflict(serde_json::json!({
+                "error": err.to_string(),
+                "code": "task_already_running",
+                "taskId": err.task_id,
+                "jobId": err.job_id,
+            })),
+            ActiveJobRegisterError::MemoryPressure(err) => unavailable(err),
+        };
     }
     if e.to_string().contains("not found") {
         return not_found(e);
@@ -1163,7 +1180,8 @@ pub async fn eval_project_tasks(
         provider: req.provider.clone().or(config.policy.provider.clone()),
         model: req.model.clone().or(config.policy.model.clone()),
         project_slug: Some(slug.clone()),
-    });
+    })
+    .map_err(unavailable)?;
 
     let report_res = if req.echo.unwrap_or(false) {
         runner

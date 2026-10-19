@@ -1497,6 +1497,14 @@ async fn handle_serve_command(args: ServeCommandArgs) -> Result<()> {
             "Scheduler failed to start; scheduled jobs will not run until a client connects: {error}"
         );
     }
+    let scheduler = match server.scheduler().await {
+        Ok(scheduler) => scheduler,
+        Err(error) => {
+            warn!("Harness memory monitor will not pause scheduled jobs: {error}");
+            None
+        }
+    };
+    openduck::memory_monitor::spawn(scheduler);
     let router = create_router(
         server,
         secret_key,

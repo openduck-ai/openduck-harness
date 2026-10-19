@@ -10,7 +10,7 @@ use tokio_cron_scheduler::{job::JobId, Job, JobScheduler as TokioJobScheduler};
 
 use crate::sources;
 
-use super::harness::{persist_harness_run, skipped_run_dto, TaskAlreadyRunningError};
+use super::harness::{persist_harness_run, skipped_run_dto, ActiveJobRegisterError};
 use super::project_harness::{launch_project_task, resolve_project_root, ProjectTaskRunRequest};
 
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
@@ -237,7 +237,25 @@ pub async fn run_scheduled_project_task(slug: &str, task_id: &str) -> Result<()>
             drop(rx);
             Ok(())
         }
-        Err(error) if error.downcast_ref::<TaskAlreadyRunningError>().is_some() => {
+        Err(error)
+            if matches!(
+                error.downcast_ref::<ActiveJobRegisterError>(),
+                Some(ActiveJobRegisterError::MemoryPressure(_))
+            ) =>
+        {
+            tracing::debug!(
+                project = slug,
+                task = task_id,
+                "Skipping scheduled run because memory is about to run out"
+            );
+            Ok(())
+        }
+        Err(error)
+            if matches!(
+                error.downcast_ref::<ActiveJobRegisterError>(),
+                Some(ActiveJobRegisterError::AlreadyRunning(_))
+            ) =>
+        {
             // Skip this tick instead of queueing a catch-up. If the task overruns
             // its interval, an immediate restart would turn it into a busy loop.
             let reason = "Skipped: previous run still in progress";
