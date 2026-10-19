@@ -127,6 +127,18 @@ test('subscribeJobLiveStream handles step_update and auto-completes on finished 
       onComplete,
     )
 
+    const partialEvent: HarnessJobLiveEvent = {
+      type: 'partial_update',
+      jobId: 'job-100',
+      durationMs: 1000,
+      partialThinking: 'Checking the next step',
+      partialText: null,
+    }
+    mockListeners.message?.({ data: JSON.stringify(partialEvent) })
+    assert.deepEqual(receivedEvent, partialEvent)
+    assert.equal(closed, false)
+    assert.equal(completed, false)
+
     const finishEvent: HarnessJobLiveEvent = {
       type: 'finished',
       jobId: 'job-100',

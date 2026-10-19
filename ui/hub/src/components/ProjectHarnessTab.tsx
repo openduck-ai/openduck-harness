@@ -775,6 +775,17 @@ export function ProjectHarnessTab({
             stopLiveInspect()
             void loadTasksAndJobs(selectedProjectSlug, true)
           }
+        } else if (event.type === 'partial_update') {
+          setActiveTrajectoryView(prev =>
+            prev
+              ? {
+                  ...prev,
+                  partialThinking: event.partialThinking,
+                  partialText: event.partialText,
+                  durationMs: event.durationMs,
+                }
+              : prev,
+          )
         } else if (event.type === 'step_update') {
           setActiveTrajectoryView(prev => {
             if (!prev) return prev
@@ -796,8 +807,10 @@ export function ProjectHarnessTab({
               stepCount: existingSteps.length,
               toolCallsCount: toolCalls,
               durationMs: event.durationMs || prev.durationMs,
+              providerStats: event.providerStats ?? prev.providerStats,
               trajectory: {
                 ...prev.trajectory,
+                providerStats: event.providerStats ?? prev.trajectory.providerStats,
                 steps: existingSteps,
               },
             }

@@ -1914,7 +1914,18 @@ pub enum HarnessJobLiveEvent {
         step_index: usize,
         step: TrajectoryStep,
         duration_ms: u128,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_stats: Option<openduck_harness::telemetry::TaskProviderStats>,
     },
+    #[serde(rename_all = "camelCase")]
+    PartialUpdate {
+        job_id: String,
+        duration_ms: u128,
+        partial_thinking: Option<String>,
+        partial_text: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Resync { job_id: String },
     #[serde(rename_all = "camelCase")]
     Snapshot {
         job_id: String,
@@ -1933,8 +1944,10 @@ pub enum HarnessJobLiveEvent {
 static HARNESS_PROJECT_EVENTS: LazyLock<broadcast::Sender<HarnessProjectEvent>> =
     LazyLock::new(|| broadcast::channel(1024).0);
 
+const HARNESS_JOB_LIVE_EVENT_CAPACITY: usize = 32;
+
 static HARNESS_JOB_LIVE_EVENTS: LazyLock<broadcast::Sender<HarnessJobLiveEvent>> =
-    LazyLock::new(|| broadcast::channel(1024).0);
+    LazyLock::new(|| broadcast::channel(HARNESS_JOB_LIVE_EVENT_CAPACITY).0);
 
 pub fn broadcast_project_event(event: HarnessProjectEvent) {
     let _ = HARNESS_PROJECT_EVENTS.send(event);
@@ -2040,40 +2053,74 @@ fn empty_live_snapshot(task_id: &str) -> HarnessRunResponseDto {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn publish_live_snapshot(
     job_id: &str,
     task_id: &str,
     policy_name: &str,
     started_at: DateTime<Utc>,
     steps: &[TrajectoryStep],
-    partial_thinking: Option<String>,
-    partial_text: Option<String>,
-    broadcast_step: bool,
 ) {
-    let mut snapshot = live_snapshot_from_steps(job_id, task_id, policy_name, started_at, steps);
-    let thinking = partial_thinking.filter(|text| !text.trim().is_empty());
-    snapshot.partial_text = if thinking.is_some() {
-        partial_text.filter(|text| !text.trim().is_empty())
+    let previous_step_count = HARNESS_LIVE_SNAPSHOTS
+        .read()
+        .ok()
+        .and_then(|snapshots| snapshots.get(job_id).map(|snapshot| snapshot.step_count))
+        .unwrap_or(0);
+    let snapshot = live_snapshot_from_steps(job_id, task_id, policy_name, started_at, steps);
+    let duration_ms = snapshot.duration_ms;
+    let provider_stats = snapshot.provider_stats.clone();
+    upsert_live_snapshot(job_id, snapshot);
+    if steps.len() > previous_step_count + 1 || steps.len() < previous_step_count {
+        broadcast_job_live_event(HarnessJobLiveEvent::Resync {
+            job_id: job_id.to_string(),
+        });
+        return;
+    }
+    if let Some(last_step) = steps.last() {
+        broadcast_job_live_event(HarnessJobLiveEvent::StepUpdate {
+            job_id: job_id.to_string(),
+            step_index: steps.len() - 1,
+            step: last_step.clone(),
+            duration_ms,
+            provider_stats,
+        });
+    }
+}
+
+fn publish_partial_update(job_id: &str, started_at: DateTime<Utc>, partial: PartialGeneration) {
+    let event = {
+        let Ok(mut snapshots) = HARNESS_LIVE_SNAPSHOTS.write() else {
+            return;
+        };
+        let Some(snapshot) = snapshots.get_mut(job_id) else {
+            return;
+        };
+        apply_partial_update(job_id, snapshot, started_at, partial)
+    };
+    broadcast_job_live_event(event);
+}
+
+fn apply_partial_update(
+    job_id: &str,
+    snapshot: &mut HarnessRunResponseDto,
+    started_at: DateTime<Utc>,
+    partial: PartialGeneration,
+) -> HarnessJobLiveEvent {
+    snapshot.partial_thinking = Some(partial.thinking).filter(|text| !text.trim().is_empty());
+    snapshot.partial_text = if snapshot.partial_thinking.is_some() {
+        Some(partial.text).filter(|text| !text.trim().is_empty())
     } else {
         None
     };
-    snapshot.partial_thinking = thinking;
-    upsert_live_snapshot(job_id, snapshot.clone());
-    if broadcast_step {
-        if let Some(last_step) = steps.last() {
-            broadcast_job_live_event(HarnessJobLiveEvent::StepUpdate {
-                job_id: job_id.to_string(),
-                step_index: steps.len().saturating_sub(1),
-                step: last_step.clone(),
-                duration_ms: snapshot.duration_ms,
-            });
-        }
-    }
-    broadcast_job_live_event(HarnessJobLiveEvent::Snapshot {
+    snapshot.duration_ms = Utc::now()
+        .signed_duration_since(started_at)
+        .num_milliseconds()
+        .max(0) as u128;
+    HarnessJobLiveEvent::PartialUpdate {
         job_id: job_id.to_string(),
-        snapshot: Box::new(snapshot),
-    });
+        duration_ms: snapshot.duration_ms,
+        partial_thinking: snapshot.partial_thinking.clone(),
+        partial_text: snapshot.partial_text.clone(),
+    }
 }
 
 pub fn upsert_live_snapshot(job_id: &str, snapshot: HarnessRunResponseDto) {
@@ -2157,44 +2204,21 @@ where
     let task_id = task_id.to_string();
     let policy_name = harness.policy_name().to_string();
     let started_at = Utc::now();
-    let completed_steps = Arc::new(std::sync::Mutex::new(Vec::<TrajectoryStep>::new()));
-    let steps_for_observer = completed_steps.clone();
     let job_for_steps = job_id.clone();
     let task_for_steps = task_id.clone();
     let policy_for_steps = policy_name.clone();
     let mut harness = harness.with_step_observer(Arc::new(move |steps| {
-        if let Ok(mut guard) = steps_for_observer.lock() {
-            *guard = steps.to_vec();
-        }
         publish_live_snapshot(
             &job_for_steps,
             &task_for_steps,
             &policy_for_steps,
             started_at,
             steps,
-            None,
-            None,
-            true,
         );
     }));
     let job_for_partial = job_id;
-    let task_for_partial = task_id;
-    let policy_for_partial = policy_name;
     harness.set_partial_observer(Some(Arc::new(move |partial| {
-        let steps = completed_steps
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        publish_live_snapshot(
-            &job_for_partial,
-            &task_for_partial,
-            &policy_for_partial,
-            started_at,
-            &steps,
-            Some(partial.thinking),
-            Some(partial.text),
-            false,
-        );
+        publish_partial_update(&job_for_partial, started_at, partial);
     })));
     harness
 }
@@ -5667,6 +5691,62 @@ mod tests {
             partial_text: None,
             pagination: None,
         }
+    }
+
+    #[test]
+    fn partial_updates_do_not_queue_or_replace_trajectory_history() {
+        let mut snapshot = make_test_run_dto(3);
+        snapshot.trajectory.steps[0].llm_request = Some(serde_json::json!({
+            "messages": "x".repeat(128 * 1024),
+        }));
+        let steps_ptr = snapshot.trajectory.steps.as_ptr();
+        let (tx, mut rx) = broadcast::channel(HARNESS_JOB_LIVE_EVENT_CAPACITY);
+        let started_at = Utc::now();
+
+        for index in 0..128 {
+            let event = apply_partial_update(
+                "job",
+                &mut snapshot,
+                started_at,
+                PartialGeneration {
+                    thinking: format!("thinking {index}"),
+                    text: "answer in progress".to_string(),
+                },
+            );
+            assert!(serde_json::to_vec(&event).unwrap().len() < 512);
+            tx.send(event).unwrap();
+        }
+
+        assert_eq!(snapshot.trajectory.steps.as_ptr(), steps_ptr);
+        assert_eq!(snapshot.partial_thinking.as_deref(), Some("thinking 127"));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Lagged(_))
+        ));
+        let mut received = 0;
+        while let Ok(event) = rx.try_recv() {
+            assert!(matches!(event, HarnessJobLiveEvent::PartialUpdate { .. }));
+            received += 1;
+        }
+        assert_eq!(received, HARNESS_JOB_LIVE_EVENT_CAPACITY);
+
+        let event = apply_partial_update(
+            "job",
+            &mut snapshot,
+            started_at,
+            PartialGeneration::default(),
+        );
+        assert!(matches!(
+            event,
+            HarnessJobLiveEvent::PartialUpdate {
+                partial_thinking: None,
+                partial_text: None,
+                ..
+            }
+        ));
+        assert!(snapshot.partial_thinking.is_none());
+        assert!(snapshot.partial_text.is_none());
+        assert_eq!(snapshot.trajectory.steps.len(), 3);
     }
 
     #[test]

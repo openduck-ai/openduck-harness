@@ -1059,6 +1059,14 @@ export type HarnessJobLiveEvent =
       stepIndex: number
       step: HarnessTrajectoryStep
       durationMs: number
+      providerStats?: TaskProviderStats | null
+    }
+  | {
+      type: 'partial_update'
+      jobId: string
+      durationMs: number
+      partialThinking: string | null
+      partialText: string | null
     }
   | {
       type: 'snapshot'

@@ -1523,11 +1523,30 @@ pub async fn stream_harness_job_live(
                 Ok(event) => {
                     let ev_job_id = match &event {
                         HarnessJobLiveEvent::StepUpdate { job_id: jid, .. }
+                        | HarnessJobLiveEvent::PartialUpdate { job_id: jid, .. }
+                        | HarnessJobLiveEvent::Resync { job_id: jid }
                         | HarnessJobLiveEvent::Snapshot { job_id: jid, .. }
                         | HarnessJobLiveEvent::Finished { job_id: jid, .. } => jid,
                     };
                     if ev_job_id == &job_id {
-                        let is_finished = matches!(&event, HarnessJobLiveEvent::Finished { .. });
+                        let event = match event {
+                            HarnessJobLiveEvent::Resync { .. } => {
+                                let Some(snapshot) = get_live_snapshot(&job_id) else {
+                                    break;
+                                };
+                                HarnessJobLiveEvent::Snapshot {
+                                    job_id: job_id.clone(),
+                                    snapshot: Box::new(snapshot),
+                                }
+                            }
+                            event => event,
+                        };
+                        let is_finished = match &event {
+                            HarnessJobLiveEvent::Finished { .. } => true,
+                            HarnessJobLiveEvent::Snapshot { snapshot, .. } =>
+                                !matches!(snapshot.status, openduck_harness::types::RunStatus::Running),
+                            _ => false,
+                        };
                         if let Ok(data) = serde_json::to_string(&event) {
                             yield Ok(Event::default().data(data));
                         }
@@ -1539,6 +1558,7 @@ pub async fn stream_harness_job_live(
                 Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
                     tracing::warn!(job_id = %job_id, lagged = n, "Job SSE stream lagged");
                     if let Some(snap) = get_live_snapshot(&job_id) {
+                        let is_finished = !matches!(snap.status, openduck_harness::types::RunStatus::Running);
                         let snap_ev = HarnessJobLiveEvent::Snapshot {
                             job_id: job_id.clone(),
                             snapshot: Box::new(snap),
@@ -1546,6 +1566,11 @@ pub async fn stream_harness_job_live(
                         if let Ok(data) = serde_json::to_string(&snap_ev) {
                             yield Ok(Event::default().data(data));
                         }
+                        if is_finished {
+                            break;
+                        }
+                    } else {
+                        break;
                     }
                 }
             }
