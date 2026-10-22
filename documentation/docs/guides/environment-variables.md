@@ -599,6 +599,15 @@ OPENDUCK_PATH_ROOT="$(mktemp -d)" openduck run --recipe integration-test.yaml
 OPENDUCK_PATH_ROOT="/tmp/openduck-test" ./scripts/goose-db-helper.sh status
 ```
 
+### Heap profiles
+
+These apply when `openduck` is built with `jemalloc-prof`. See [Jemalloc heap profiles](/docs/guides/jemalloc-prof). `OPENDUCK_JEMALLOC_PROF_PREFIX` has no `GOOSE_*` alias. `MALLOC_CONF` is read by jemalloc.
+
+| Variable | Purpose | Values | Default |
+|----------|---------|---------|---------|
+| `OPENDUCK_JEMALLOC_PROF_PREFIX` | Path prefix for the profile `openduck serve` writes on `SIGUSR2` | Path prefix. The directory must exist | `/tmp/od-heap` |
+| `MALLOC_CONF` | Replaces the built-in jemalloc options | jemalloc option string | `background_thread:true,prof:true,prof_active:true,lg_prof_sample:19,prof_prefix:/tmp/od-heap` when unset |
+
 ## Variables Controlled by OpenDuck
 
 These variables are automatically set by OpenDuck during command execution.

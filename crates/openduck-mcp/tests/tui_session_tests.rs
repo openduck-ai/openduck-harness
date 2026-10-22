@@ -196,6 +196,82 @@ async fn test_harness_file_configures_new_tui_sessions() {
 }
 
 #[tokio::test]
+async fn test_harness_effort_defaults_and_request_precedence() {
+    let dir = tempdir().unwrap();
+    let config_dir = dir.path().join(".openduck");
+    std::fs::create_dir(&config_dir).unwrap();
+    let config_path = config_dir.join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "harness:\n  tui_sessions:\n    default:\n      effort: medium\n    custom:\n      idle_timeout_mins: 30\n",
+    )
+    .unwrap();
+
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let manager = TuiSessionManager::with_backend(backend);
+    let config = TuiSessionConfig {
+        session_id: "default_effort".to_string(),
+        kind: AgentCliKind::Custom,
+        cwd: dir.path().to_path_buf(),
+        extra_args: vec!["bash".to_string()],
+        https_proxy: Some("http://request:8080".to_string()),
+        idle_timeout_mins: Some(45),
+        exited_retention_mins: Some(10),
+        ..Default::default()
+    };
+    let handle = manager.start_session(config.clone()).await.unwrap();
+    assert_eq!(handle.config.effort.as_deref(), Some("medium"));
+
+    std::fs::write(
+        &config_path,
+        "harness:\n  tui_sessions:\n    default:\n      effort: medium\n    custom:\n      effort: high\n",
+    )
+    .unwrap();
+    let handle = manager
+        .start_session(TuiSessionConfig {
+            session_id: "agent_effort".to_string(),
+            ..config.clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(handle.config.effort.as_deref(), Some("high"));
+
+    let handle = manager
+        .start_session(TuiSessionConfig {
+            session_id: "request_effort".to_string(),
+            effort: Some("low".to_string()),
+            https_proxy: None,
+            ..config.clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(handle.config.effort.as_deref(), Some("low"));
+    std::fs::write(
+        &config_path,
+        "harness:\n  tui_sessions:\n    default: {}\n    custom: {}\n",
+    )
+    .unwrap();
+    let handle = manager
+        .start_session(TuiSessionConfig {
+            session_id: "cli_default_effort".to_string(),
+            ..config
+        })
+        .await
+        .unwrap();
+    assert_eq!(handle.config.effort, None);
+    assert_eq!(
+        manager
+            .get_session("default_effort")
+            .await
+            .unwrap()
+            .config
+            .effort
+            .as_deref(),
+        Some("medium")
+    );
+}
+
+#[tokio::test]
 async fn test_https_proxy_is_forwarded_and_scoped_to_session() {
     let backend = Arc::new(MockMultiplexerBackend::new());
     let manager = TuiSessionManager::with_backend(backend.clone());

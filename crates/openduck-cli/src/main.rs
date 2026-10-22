@@ -3,6 +3,23 @@
 use anyhow::Result;
 use openduck_cli::cli::cli;
 
+// Name the sys crate so its malloc override is linked into this binary.
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[allow(unused_imports)]
+use tikv_jemalloc_sys as _;
+
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+// jemalloc reads this symbol when MALLOC_CONF is unset.
+// Setting MALLOC_CONF replaces the string; it does not merge with it.
+#[cfg(all(feature = "jemalloc-prof", not(target_env = "msvc")))]
+#[allow(non_upper_case_globals)]
+#[export_name = "malloc_conf"]
+#[used]
+static malloc_conf: &[u8] = openduck_cli::jemalloc_prof::MALLOC_CONF;
+
 /// Enable ANSI/VT escape sequence processing on Windows Console Host.
 ///
 /// Without this, spinners and progress bars from cliclack/indicatif render as

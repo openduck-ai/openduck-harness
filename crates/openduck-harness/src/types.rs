@@ -252,6 +252,8 @@ pub fn discover_advisor_configs(
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TuiSessionDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "httpsProxy")]
     pub https_proxy: Option<String>,
     #[serde(

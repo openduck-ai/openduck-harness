@@ -8,6 +8,8 @@ compile_error!("Features `rustls-tls` and `native-tls` are mutually exclusive");
 
 pub mod cli;
 pub mod commands;
+#[cfg(all(feature = "jemalloc-prof", not(target_env = "msvc")))]
+pub mod jemalloc_prof;
 pub mod logging;
 pub mod recipes;
 pub mod scenario_tests;

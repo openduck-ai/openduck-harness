@@ -374,11 +374,24 @@ impl TuiSessionManager {
     ) -> Result<Arc<TuiSessionHandle>> {
         let _ = self.reclaim_stale_sessions().await;
 
-        if config.https_proxy.is_none()
+        if config.effort.is_none()
+            || config.https_proxy.is_none()
             || config.idle_timeout_mins.is_none()
             || config.exited_retention_mins.is_none()
         {
             let settings = discover_global_harness_settings(Some(&config.cwd));
+            if config.effort.is_none() {
+                config.effort = settings
+                    .tui_sessions
+                    .get(&config.kind.to_string())
+                    .and_then(|defaults| defaults.effort.clone())
+                    .or_else(|| {
+                        settings
+                            .tui_sessions
+                            .get("default")
+                            .and_then(|defaults| defaults.effort.clone())
+                    });
+            }
             if config.https_proxy.is_none() {
                 config.https_proxy = settings
                     .tui_sessions

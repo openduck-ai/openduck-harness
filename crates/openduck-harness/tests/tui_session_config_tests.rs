@@ -81,6 +81,7 @@ harness:
     assert_eq!(
         settings.tui_sessions["default"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: Some("http://127.0.0.1:8080".to_string()),
             idle_timeout_mins: Some(45),
             exited_retention_mins: Some(15),
@@ -89,6 +90,7 @@ harness:
     assert_eq!(
         settings.tui_sessions["agy"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: None,
             idle_timeout_mins: Some(60),
             exited_retention_mins: None,
@@ -121,6 +123,7 @@ tuiSessions:
     assert_eq!(
         settings.tui_sessions["default"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: Some("http://camel-nested:8080".to_string()),
             idle_timeout_mins: Some(30),
             exited_retention_mins: Some(10),
@@ -129,6 +132,7 @@ tuiSessions:
     assert_eq!(
         settings.tui_sessions["claude"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: Some("http://camel-top:8080".to_string()),
             idle_timeout_mins: Some(20),
             exited_retention_mins: Some(5),
@@ -156,6 +160,7 @@ harness:
     assert_eq!(
         loaded.tui_sessions["grok"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: Some("http://file-proxy:2087".to_string()),
             idle_timeout_mins: Some(25),
             exited_retention_mins: None,
@@ -205,6 +210,7 @@ harness:
     assert_eq!(
         discovered.tui_sessions["grok"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: Some("http://openduck-config:8080".to_string()),
             idle_timeout_mins: Some(40),
             exited_retention_mins: None,
@@ -213,6 +219,7 @@ harness:
     assert_eq!(
         discovered.tui_sessions["agy"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: None,
             idle_timeout_mins: Some(55),
             exited_retention_mins: Some(12),
@@ -256,6 +263,7 @@ tui_sessions:
     assert_eq!(
         settings.tui_sessions["grok"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: Some("http://nested-grok:8080".to_string()),
             idle_timeout_mins: Some(35),
             exited_retention_mins: None,
@@ -264,6 +272,7 @@ tui_sessions:
     assert_eq!(
         settings.tui_sessions["default"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: None,
             idle_timeout_mins: Some(45),
             exited_retention_mins: None,
@@ -272,6 +281,7 @@ tui_sessions:
     assert_eq!(
         settings.tui_sessions["agy"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: None,
             idle_timeout_mins: None,
             exited_retention_mins: Some(20),
@@ -282,12 +292,14 @@ tui_sessions:
 #[test]
 fn tui_session_defaults_yaml_roundtrip_and_skip_serializing_none() {
     let defaults = TuiSessionDefaults {
+        effort: None,
         https_proxy: None,
         idle_timeout_mins: Some(45),
         exited_retention_mins: None,
     };
 
     let yaml = serde_yaml::to_string(&defaults).unwrap();
+    assert!(!yaml.contains("effort"));
     assert!(!yaml.contains("https_proxy"));
     assert!(!yaml.contains("exited_retention_mins"));
     assert!(yaml.contains("idle_timeout_mins: 45"));
@@ -366,6 +378,7 @@ harness:
     assert_eq!(
         discovered.tui_sessions["default"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: Some("http://openduck-config-default:8080".to_string()),
             idle_timeout_mins: Some(30),
             exited_retention_mins: None,
@@ -374,6 +387,7 @@ harness:
     assert_eq!(
         discovered.tui_sessions["agy"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: None,
             idle_timeout_mins: Some(60),
             exited_retention_mins: None,
@@ -382,6 +396,7 @@ harness:
     assert_eq!(
         discovered.tui_sessions["codex"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: None,
             idle_timeout_mins: None,
             exited_retention_mins: Some(15),
@@ -390,6 +405,7 @@ harness:
     assert_eq!(
         discovered.tui_sessions["claude"],
         TuiSessionDefaults {
+            effort: None,
             https_proxy: Some("http://goose-harness-claude:8080".to_string()),
             idle_timeout_mins: None,
             exited_retention_mins: None,
@@ -409,4 +425,29 @@ harness:
 
     assert_eq!(settings.max_turns, Some(40));
     assert!(settings.tui_sessions.is_empty());
+}
+
+#[test]
+fn tui_session_effort_survives_config_roundtrip() {
+    let settings = parse_harness_global_settings_str(
+        r#"
+harness:
+  tui_sessions:
+    default:
+      effort: low
+    agy:
+      effort: medium
+"#,
+    );
+    assert_eq!(
+        settings.tui_sessions["default"].effort.as_deref(),
+        Some("low")
+    );
+    assert_eq!(
+        settings.tui_sessions["agy"].effort.as_deref(),
+        Some("medium")
+    );
+    let yaml = serde_yaml::to_string(&settings).unwrap();
+    let parsed = parse_harness_global_settings_str(&yaml);
+    assert_eq!(parsed.tui_sessions, settings.tui_sessions);
 }

@@ -104,6 +104,16 @@ instructions: |
   `harness.tui_sessions.default.https_proxy` applies when the agent entry is absent.
   Restore the project's original configuration and stop all test sessions.
 
+  With agy installed, set `harness.tui_sessions.agy.effort: medium` in the test
+  project's `.openduck/config.yaml`. Start agy with that project as `cwd` and omit
+  the start tool's `effort` parameter. Verify its launch command includes
+  `--effort medium` and the TUI displays medium effort. Repeat with an explicit
+  `effort: high` and verify it overrides the file. Remove the agent effort setting
+  and set `harness.tui_sessions.default.effort: medium` to verify the fallback.
+  Verify an existing session keeps its original effort after the file changes.
+  Restore the original configuration and stop all test sessions. Record missing
+  prerequisites as SKIPPED.
+
   Run a project task that calls `tui_agent_start`, `tui_agent_prompt`,
   `tui_agent_read`, and `tui_agent_list`. Inspect its Agent Log in the Hub.
   Verify TUI tool rows identify the operation and session, and recorded state is

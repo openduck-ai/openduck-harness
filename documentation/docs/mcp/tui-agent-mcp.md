@@ -119,7 +119,7 @@ Spawns a new persistent tmux session running the designated agent CLI.
 | `agent` | `string` | **Yes** | Target agent CLI: `agy`, `grok`, `codex`, `claude`, or `custom`. |
 | `cwd` | `string` | No | Working directory for the session. Defaults to current workspace root. |
 | `model` | `string` | No | Model slug override (e.g. `gemini-3.8-flash-high`, `grok-4.6`). |
-| `effort` | `string` | No | Reasoning effort level: `low`, `medium`, or `high`. |
+| `effort` | `string` | No | Reasoning effort level: `low`, `medium`, or `high`. Overrides `harness.tui_sessions.<agent>.effort` and `harness.tui_sessions.default.effort` in `config.yaml`. |
 | `auto_approve` | `boolean` | No | Auto-approve permissions and interactive modals (default: `true`). |
 | `resume_id` | `string` | No | Existing conversation or session ID to resume. |
 | `initial_prompt`| `string` | No | Prompt to inject immediately once the TUI settles into idle prompt. |

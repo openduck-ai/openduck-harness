@@ -56,7 +56,7 @@ Existing Goose config directories are migrated automatically. Override the confi
 - **Harness Settings**: Circuit breaker thresholds, stagnation limits, review intervals, and turn bounds.
 - **Judge Configuration**: Evaluator service endpoints, timeouts, and scoring drift/completion detection.
 
-### TUI Agent Sessions (Proxies, Idle Timeout & Lifecycle Reclamation)
+### TUI Agent Sessions (Effort, Proxies, Idle Timeout & Lifecycle Reclamation)
 
 Configure persistent TUI agents in the `harness.tui_sessions` section of your
 project's `.openduck/config.yaml` or `~/.config/openduck/config.yaml`:
@@ -65,24 +65,28 @@ project's `.openduck/config.yaml` or `~/.config/openduck/config.yaml`:
 harness:
   tui_sessions:
     default:
+      effort: medium
       https_proxy: http://127.0.0.1:8080
       idle_timeout_mins: 45
       exited_retention_mins: 10
     grok:
       https_proxy: http://127.0.0.1:2087
       idle_timeout_mins: 30
+    agy:
+      effort: medium
 ```
 
 Agent keys are `agy`, `grok`, `codex`, `claude`, and `custom`. The optional
 `default` entry supplies fallback settings for agents without their own entry.
 
 Supported properties:
+- **`effort`**: Reasoning effort passed to the agent CLI, such as `low`, `medium`, or `high`. Supported values depend on the CLI. If omitted, the CLI uses its own default.
 - **`https_proxy`**: Outbound HTTPS proxy URL passed as both `HTTPS_PROXY` and `https_proxy` to the CLI environment.
 - **`idle_timeout_mins`**: Inactivity timeout in minutes. When an active session remains in `IdlePrompt` without prompts or keystrokes for this duration, it is automatically terminated and reclaimed to free memory. If omitted, idle sessions remain open indefinitely until stopped manually. Recommended value: `30` to `60` minutes.
 - **`exited_retention_mins`**: Retention grace period in minutes to keep an exited or crashed session in the registry and UI list before pruning. This ensures callers and the Web Hub have time to read the final screen snapshot and exit status. Defaults to `10` minutes if omitted. Set to `0` for immediate eviction upon exit.
 
 Both the `tui_agent_start` MCP tool and Hub TUI sessions apply these settings.
-Explicit start parameters (`httpsProxy`, `idleTimeoutMins`, `exitedRetentionMins`)
+Explicit start parameters (`effort`, `httpsProxy`, `idleTimeoutMins`, `exitedRetentionMins`)
 take precedence over the agent entry, which takes precedence over `default`.
 
 TUI sessions use the harness config discovery order: explicit config paths such

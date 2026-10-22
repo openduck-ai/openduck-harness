@@ -91,6 +91,17 @@ winapi = { workspace = true, features = [
 [target."cfg(unix)".dependencies]
 libc = { version = "0.2.182", default-features = false, features = ["std"] }
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemalloc-ctl = { version = "0.7", optional = true }
+tikv-jemalloc-sys = { version = "0.7", optional = true, features = [
+    "background_threads",
+    "override_allocator_on_supported_platforms",
+] }
+tikv-jemallocator = { version = "0.7", optional = true, features = [
+    "background_threads",
+    "override_allocator_on_supported_platforms",
+] }
+
 [features]
 default = [
     "code-mode",
@@ -103,6 +114,7 @@ default = [
     "rustls-tls",
     "system-keyring",
     "update",
+    "jemalloc",
 ]
 code-mode = ["openduck/code-mode"]
 local-inference = ["openduck/local-inference"]
@@ -116,7 +128,7 @@ otel = ["openduck/otel"]
 system-keyring = ["openduck/system-keyring"]
 tui = []
 update = ["dep:sigstore-verify", "dep:snap"]
-portable-default = ["rustls-tls", "aws-providers", "telemetry", "otel", "tui"]
+portable-default = ["rustls-tls", "aws-providers", "telemetry", "otel", "tui", "jemalloc"]
 # disables the update command
 disable-update = []
 rustls-tls = [
@@ -136,6 +148,23 @@ native-tls = [
     "openduck/native-tls",
     "openduck-mcp/native-tls",
     "openduck-providers/native-tls",
+]
+# Global allocator for the openduck binary, including `openduck serve`.
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys"]
+# Sampling heap profiles. SIGUSR2 on `openduck serve` writes a profile.
+# MALLOC_CONF replaces the built-in options. Requires libunwind at build time.
+jemalloc-prof = [
+    "jemalloc",
+    "dep:tikv-jemalloc-ctl",
+    "tikv-jemallocator/profiling",
+    "tikv-jemallocator/profiling_libunwind",
+    "tikv-jemallocator/stats",
+    "tikv-jemalloc-sys/profiling",
+    "tikv-jemalloc-sys/profiling_libunwind",
+    "tikv-jemalloc-sys/stats",
+    "tikv-jemalloc-ctl/profiling",
+    "tikv-jemalloc-ctl/profiling_libunwind",
+    "tikv-jemalloc-ctl/stats",
 ]
 
 [dev-dependencies]

@@ -2343,6 +2343,14 @@ pub async fn cli() -> anyhow::Result<()> {
         "CLI command executed"
     );
 
+    #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+    if matches!(cli.command, Some(Command::Serve { .. })) {
+        #[cfg(feature = "jemalloc-prof")]
+        crate::jemalloc_prof::install();
+        #[cfg(not(feature = "jemalloc-prof"))]
+        tracing::info!("jemalloc is the allocator for openduck serve");
+    }
+
     if !matches!(cli.command, Some(Command::Completion { .. })) {
         if let Err(e) = Config::global().validate() {
             eprintln!("Error: Corrupted configuration file: {}", e);

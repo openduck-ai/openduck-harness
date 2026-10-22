@@ -98,6 +98,7 @@ harness:
       idle_timeout_mins: 45
       exited_retention_mins: 10
     agy:
+      effort: medium
       idle_timeout_mins: 60
     grok:
       https_proxy: http://127.0.0.1:2087
@@ -110,9 +111,14 @@ harness:
 
 | Property | Description | Default |
 | :--- | :--- | :--- |
+| `effort` | Reasoning effort passed to the agent CLI, such as `low`, `medium`, or `high`. Supported values depend on the CLI. | CLI default |
 | `https_proxy` | Outbound proxy URL set as `HTTPS_PROXY` and `https_proxy` in the subagent environment. | Inherited from system |
 | `idle_timeout_mins` | Inactivity limit in minutes. If a session stays in `IdlePrompt` with no activity, it is automatically stopped and reclaimed. | `None` (unlimited) |
 | `exited_retention_mins` | Grace period in minutes to keep an exited or terminated session in the registry and UI list before memory eviction. | `10` minutes |
+
+An explicit session effort overrides the agent's configured effort, which overrides
+`harness.tui_sessions.default.effort`. Settings are read for each new session;
+existing sessions keep their launch configuration.
 
 ---
 
