@@ -16,6 +16,7 @@ import {
   filterAgentLogTurns,
   paginateAgentLogTurns,
   parseToolResults,
+  extractCompletedSubtasks,
   type AgentLogPagination,
   type TrajectoryFilterType,
   type TrajectoryViewMode,
@@ -173,6 +174,7 @@ export function TaskTrajectoryViewer({
   const steps = useMemo(() => run.trajectory?.steps ?? [], [run.trajectory?.steps])
   const metrics = useMemo(() => calculateTrajectoryMetrics(run), [run])
   const agentLog = useMemo(() => buildAgentLog(run), [run])
+  const completedSubtasks = useMemo(() => extractCompletedSubtasks(run), [run])
   const filteredLogTurns = useMemo(
     () => filterAgentLogTurns(agentLog, filterType, searchQuery),
     [agentLog, filterType, searchQuery],
@@ -1491,6 +1493,7 @@ export function TaskTrajectoryViewer({
         <AgentLogTranscript
           turns={pagedLogTurns}
           allTurns={filteredLogTurns}
+          completedSubtasks={completedSubtasks}
           pagination={logPagination}
           onPageChange={handleLogPageChange}
           live={liveInspect}

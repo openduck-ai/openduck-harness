@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { Fragment, useEffect, useRef, useState, type RefObject } from 'react'
 import type { createApi } from '@aaif/goose-hub-core'
 import {
   formatPromptMessageText,
@@ -10,6 +10,7 @@ import {
   type AgentLogPagination,
   type AgentLogToolCall,
   type AgentLogTurn,
+  type CompletedSubtaskInfo,
   type HarnessJudgmentRecord,
   type ThinkingOpenChoice,
 } from '../taskTrajectory.ts'
@@ -25,6 +26,7 @@ import {
 import {
   AlertCircle,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -47,6 +49,7 @@ export interface AgentLogContinueRequest {
 interface AgentLogTranscriptProps {
   turns: AgentLogTurn[]
   allTurns?: AgentLogTurn[]
+  completedSubtasks?: CompletedSubtaskInfo[]
   pagination?: AgentLogPagination
   onPageChange?: (page: number) => void
   live: boolean
@@ -107,6 +110,7 @@ function splitSummary(summary: string, path?: string): { before: string; path?: 
 export function AgentLogTranscript({
   turns,
   allTurns,
+  completedSubtasks,
   pagination,
   onPageChange,
   live,
@@ -144,22 +148,58 @@ export function AgentLogTranscript({
     if (turn.role === 'assistant') lastAssistantTurnId = turn.id
   })
 
+  const showTopSubtasks =
+    Boolean(completedSubtasks && completedSubtasks.length > 0) &&
+    (!pagination || pagination.page === 1)
+  const firstUserTurnId = turns.find(t => t.role === 'user')?.id
+
   return (
     <div className="agent-log-panel">
       <div className="agent-transcript-wrap">
         <div className="agent-transcript" ref={transcriptRef} onScroll={onScroll}>
           <div className="agent-transcript-content">
+          {showTopSubtasks && !firstUserTurnId && (
+            <CompletedSubtasksSection
+              subtasks={completedSubtasks!}
+              onOpenFile={onOpenFile}
+              resolveImageUrl={resolveImageUrl}
+              copiedId={copiedId}
+              onCopyText={onCopyText}
+            />
+          )}
           {turns.length === 0 ? (
             <div className="empty-card">No log entries match filter / search criteria.</div>
           ) : (
             turns.map(turn => {
               if (turn.role === 'user') {
                 return (
-                  <UserTurn
+                  <Fragment key={turn.id}>
+                    <UserTurn
+                      turn={turn}
+                      onOpenFile={onOpenFile}
+                      resolveImageUrl={resolveImageUrl}
+                    />
+                    {showTopSubtasks && turn.id === firstUserTurnId && (
+                      <CompletedSubtasksSection
+                        subtasks={completedSubtasks!}
+                        onOpenFile={onOpenFile}
+                        resolveImageUrl={resolveImageUrl}
+                        copiedId={copiedId}
+                        onCopyText={onCopyText}
+                      />
+                    )}
+                  </Fragment>
+                )
+              }
+              if (turn.kind === 'subtask_outcome' && turn.subtaskOutcome) {
+                return (
+                  <SubtaskOutcomeTurn
                     key={turn.id}
-                    turn={turn}
+                    outcome={turn.subtaskOutcome}
                     onOpenFile={onOpenFile}
                     resolveImageUrl={resolveImageUrl}
+                    onCopyText={onCopyText}
+                    copiedId={copiedId}
                   />
                 )
               }
@@ -290,6 +330,255 @@ function UserTurn({
     <section className="agent-user">
       <div className="agent-user-label">You</div>
       <MarkdownPreview content={turn.text} onOpenFile={onOpenFile} resolveImageUrl={resolveImageUrl} />
+    </section>
+  )
+}
+
+export function CompletedSubtasksSection({
+  subtasks,
+  onOpenFile,
+  resolveImageUrl,
+  copiedId,
+  onCopyText,
+}: {
+  subtasks: CompletedSubtaskInfo[]
+  onOpenFile: (path: string) => void
+  resolveImageUrl?: (src: string) => string
+  copiedId: string | null
+  onCopyText: (id: string, text: string) => void
+}) {
+  const [expanded, setExpanded] = useState(true)
+  const [openItems, setOpenItems] = useState<Record<string, boolean>>(() => {
+    const initial: Record<string, boolean> = {}
+    subtasks.forEach(s => {
+      initial[s.subtaskId] = true
+    })
+    return initial
+  })
+
+  const toggleItem = (subtaskId: string) => {
+    setOpenItems(prev => ({ ...prev, [subtaskId]: !prev[subtaskId] }))
+  }
+
+  const successCount = subtasks.filter(s => s.status.toLowerCase() === 'success').length
+
+  return (
+    <div className="agent-completed-subtasks-panel" data-testid="completed-subtasks-section">
+      <div className="agent-subtasks-header">
+        <button
+          type="button"
+          className="agent-subtasks-toggle"
+          onClick={() => setExpanded(prev => !prev)}
+          aria-expanded={expanded}
+        >
+          <div className="agent-subtasks-header-left">
+            <CheckCircle2 size={15} className="agent-subtasks-icon" />
+            <span className="agent-subtasks-title">Completed Subtasks ({subtasks.length})</span>
+            <span className="agent-subtasks-badge">
+              {successCount}/{subtasks.length} {successCount === subtasks.length ? 'Passed' : 'Completed'}
+            </span>
+          </div>
+          <span className="agent-subtasks-toggle-arrow">
+            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </span>
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="agent-subtasks-list">
+          {subtasks.map((subtask, index) => {
+            const isOpen = openItems[subtask.subtaskId] ?? true
+            const isSuccess = subtask.status.toLowerCase() === 'success'
+            const copyId = `subtask-summary-${subtask.subtaskId}`
+            return (
+              <div
+                key={subtask.subtaskId || index}
+                className={`agent-subtask-card ${isSuccess ? 'is-success' : 'is-failure'}`}
+              >
+                <div
+                  className="agent-subtask-card-header"
+                  onClick={() => toggleItem(subtask.subtaskId)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      toggleItem(subtask.subtaskId)
+                    }
+                  }}
+                >
+                  <div className="agent-subtask-card-title-group">
+                    <span className={`agent-subtask-status-pill ${isSuccess ? 'passed' : 'failed'}`}>
+                      {isSuccess ? <Check size={12} /> : <AlertCircle size={12} />}
+                      {isSuccess ? 'Completed' : 'Failed'}
+                    </span>
+                    <span className="agent-subtask-name">
+                      {subtask.title || `Subtask ${index + 1}`}
+                    </span>
+                    <span className="agent-subtask-id-badge">{subtask.subtaskId}</span>
+                    {subtask.stepsTaken ? (
+                      <span className="agent-subtask-steps-badge">
+                        {subtask.stepsTaken} steps
+                      </span>
+                    ) : subtask.stepCount !== undefined ? (
+                      <span className="agent-subtask-steps-badge">
+                        step {subtask.stepCount}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="agent-subtask-card-actions">
+                    <button
+                      type="button"
+                      className="mini-copy-btn"
+                      onClick={e => {
+                        e.stopPropagation()
+                        onCopyText(copyId, subtask.summary)
+                      }}
+                      title="Copy subtask conclusion"
+                    >
+                      {copiedId === copyId ? <Check size={12} /> : <Copy size={12} />}
+                    </button>
+                    <span className="agent-subtask-card-arrow">
+                      {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </span>
+                  </div>
+                </div>
+
+                {isOpen && (
+                  <div className="agent-subtask-card-body">
+                    {subtask.modifiedFiles && subtask.modifiedFiles.length > 0 && (
+                      <div className="agent-subtask-files">
+                        <span className="agent-subtask-files-label">Modified files:</span>
+                        <div className="agent-subtask-files-chips">
+                          {subtask.modifiedFiles.map(file => (
+                            <button
+                              key={file}
+                              type="button"
+                              className="mentioned-file-chip"
+                              onClick={() => onOpenFile(file)}
+                              title={`Preview ${file}`}
+                            >
+                              <span className="file-chip-icon">{getFileIcon(file)}</span>
+                              <span className="file-chip-name">{file.split('/').pop() || file}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {subtask.outputCheck && (
+                      <div className="agent-subtask-check-report">
+                        <span className="agent-subtask-check-label">Output Check:</span>
+                        <span className="agent-subtask-check-text">{subtask.outputCheck}</span>
+                      </div>
+                    )}
+
+                    <div className="agent-subtask-conclusion">
+                      <div className="agent-subtask-conclusion-label">Conclusion:</div>
+                      <div className="agent-subtask-conclusion-text">
+                        <MarkdownPreview
+                          content={subtask.summary}
+                          onOpenFile={onOpenFile}
+                          resolveImageUrl={resolveImageUrl}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function SubtaskOutcomeTurn({
+  outcome,
+  onOpenFile,
+  resolveImageUrl,
+  onCopyText,
+  copiedId,
+}: {
+  outcome: CompletedSubtaskInfo
+  onOpenFile: (path: string) => void
+  resolveImageUrl?: (src: string) => string
+  onCopyText: (id: string, text: string) => void
+  copiedId: string | null
+}) {
+  const isSuccess = outcome.status.toLowerCase() === 'success'
+  const copyId = `inline-subtask-${outcome.subtaskId}`
+
+  return (
+    <section className="agent-subtask-milestone" data-subtask-id={outcome.subtaskId}>
+      <div className={`agent-subtask-milestone-card ${isSuccess ? 'is-success' : 'is-failure'}`}>
+        <div className="agent-subtask-milestone-header">
+          <div className="agent-subtask-milestone-title-group">
+            <span className={`agent-subtask-status-pill ${isSuccess ? 'passed' : 'failed'}`}>
+              {isSuccess ? <Check size={12} /> : <AlertCircle size={12} />}
+              {isSuccess ? 'Subtask Completed' : 'Subtask Failed'}
+            </span>
+            <span className="agent-subtask-milestone-name">{outcome.title}</span>
+            <span className="agent-subtask-id-badge">{outcome.subtaskId}</span>
+            {outcome.stepsTaken ? (
+              <span className="agent-subtask-steps-badge">
+                {outcome.stepsTaken} steps
+              </span>
+            ) : outcome.stepCount !== undefined ? (
+              <span className="agent-subtask-steps-badge">
+                step {outcome.stepCount}
+              </span>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="mini-copy-btn"
+            onClick={() => onCopyText(copyId, outcome.summary)}
+            title="Copy subtask conclusion"
+          >
+            {copiedId === copyId ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+        </div>
+
+        {outcome.modifiedFiles && outcome.modifiedFiles.length > 0 && (
+          <div className="agent-subtask-files">
+            <span className="agent-subtask-files-label">Modified files:</span>
+            <div className="agent-subtask-files-chips">
+              {outcome.modifiedFiles.map(file => (
+                <button
+                  key={file}
+                  type="button"
+                  className="mentioned-file-chip"
+                  onClick={() => onOpenFile(file)}
+                  title={`Preview ${file}`}
+                >
+                  <span className="file-chip-icon">{getFileIcon(file)}</span>
+                  <span className="file-chip-name">{file.split('/').pop() || file}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {outcome.outputCheck && (
+          <div className="agent-subtask-check-report">
+            <span className="agent-subtask-check-label">Output Check:</span>
+            <span className="agent-subtask-check-text">{outcome.outputCheck}</span>
+          </div>
+        )}
+
+        <div className="agent-subtask-milestone-conclusion">
+          <div className="agent-subtask-conclusion-label">Conclusion:</div>
+          <div className="agent-subtask-conclusion-text">
+            <MarkdownPreview
+              content={outcome.summary}
+              onOpenFile={onOpenFile}
+              resolveImageUrl={resolveImageUrl}
+            />
+          </div>
+        </div>
+      </div>
     </section>
   )
 }

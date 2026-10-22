@@ -23,6 +23,7 @@ import {
   extractToolResultOutput,
   formatPromptMessageText,
   computeTaskProviderStats,
+  extractCompletedSubtasks,
   liveLineText,
   paginateAgentLogTurns,
   tuiStatusesForTool,
@@ -1373,5 +1374,200 @@ test('paginateAgentLogTurns correctly pages turns and computes pagination bounds
   assert.equal(allTurns.pagination.startIndex, 0)
   assert.equal(allTurns.pagination.endIndex, 65)
 })
+
+test('extractCompletedSubtasks extracts from continuation completedSubtasks and snake_case', () => {
+  const run: HarnessRunResponse = {
+    taskId: 'multi-subtask-task',
+    status: 'Success',
+    stepCount: 8,
+    toolCallsCount: 4,
+    durationMs: 5000,
+    trajectory: {
+      taskId: 'multi-subtask-task',
+      policyName: 'agent',
+      startedAt: '2026-10-22T00:00:00Z',
+      steps: [],
+    },
+    continuation: {
+      taskId: 'multi-subtask-task',
+      createdAt: '2026-10-22T00:00:05Z',
+      stopReason: 'success',
+      compactedSummary: '',
+      stepCount: 8,
+      completedSubtasks: [
+        {
+          subtaskId: 'st-1',
+          title: 'Define DTOs',
+          status: 'success',
+          modifiedFiles: ['src/dto.rs', 'src/models.rs'],
+          summary: 'Defined GpsPayload and AlarmRuleDTO structs with serde annotations.',
+          stepCount: 3,
+          stepsTaken: 3,
+        },
+        {
+          subtaskId: 'st-2',
+          title: 'Implement Service',
+          status: 'success',
+          modifiedFiles: ['src/service.rs'],
+          summary: 'Implemented notify() and wired into the dispatcher.',
+          stepCount: 8,
+          stepsTaken: 5,
+        },
+      ],
+      subtaskPlan: [
+        { id: 'st-1', title: 'Define DTOs', description: 'Define domain models' },
+        { id: 'st-2', title: 'Implement Service', description: 'Implement service logic' },
+      ],
+    },
+  }
+
+  const subtasks = extractCompletedSubtasks(run)
+  assert.equal(subtasks.length, 2)
+  assert.equal(subtasks[0].subtaskId, 'st-1')
+  assert.equal(subtasks[0].title, 'Define DTOs')
+  assert.equal(subtasks[0].status, 'success')
+  assert.equal(subtasks[0].summary, 'Defined GpsPayload and AlarmRuleDTO structs with serde annotations.')
+  assert.deepEqual(subtasks[0].modifiedFiles, ['src/dto.rs', 'src/models.rs'])
+  assert.equal(subtasks[0].stepCount, 3)
+  assert.equal(subtasks[0].stepsTaken, 3)
+
+  assert.equal(subtasks[1].subtaskId, 'st-2')
+  assert.equal(subtasks[1].title, 'Implement Service')
+  assert.equal(subtasks[1].summary, 'Implemented notify() and wired into the dispatcher.')
+})
+
+test('extractCompletedSubtasks falls back to finalAnswer parsing when continuation is absent', () => {
+  const run: HarnessRunResponse = {
+    taskId: 'legacy-task',
+    status: 'Success',
+    stepCount: 4,
+    toolCallsCount: 2,
+    durationMs: 3000,
+    finalAnswer: `### Subtask 1 (st-1): Define Models
+Created models in src/models.py with validation.
+
+### Subtask 2 (st-2): Wire Endpoints
+Connected endpoints in src/api.py and verified responses.`,
+    trajectory: {
+      taskId: 'legacy-task',
+      policyName: 'agent',
+      startedAt: '2026-10-22T00:00:00Z',
+      steps: [],
+    },
+  }
+
+  const subtasks = extractCompletedSubtasks(run)
+  assert.equal(subtasks.length, 2)
+  assert.equal(subtasks[0].subtaskId, 'st-1')
+  assert.equal(subtasks[0].title, 'Define Models')
+  assert.equal(subtasks[0].summary, 'Created models in src/models.py with validation.')
+  assert.equal(subtasks[1].subtaskId, 'st-2')
+  assert.equal(subtasks[1].title, 'Wire Endpoints')
+  assert.equal(subtasks[1].summary, 'Connected endpoints in src/api.py and verified responses.')
+})
+
+test('buildAgentLog inserts subtask_outcome turns with conclusions at completion step', () => {
+  const run: HarnessRunResponse = {
+    taskId: 'subtask-log-test',
+    status: 'Success',
+    stepCount: 4,
+    toolCallsCount: 2,
+    durationMs: 4000,
+    finalAnswer: 'All subtasks finished successfully.',
+    trajectory: {
+      taskId: 'subtask-log-test',
+      policyName: 'agent',
+      startedAt: '2026-10-22T00:00:00Z',
+      steps: [
+        {
+          stepIndex: 1,
+          timestamp: '2026-10-22T00:00:01Z',
+          durationMs: 100,
+          agentAction: { CallTools: [{ id: 'c1', name: 'write_file', arguments: { path: 'src/dto.rs' } }] },
+          toolResults: [{ id: 'c1', name: 'write_file', output: 'ok' }],
+        },
+        {
+          stepIndex: 2,
+          timestamp: '2026-10-22T00:00:02Z',
+          durationMs: 100,
+          agentAction: { FinalAnswer: 'DTOs written.' },
+        },
+        {
+          stepIndex: 3,
+          timestamp: '2026-10-22T00:00:03Z',
+          durationMs: 100,
+          agentAction: { CallTools: [{ id: 'c2', name: 'write_file', arguments: { path: 'src/srv.rs' } }] },
+          toolResults: [{ id: 'c2', name: 'write_file', output: 'ok' }],
+        },
+        {
+          stepIndex: 4,
+          timestamp: '2026-10-22T00:00:04Z',
+          durationMs: 100,
+          agentAction: { FinalAnswer: 'Service written.' },
+        },
+      ],
+    },
+    continuation: {
+      taskId: 'subtask-log-test',
+      createdAt: '2026-10-22T00:00:04Z',
+      stopReason: 'success',
+      compactedSummary: '',
+      stepCount: 4,
+      subtaskPlan: [],
+      completedSubtasks: [
+        {
+          subtaskId: 'st-1',
+          title: 'Define DTOs',
+          status: 'success',
+          modifiedFiles: ['src/dto.rs'],
+          summary: 'Successfully defined all DTO structs.',
+          stepCount: 2,
+        },
+        {
+          subtaskId: 'st-2',
+          title: 'Build Service',
+          status: 'success',
+          modifiedFiles: ['src/srv.rs'],
+          summary: 'Successfully implemented the service layer.',
+          stepCount: 4,
+        },
+      ],
+    },
+  }
+
+  const turns = buildAgentLog(run)
+  // Expected turns:
+  // step-1 (assistant)
+  // step-2 (assistant, final answer for subtask 1)
+  // subtask-outcome-st-1 (subtask conclusion)
+  // step-3 (assistant)
+  // step-4 (assistant, final answer for subtask 2)
+  // subtask-outcome-st-2 (subtask conclusion)
+
+  const subtaskTurns = turns.filter(t => t.kind === 'subtask_outcome')
+  assert.equal(subtaskTurns.length, 2)
+  assert.equal(subtaskTurns[0].id, 'subtask-outcome-st-1')
+  assert.equal(subtaskTurns[0].subtaskOutcome?.title, 'Define DTOs')
+  assert.equal(subtaskTurns[0].subtaskOutcome?.summary, 'Successfully defined all DTO structs.')
+  assert.equal(subtaskTurns[1].id, 'subtask-outcome-st-2')
+  assert.equal(subtaskTurns[1].subtaskOutcome?.title, 'Build Service')
+  assert.equal(subtaskTurns[1].subtaskOutcome?.summary, 'Successfully implemented the service layer.')
+
+  // Check positioning: subtask-outcome-st-1 should immediately follow step-2
+  const idxStep2 = turns.findIndex(t => t.id === 'step-2')
+  const idxSubtask1 = turns.findIndex(t => t.id === 'subtask-outcome-st-1')
+  assert.equal(idxSubtask1, idxStep2 + 1)
+
+  // Verify filtering by final_answer includes subtask_outcome turns
+  const answerFilter = filterAgentLogTurns(turns, 'final_answer', '')
+  assert.ok(answerFilter.some(t => t.id === 'subtask-outcome-st-1'))
+  assert.ok(answerFilter.some(t => t.id === 'subtask-outcome-st-2'))
+
+  // Verify search query matches subtask conclusion text
+  const searchFilter = filterAgentLogTurns(turns, 'all', 'service layer')
+  assert.equal(searchFilter.length, 1)
+  assert.equal(searchFilter[0].id, 'subtask-outcome-st-2')
+})
+
 
 

@@ -437,6 +437,18 @@ export type AgentLogTurnKind =
   | 'yield'
   | 'request_input'
   | 'error'
+  | 'subtask_outcome'
+
+export interface CompletedSubtaskInfo {
+  subtaskId: string
+  title: string
+  status: string
+  summary: string
+  modifiedFiles?: string[]
+  stepCount?: number
+  stepsTaken?: number
+  outputCheck?: string
+}
 
 export interface AgentLogTurn {
   id: string
@@ -453,6 +465,7 @@ export interface AgentLogTurn {
   lastPromptText?: string
   judgments?: HarnessJudgmentRecord[]
   providerCalls?: ProviderCallRecord[]
+  subtaskOutcome?: CompletedSubtaskInfo
 }
 
 export interface ThinkingOpenChoice {
@@ -729,6 +742,175 @@ function userPromptText(message: ParsedPromptMessage): string {
   return formatPromptMessageText(message).trim()
 }
 
+function parseSubtasksFromFinalAnswer(finalAnswer: string): CompletedSubtaskInfo[] {
+  const regex = /(?:^|\n)###\s+Subtask\s+(?:\d+)?\s*(?:\(([^)]+)\))?:\s*([^\n]+)\n([\s\S]*?)(?=(?:\n###\s+Subtask)|\s*$)/g
+  const results: CompletedSubtaskInfo[] = []
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(finalAnswer)) !== null) {
+    const subtaskId = match[1]?.trim() || `subtask-${results.length + 1}`
+    const title = match[2]?.trim() || `Subtask ${results.length + 1}`
+    const summary = match[3]?.trim() || ''
+    if (summary) {
+      results.push({
+        subtaskId,
+        title,
+        status: 'success',
+        summary,
+      })
+    }
+  }
+  return results
+}
+
+function parseUpstreamSubtasksFromPrompt(text: string): CompletedSubtaskInfo[] {
+  const sectionMatch = text.match(
+    /###\s+Completed Upstream Subtasks:\s*([\s\S]*?)(?=(?:\n###|\n##|\n\[Subtask Execution Contract\]|$))/
+  )
+  if (!sectionMatch) return []
+  const block = sectionMatch[1]
+  const itemRegex =
+    /-\s+\*\*Subtask\s+\[([^\]]+)\]\s+`([^`]+)`\*\*:\s*([^\n]+)(?:\n\s+-\s+Modified Files:\s*`([^`]*)`)?(?:\n\s+-\s+Summary:\s*([^\n]+(?:\n(?!\s*-\s+\*\*Subtask)[^\n]+)*))?/g
+  const results: CompletedSubtaskInfo[] = []
+  let match: RegExpExecArray | null
+  while ((match = itemRegex.exec(block)) !== null) {
+    const statusLabel = match[1]?.trim() || 'Completed'
+    const subtaskId = match[2]?.trim()
+    const title = match[3]?.trim()
+    const filesStr = match[4]?.trim()
+    const summary = match[5]?.trim() || ''
+    const modifiedFiles =
+      filesStr && filesStr !== 'None' ? filesStr.split(',').map(s => s.trim()).filter(Boolean) : []
+    const status = statusLabel.toLowerCase().includes('fail') ? 'failure' : 'success'
+    if (subtaskId && (summary || title)) {
+      results.push({
+        subtaskId,
+        title: title || subtaskId,
+        status,
+        summary: summary || title || '',
+        modifiedFiles: modifiedFiles.length > 0 ? modifiedFiles : undefined,
+      })
+    }
+  }
+  return results
+}
+
+/**
+ * Extracts completed subtasks and their conclusions from a run response.
+ * Inspects run.continuation.completedSubtasks, step prompts, and finalAnswer.
+ */
+export function extractCompletedSubtasks(run: HarnessRunResponse | null | undefined): CompletedSubtaskInfo[] {
+  if (!run) return []
+
+  const outcomesMap = new Map<string, CompletedSubtaskInfo>()
+
+  // 1. Check run.continuation.completedSubtasks (and snake_case completed_subtasks)
+  const continuation = run.continuation as unknown as Record<string, unknown> | null | undefined
+  const rawCompleted =
+    continuation?.completedSubtasks ?? continuation?.completed_subtasks
+  if (Array.isArray(rawCompleted)) {
+    for (const item of rawCompleted) {
+      const rec = asRecord(item)
+      if (!rec) continue
+      const subtaskId = stringField(rec, 'subtaskId', 'subtask_id', 'id') ?? ''
+      const title = stringField(rec, 'title') ?? subtaskId
+      const status = stringField(rec, 'status') ?? 'success'
+      const summary = stringField(rec, 'summary', 'conclusion', 'details') ?? ''
+      const rawFiles = rec.modifiedFiles ?? rec.modified_files
+      const modifiedFiles = Array.isArray(rawFiles)
+        ? rawFiles.map(String).filter(Boolean)
+        : []
+      const stepCount =
+        typeof rec.stepCount === 'number'
+          ? rec.stepCount
+          : typeof rec.step_count === 'number'
+            ? rec.step_count
+            : undefined
+      const stepsTaken =
+        typeof rec.stepsTaken === 'number'
+          ? rec.stepsTaken
+          : typeof rec.steps_taken === 'number'
+            ? rec.steps_taken
+            : undefined
+      const outputCheck = stringField(rec, 'outputCheck', 'output_check')
+
+      if (subtaskId || title) {
+        const key = subtaskId || title
+        outcomesMap.set(key, {
+          subtaskId: subtaskId || key,
+          title,
+          status,
+          summary,
+          modifiedFiles: modifiedFiles.length > 0 ? modifiedFiles : undefined,
+          stepCount,
+          stepsTaken,
+          outputCheck,
+        })
+      }
+    }
+  }
+
+  // 2. Fallback / supplement: check step prompt messages for upstream completed subtasks
+  const steps = run.trajectory?.steps ?? []
+  for (const step of steps) {
+    const telemetry = extractLlmTelemetry(step)
+    for (const msg of telemetry?.messages ?? []) {
+      const text = typeof msg.content === 'string' ? msg.content : msg.text
+      if (typeof text === 'string' && text.includes('Completed Upstream Subtasks')) {
+        const parsed = parseUpstreamSubtasksFromPrompt(text)
+        for (const item of parsed) {
+          if (!outcomesMap.has(item.subtaskId)) {
+            outcomesMap.set(item.subtaskId, item)
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Fallback: check run.finalAnswer or step final answers for ### Subtask
+  if (outcomesMap.size === 0) {
+    const finalAnswer =
+      run.finalAnswer ??
+      steps.slice().reverse().find(s => {
+        const a = parseAgentAction(s.agentAction)
+        return a.kind === 'final_answer' && Boolean(a.finalAnswer)
+      })?.agentAction
+    const finalAnswerText =
+      typeof finalAnswer === 'string'
+        ? finalAnswer
+        : typeof (finalAnswer as Record<string, unknown>)?.FinalAnswer === 'string'
+          ? String((finalAnswer as Record<string, unknown>).FinalAnswer)
+          : ''
+    if (finalAnswerText.includes('### Subtask')) {
+      const parsed = parseSubtasksFromFinalAnswer(finalAnswerText)
+      for (const item of parsed) {
+        if (!outcomesMap.has(item.subtaskId)) {
+          outcomesMap.set(item.subtaskId, item)
+        }
+      }
+    }
+  }
+
+  // 4. Enrich titles from subtaskPlan if available
+  const plan =
+    continuation?.subtaskPlan ?? continuation?.subtask_plan
+  if (Array.isArray(plan)) {
+    for (const p of plan) {
+      const rec = asRecord(p)
+      if (!rec) continue
+      const id = stringField(rec, 'id', 'subtaskId', 'subtask_id')
+      const title = stringField(rec, 'title')
+      if (id && title && outcomesMap.has(id)) {
+        const existing = outcomesMap.get(id)!
+        if (!existing.title || existing.title === id) {
+          existing.title = title
+        }
+      }
+    }
+  }
+
+  return Array.from(outcomesMap.values())
+}
+
 /**
  * Rebuilds a chronological chat-style agent log from a project-task trajectory,
  * similar to a normal agent session transcript.
@@ -738,6 +920,15 @@ export function buildAgentLog(run: HarnessRunResponse | null | undefined): Agent
 
   const steps = run.trajectory?.steps ?? []
   const turns: AgentLogTurn[] = []
+  const completedSubtasks = extractCompletedSubtasks(run)
+  const subtasksByStepIndex = new Map<number, CompletedSubtaskInfo>()
+  const emittedSubtaskIds = new Set<string>()
+
+  for (const outcome of completedSubtasks) {
+    if (typeof outcome.stepCount === 'number' && outcome.stepCount > 0) {
+      subtasksByStepIndex.set(outcome.stepCount, outcome)
+    }
+  }
 
   let userPrompt: string | undefined
   let userTimestamp: string | undefined
@@ -772,7 +963,8 @@ export function buildAgentLog(run: HarnessRunResponse | null | undefined): Agent
     })
   }
 
-  for (const step of steps) {
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i]
     const action = parseAgentAction(step.agentAction)
     const telemetry = extractLlmTelemetry(step)
     const results = parseToolResults(step.toolResults)
@@ -848,6 +1040,36 @@ export function buildAgentLog(run: HarnessRunResponse | null | undefined): Agent
             ? telemetry.providerCalls
             : undefined,
     })
+
+    // If this step marks a completed subtask outcome, emit the subtask outcome turn
+    const matchedSubtask =
+      subtasksByStepIndex.get(i + 1) ?? subtasksByStepIndex.get(step.stepIndex)
+    if (matchedSubtask && !emittedSubtaskIds.has(matchedSubtask.subtaskId)) {
+      turns.push({
+        id: `subtask-outcome-${matchedSubtask.subtaskId}`,
+        role: 'assistant',
+        kind: 'subtask_outcome',
+        stepIndex: step.stepIndex,
+        timestamp: step.timestamp,
+        text: matchedSubtask.summary,
+        subtaskOutcome: matchedSubtask,
+      })
+      emittedSubtaskIds.add(matchedSubtask.subtaskId)
+    }
+  }
+
+  // Push any completed subtasks that weren't matched to a specific step index
+  for (const outcome of completedSubtasks) {
+    if (!emittedSubtaskIds.has(outcome.subtaskId)) {
+      turns.push({
+        id: `subtask-outcome-${outcome.subtaskId}`,
+        role: 'assistant',
+        kind: 'subtask_outcome',
+        text: outcome.summary,
+        subtaskOutcome: outcome,
+      })
+      emittedSubtaskIds.add(outcome.subtaskId)
+    }
   }
 
   const partialThinking = run.partialThinking?.trim()
@@ -876,7 +1098,12 @@ export function filterAgentLogTurns(
     if (filterType === 'tools' && !(turn.toolCalls && turn.toolCalls.length > 0)) {
       return false
     }
-    if (filterType === 'final_answer' && turn.kind !== 'final_answer' && turn.kind !== 'user') {
+    if (
+      filterType === 'final_answer' &&
+      turn.kind !== 'final_answer' &&
+      turn.kind !== 'user' &&
+      turn.kind !== 'subtask_outcome'
+    ) {
       return false
     }
     if (filterType === 'yield' && turn.kind !== 'yield' && turn.kind !== 'request_input' && turn.kind !== 'user') {
@@ -885,7 +1112,13 @@ export function filterAgentLogTurns(
     if (filterType === 'telemetry' && turn.kind === 'user') {
       return Boolean(query)
     }
-    if (filterType === 'telemetry' && !turn.thinking && !turn.text && !turn.toolCalls) {
+    if (
+      filterType === 'telemetry' &&
+      !turn.thinking &&
+      !turn.text &&
+      !turn.toolCalls &&
+      turn.kind !== 'subtask_outcome'
+    ) {
       return false
     }
 
@@ -897,6 +1130,9 @@ export function filterAgentLogTurns(
       turn.lastPromptText ?? '',
       turn.kind,
       turn.stepIndex !== undefined ? String(turn.stepIndex) : '',
+      turn.subtaskOutcome?.title ?? '',
+      turn.subtaskOutcome?.subtaskId ?? '',
+      turn.subtaskOutcome?.summary ?? '',
       ...(turn.toolCalls ?? []).flatMap(call => [
         call.name,
         describeToolCall(call.name, call.arguments),
@@ -1600,7 +1836,7 @@ export function liveLineText(turns: AgentLogTurn[], live: boolean, status: strin
   if (!live) return statusWord(status)
   for (let index = turns.length - 1; index >= 0; index--) {
     const turn = turns[index]
-    if (turn.role !== 'assistant') continue
+    if (turn.role !== 'assistant' || turn.kind === 'subtask_outcome') continue
     const newest = turn.toolCalls?.[turn.toolCalls.length - 1]
     if (newest) {
       const summary = describeToolCall(newest.name, newest.arguments)
