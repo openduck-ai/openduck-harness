@@ -219,6 +219,24 @@ test('runDetailLine prefers non-empty error, then finalAnswer, otherwise undefin
   assert.equal(runDetailLine({ error: null, finalAnswer: null }), undefined)
 })
 
+test('presentLastRun shows waiting time for a queued task', () => {
+  assert.deepEqual(presentLastRun({
+    historyLoaded: false,
+    historyError: false,
+    latest: undefined,
+    running: {
+      jobId: 'queued-job',
+      startedAt: '2024-10-07T11:57:46.000Z',
+      currentStatus: 'queued',
+    },
+    now: Date.parse('2024-10-07T12:00:00.000Z'),
+  }), {
+    kind: 'running',
+    text: 'Queued · 2m 14s',
+    jobId: 'queued-job',
+  })
+})
+
 test('presentLastRun covers all cases correctly', () => {
   const now = Date.parse('2024-10-07T12:00:00.000Z')
 

@@ -2371,6 +2371,9 @@ pub fn update_active_job_status(job_id: &str, status: &str) {
     let mut project_task_info = None;
     if let Ok(mut lock) = HARNESS_ACTIVE_JOBS.write() {
         if let Some(job) = lock.get_mut(job_id) {
+            if job.current_status == "queued" && status == "running" {
+                job.started_at = Utc::now().to_rfc3339();
+            }
             job.current_status = status.to_string();
             if let Some(slug) = &job.project_slug {
                 project_task_info = Some((slug.clone(), job.task_id.clone()));

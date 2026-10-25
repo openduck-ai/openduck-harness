@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, RwLock};
 
@@ -37,10 +37,10 @@ use crate::control::harness::{
     list_history_for_project, new_harness_job_id, persist_harness_run, project_runs_dir,
     read_history_run, register_abort_handle, register_active_job, remove_active_job,
     resolve_harness_policy, stop_active_job, subscribe_job_live_events, subscribe_project_events,
-    to_run_dto, try_register_active_job, upsert_live_snapshot, with_live_snapshot,
-    with_task_notes_plan, ActiveJobRegisterError, HarnessActiveJobDto, HarnessCassetteSummaryDto,
-    HarnessHistorySummaryDto, HarnessJobInspectDto, HarnessJobLiveEvent, HarnessProjectEvent,
-    HarnessReportSummaryDto, HarnessRunResponseDto, TrajectoryPagingQuery,
+    to_run_dto, try_register_active_job, update_active_job_status, upsert_live_snapshot,
+    with_live_snapshot, with_task_notes_plan, ActiveJobRegisterError, HarnessActiveJobDto,
+    HarnessCassetteSummaryDto, HarnessHistorySummaryDto, HarnessJobInspectDto, HarnessJobLiveEvent,
+    HarnessProjectEvent, HarnessReportSummaryDto, HarnessRunResponseDto, TrajectoryPagingQuery,
 };
 use crate::sources;
 
@@ -580,6 +580,73 @@ pub async fn run_project_task(
     }
 }
 
+type ProjectTaskQueue = VecDeque<(String, Option<tokio::sync::oneshot::Sender<()>>)>;
+
+static PROJECT_TASK_QUEUES: LazyLock<std::sync::Mutex<HashMap<String, ProjectTaskQueue>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+struct ProjectTaskQueueEntry {
+    slug: String,
+    job_id: String,
+}
+
+impl ProjectTaskQueueEntry {
+    fn enqueue(mut job: HarnessActiveJobDto) -> Result<(Self, tokio::sync::oneshot::Receiver<()>)> {
+        let slug = job
+            .project_slug
+            .clone()
+            .expect("project task requires a project");
+        let mut queues = PROJECT_TASK_QUEUES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let queued = queues.get(&slug).is_some_and(|queue| !queue.is_empty());
+        job.current_status = if queued { "queued" } else { "running" }.to_string();
+        try_register_active_job(job.clone()).map_err(anyhow::Error::new)?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let queue = queues.entry(slug.clone()).or_default();
+        queue.push_back((job.job_id.clone(), Some(tx)));
+        if !queued {
+            let (_, tx) = queue.front_mut().expect("newly inserted entry");
+            if let Some(tx) = tx.take() {
+                let _ = tx.send(());
+            }
+        }
+        Ok((
+            Self {
+                slug,
+                job_id: job.job_id,
+            },
+            rx,
+        ))
+    }
+}
+
+impl Drop for ProjectTaskQueueEntry {
+    fn drop(&mut self) {
+        let mut queues = PROJECT_TASK_QUEUES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        remove_active_job(&self.job_id);
+        let Some(queue) = queues.get_mut(&self.slug) else {
+            return;
+        };
+        let Some(index) = queue.iter().position(|(id, _)| id == &self.job_id) else {
+            return;
+        };
+        queue.remove(index);
+        if index == 0 {
+            if let Some((_, tx)) = queue.front_mut() {
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        if queue.is_empty() {
+            queues.remove(&self.slug);
+        }
+    }
+}
+
 pub async fn launch_project_task(
     slug: &str,
     task_id: &str,
@@ -625,8 +692,7 @@ pub async fn launch_project_task(
     };
 
     let job_id = new_harness_job_id("task");
-    let started_at_dt = Utc::now();
-    let started_at = started_at_dt.to_rfc3339();
+    let started_at = Utc::now().to_rfc3339();
     let task_id_for_fail = task_spec.id.clone();
     let notify_task_name = task_def
         .name
@@ -635,7 +701,7 @@ pub async fn launch_project_task(
         .unwrap_or_else(|| task_spec.problem_statement.clone());
     let notify_model = req.model.clone().or(config.policy.model.clone());
 
-    try_register_active_job(HarnessActiveJobDto {
+    let (queue_entry, ready) = ProjectTaskQueueEntry::enqueue(HarnessActiveJobDto {
         job_id: job_id.clone(),
         task_id: task_spec.id.clone(),
         job_type: "task".to_string(),
@@ -645,26 +711,39 @@ pub async fn launch_project_task(
         provider: req.provider.clone().or(config.policy.provider.clone()),
         model: notify_model.clone(),
         project_slug: Some(slug.to_string()),
-    })
-    .map_err(anyhow::Error::new)?;
+    })?;
 
     let persist_root = root.clone();
     let persist_slug = slug.to_string();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let spawn_job_id = job_id.clone();
     let join_handle = tokio::spawn(async move {
-        let run_res = execute_project_task(
-            root,
-            config,
-            req,
-            task_spec,
-            max_turns,
-            cassette_path,
-            spawn_job_id.clone(),
-            continuation,
-            history_follow_up,
-        )
-        .await;
+        // Keep the queue slot until the worker is dropped, including cancellation or panic.
+        let queue_entry = queue_entry;
+        if ready.await.is_err() {
+            let _ = tx.send(Err(anyhow!("Project task queue closed")));
+            return;
+        }
+        let started_at_dt = Utc::now();
+        let started_at = started_at_dt.to_rfc3339();
+        update_active_job_status(&spawn_job_id, "running");
+        let run_res = match crate::memory_gate::ensure_open() {
+            Ok(()) => {
+                execute_project_task(
+                    root,
+                    config,
+                    req,
+                    task_spec,
+                    max_turns,
+                    cassette_path,
+                    spawn_job_id.clone(),
+                    continuation,
+                    history_follow_up,
+                )
+                .await
+            }
+            Err(error) => Err(anyhow::Error::new(error)),
+        };
 
         let (task_status, duration_seconds, summary_result, error_message) = match &run_res {
             Ok(dto) => {
@@ -773,7 +852,7 @@ pub async fn launch_project_task(
             final_answer: final_ans,
         });
 
-        remove_active_job(&spawn_job_id);
+        drop(queue_entry);
         let _ = tx.send(run_res);
     });
     register_abort_handle(&job_id, join_handle.abort_handle());
@@ -2249,6 +2328,96 @@ pub async fn estimate_project_task(
 mod tests {
     use super::*;
     use crate::control::harness::{task_notes_plan_path, GENERIC_SCRATCH_NOTES_INSTRUCTION};
+
+    fn queue_test_job(slug: &str, task_id: &str) -> HarnessActiveJobDto {
+        HarnessActiveJobDto {
+            job_id: new_harness_job_id("queue-test"),
+            task_id: task_id.to_string(),
+            job_type: "task".to_string(),
+            description: task_id.to_string(),
+            started_at: Utc::now().to_rfc3339(),
+            current_status: "running".to_string(),
+            provider: None,
+            model: None,
+            project_slug: Some(slug.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn project_task_queue_is_fifo_and_projects_are_independent() {
+        let slug = uuid::Uuid::new_v4().to_string();
+        let (first, mut first_ready) =
+            ProjectTaskQueueEntry::enqueue(queue_test_job(&slug, "a")).unwrap();
+        let (second, mut second_ready) =
+            ProjectTaskQueueEntry::enqueue(queue_test_job(&slug, "b")).unwrap();
+        let (third, mut third_ready) =
+            ProjectTaskQueueEntry::enqueue(queue_test_job(&slug, "c")).unwrap();
+        let (other, mut other_ready) =
+            ProjectTaskQueueEntry::enqueue(queue_test_job(&format!("{slug}-other"), "d")).unwrap();
+        assert!(first_ready.try_recv().is_ok());
+        assert!(other_ready.try_recv().is_ok());
+        assert_eq!(
+            get_active_job(&second.job_id).unwrap().current_status,
+            "queued"
+        );
+        assert!(matches!(
+            second_ready.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        drop(first);
+        assert!(second_ready.try_recv().is_ok());
+        assert!(matches!(
+            third_ready.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        drop(second);
+        assert!(third_ready.try_recv().is_ok());
+        drop(third);
+        drop(other);
+        assert!(!PROJECT_TASK_QUEUES.lock().unwrap().contains_key(&slug));
+    }
+
+    #[tokio::test]
+    async fn cancelling_queued_entry_preserves_remaining_order() {
+        let slug = uuid::Uuid::new_v4().to_string();
+        let (first, _) = ProjectTaskQueueEntry::enqueue(queue_test_job(&slug, "a")).unwrap();
+        let (second, mut second_ready) =
+            ProjectTaskQueueEntry::enqueue(queue_test_job(&slug, "b")).unwrap();
+        let (third, mut third_ready) =
+            ProjectTaskQueueEntry::enqueue(queue_test_job(&slug, "c")).unwrap();
+        let cancelled_job_id = second.job_id.clone();
+        drop(second);
+        assert!(get_active_job(&cancelled_job_id).is_none());
+        assert!(matches!(
+            second_ready.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(matches!(
+            third_ready.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        drop(first);
+        assert!(third_ready.try_recv().is_ok());
+        drop(third);
+    }
+
+    #[tokio::test]
+    async fn aborting_worker_releases_project_queue() {
+        let slug = uuid::Uuid::new_v4().to_string();
+        let (first, _) = ProjectTaskQueueEntry::enqueue(queue_test_job(&slug, "a")).unwrap();
+        let (second, second_ready) =
+            ProjectTaskQueueEntry::enqueue(queue_test_job(&slug, "b")).unwrap();
+        let first_job_id = first.job_id.clone();
+        let worker = tokio::spawn(async move {
+            let _entry = first;
+            std::future::pending::<()>().await;
+        });
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        assert!(get_active_job(&first_job_id).is_none());
+        second_ready.await.unwrap();
+        drop(second);
+    }
 
     #[test]
     fn assembled_project_prompt_names_current_task_notes_plan() {

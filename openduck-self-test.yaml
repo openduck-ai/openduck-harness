@@ -13,6 +13,7 @@ activities:
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
   - Validate per-session HTTPS proxy configuration for TUI agents
+  - Validate project task FIFO queueing, cancellation, and isolation between projects
   - Validate recorded TUI agent status in task run Agent Logs
   - Test load tool for knowledge injection and discovery
   - Test delegate tool for task delegation (sync and async)
@@ -61,6 +62,15 @@ instructions: |
   This is meta-testing in the truest sense: not unit tests or external test harnesses, but you using your tools
   to validate your own functionality from within your active session. You can only test what you can observe and
   control from inside your running instance - your tools, your behaviors, your error handling, your consistency.
+
+  ## Project Task Queue Validation
+  Start a long-running task A in a project, then start tasks B and C in that project.
+  Verify B and C show Queued in the Hub and active-jobs API, with no agent steps
+  until their turn. Verify another project's task can run while A is running.
+  Complete A and verify B starts before C. Repeat with A failing and with A stopped.
+  Cancel a queued task and verify it never executes and the remaining queue advances.
+  Confirm duplicate starts of the same active or queued task are rejected and that
+  scheduled tasks in the same project enter the same queue.
 
   ## Core Testing Philosophy
   For Hub network monitoring, open Server & Settings and verify the Network Status panel

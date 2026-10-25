@@ -188,7 +188,12 @@ export function presentLastRun(input: {
   historyLoaded: boolean
   historyError: boolean
   latest: HarnessHistorySummary | undefined
-  running: { jobId: string; startedAt: string; stepCount?: number } | undefined
+  running: {
+    jobId: string
+    startedAt: string
+    stepCount?: number
+    currentStatus?: string
+  } | undefined
   now: number
 }): LastRunPresentation {
   if (input.running) {
@@ -197,7 +202,9 @@ export function presentLastRun(input: {
       input.running.stepCount !== undefined ? ` · step ${input.running.stepCount}` : ''
     return {
       kind: 'running',
-      text: `Running · ${elapsed}${stepPart}`,
+      text: input.running.currentStatus === 'queued'
+        ? `Queued · ${elapsed}`
+        : `Running · ${elapsed}${stepPart}`,
       jobId: input.running.jobId,
     }
   }

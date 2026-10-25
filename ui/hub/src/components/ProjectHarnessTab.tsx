@@ -620,7 +620,7 @@ export function ProjectHarnessTab({
       selectedProjectSlug,
       (event: HarnessProjectEvent) => {
         if (event.type === 'task_status_changed') {
-          const isRunning = event.status.toLowerCase() === 'running'
+          const isRunning = ['running', 'queued'].includes(event.status.toLowerCase())
           setTasks(prev =>
             prev.map(t =>
               t.id === event.taskId ? { ...t, currentlyRunning: isRunning } : t,
@@ -1799,7 +1799,9 @@ export function ProjectHarnessTab({
                   >
                     <span className="live-dot" />
                     <span className="active-job-title">{title}</span>
-                    <span className="active-job-elapsed">{elapsed}</span>
+                    <span className="active-job-elapsed">
+                      {job.currentStatus === 'queued' ? `Queued · ${elapsed}` : elapsed}
+                    </span>
                     {job.model && <span className="active-job-model">{job.model}</span>}
                     {actionText && <span className="active-job-action">{actionText}</span>}
                     <button
@@ -1810,9 +1812,11 @@ export function ProjectHarnessTab({
                         void handleStopRunningJob(job)
                       }}
                       disabled={stoppingTaskId === job.taskId}
-                      title="Stop this running job"
+                      title={job.currentStatus === 'queued' ? 'Cancel queued task' : 'Stop this running job'}
                     >
-                      {stoppingTaskId === job.taskId ? 'Stopping…' : 'Stop'}
+                      {stoppingTaskId === job.taskId
+                        ? 'Stopping…'
+                        : job.currentStatus === 'queued' ? 'Cancel' : 'Stop'}
                     </button>
                   </div>
                 )
@@ -2593,6 +2597,7 @@ export function ProjectHarnessTab({
                     ? {
                         jobId: runningJob.jobId,
                         startedAt: runningJob.startedAt,
+                        currentStatus: runningJob.currentStatus,
                         stepCount,
                       }
                     : undefined
