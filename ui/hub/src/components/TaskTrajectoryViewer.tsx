@@ -41,11 +41,13 @@ import {
   getFileIcon,
   resolveProjectAssetPath,
 } from '../pathUtils.ts'
+import { exportTaskPdf } from '../taskPdfExport.ts'
 import {
   Search,
   SlidersHorizontal,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Download,
   Copy,
   Check,
@@ -56,6 +58,9 @@ import {
   MessageSquare,
   MessagesSquare,
   FileCode,
+  FileText,
+  Printer,
+  ExternalLink,
   Sparkles,
   Filter,
   Layers,
@@ -152,6 +157,21 @@ export function TaskTrajectoryViewer({
 
   // Turn continuation custom count
   const [bannerCustomTurns, setBannerCustomTurns] = useState(25)
+
+  // PDF Export dropdown state
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
+  const exportMenuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!exportMenuOpen) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', handleClickOutside)
+    return () => document.removeEventListener('pointerdown', handleClickOutside)
+  }, [exportMenuOpen])
 
   const timelineContainerRef = useRef<HTMLDivElement>(null)
   const scrubberRailRef = useRef<HTMLDivElement>(null)
@@ -617,6 +637,33 @@ export function TaskTrajectoryViewer({
     setTimeout(() => setCopiedMsgIdx(null), 2000)
   }
 
+  const handleExportPdf = useCallback(
+    async (method: 'print' | 'download' | 'preview' = 'print') => {
+      let targetRun = run
+      if (
+        run.pagination &&
+        api &&
+        effectiveProjectSlug &&
+        (selectedHistoryFileName || selectedHistoryId)
+      ) {
+        try {
+          targetRun = await api.getProjectHistoryDetail(
+            effectiveProjectSlug,
+            selectedHistoryFileName || selectedHistoryId!,
+          )
+        } catch {
+          // Fall back to current page
+        }
+      }
+      exportTaskPdf(targetRun, {
+        taskName: selectedHistoryFileName || undefined,
+        projectSlug: effectiveProjectSlug,
+        method,
+      })
+    },
+    [run, api, effectiveProjectSlug, selectedHistoryFileName, selectedHistoryId],
+  )
+
   const handleToggleExpandAllMessages = (stepIdx: number, totalCount: number) => {
     const current = allMessagesExpanded[stepIdx] ?? false
     const next = !current
@@ -789,6 +836,65 @@ export function TaskTrajectoryViewer({
             >
               <Download size={14} /> Export JSON
             </button>
+            <div className="export-pdf-dropdown-wrapper" ref={exportMenuRef}>
+              <button
+                type="button"
+                className="btn-secondary export-btn"
+                onClick={() => setExportMenuOpen(prev => !prev)}
+                title="Export task basic info and conclusion as PDF"
+              >
+                <FileText size={14} /> Export PDF <ChevronDown size={12} className="export-dropdown-icon" />
+              </button>
+              {exportMenuOpen && (
+                <div className="export-pdf-dropdown-menu">
+                  <button
+                    type="button"
+                    className="export-dropdown-item"
+                    onClick={async () => {
+                      setExportMenuOpen(false)
+                      await handleExportPdf('print')
+                    }}
+                    title="Open browser print preview to save as PDF with full styling"
+                  >
+                    <Printer size={14} />
+                    <div className="export-item-text">
+                      <span className="export-item-title">Print / Save as PDF</span>
+                      <span className="export-item-desc">High-quality vector PDF with Markdown</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className="export-dropdown-item"
+                    onClick={async () => {
+                      setExportMenuOpen(false)
+                      await handleExportPdf('download')
+                    }}
+                    title="Directly download a .pdf document file"
+                  >
+                    <Download size={14} />
+                    <div className="export-item-text">
+                      <span className="export-item-title">Download PDF File</span>
+                      <span className="export-item-desc">Direct .pdf file download</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className="export-dropdown-item"
+                    onClick={async () => {
+                      setExportMenuOpen(false)
+                      await handleExportPdf('preview')
+                    }}
+                    title="Preview formatted report in a new browser tab"
+                  >
+                    <ExternalLink size={14} />
+                    <div className="export-item-text">
+                      <span className="export-item-title">Preview in New Tab</span>
+                      <span className="export-item-desc">View full HTML report before printing</span>
+                    </div>
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               type="button"
               className="btn-secondary"
@@ -1099,6 +1205,14 @@ export function TaskTrajectoryViewer({
                 title="Copy final answer to clipboard"
               >
                 {copiedFinalAnswer ? '✓ Copied' : '📋 Copy'}
+              </button>
+              <button
+                type="button"
+                className="final-answer-copy-btn export-pdf-btn"
+                onClick={() => void handleExportPdf('print')}
+                title="Export basic info and conclusion as PDF"
+              >
+                <FileText size={12} /> Export PDF
               </button>
             </div>
           </div>
