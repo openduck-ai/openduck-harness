@@ -144,6 +144,7 @@ function normalizeHarnessConfig(raw: Partial<ProjectHarnessConfig> | any): Proje
       envVars: raw?.sandbox?.envVars || raw?.sandbox?.env_vars || {},
     },
     execution: {
+      autoCommit: raw?.execution?.autoCommit ?? raw?.execution?.auto_commit ?? true,
       maxTurns: raw?.execution?.maxTurns ?? raw?.execution?.max_turns ?? 25,
       timeoutSeconds: raw?.execution?.timeoutSeconds ?? raw?.execution?.timeout_seconds ?? 300,
       concurrency: raw?.execution?.concurrency ?? 4,
@@ -3081,6 +3082,23 @@ export function ProjectHarnessTab({
             </div>
 
             <h4 className="sub-section-title">⏱️ Execution Limits & Paths</h4>
+            <div className="form-group">
+              <label className="form-label">
+                <input
+                  type="checkbox"
+                  checked={config.execution.autoCommit ?? true}
+                  onChange={e => setConfig({
+                    ...config,
+                    execution: { ...config.execution, autoCommit: e.target.checked },
+                  })}
+                />{' '}
+                Automatically commit completed tasks
+              </label>
+              <span className="form-hint">
+                Commit task changes in Git projects with a generated message and OpenDuck attribution.
+                Files already changed before the task are excluded.
+              </span>
+            </div>
             <div className="form-row-3">
               <div className="form-group">
                 <label className="form-label">Max Turns</label>

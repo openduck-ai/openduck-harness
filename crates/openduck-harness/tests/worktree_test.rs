@@ -27,6 +27,33 @@ fn init_git_repo(dir: &Path) {
 }
 
 #[tokio::test]
+async fn kept_temporary_worktree_preserves_uncommitted_files_after_cleanup_and_drop() {
+    let repo = tempdir().unwrap();
+    init_git_repo(repo.path());
+    fs::write(repo.path().join("README.md"), "original").unwrap();
+    run_git(repo.path(), &["add", "README.md"]);
+    run_git(repo.path(), &["commit", "-m", "initial"]);
+    let mut config = WorktreeConfig::new(repo.path())
+        .with_branch("preserved-task")
+        .with_auto_commit(false);
+    config.keep_worktree = true;
+    let mut sandbox = WorktreeSandbox::new(config);
+    sandbox.initialize().await.unwrap();
+    let workspace = sandbox.workspace_root().to_path_buf();
+    fs::write(workspace.join("README.md"), "uncommitted task changes").unwrap();
+    sandbox.cleanup().await.unwrap();
+    drop(sandbox);
+    assert_eq!(
+        fs::read_to_string(workspace.join("README.md")).unwrap(),
+        "uncommitted task changes"
+    );
+    run_git(
+        repo.path(),
+        &["worktree", "remove", "--force", workspace.to_str().unwrap()],
+    );
+}
+
+#[tokio::test]
 async fn test_worktree_sandbox_lifecycle() {
     let repo_temp = tempdir().unwrap();
     let repo_root = repo_temp.path();

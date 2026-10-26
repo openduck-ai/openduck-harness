@@ -361,7 +361,11 @@ impl SandboxDriver for WorktreeSandbox {
                 .tempdir()
                 .context("Failed to allocate temporary directory for worktree")?;
             self.worktree_path = temp_dir.path().to_path_buf();
-            self.temp_dir = Some(temp_dir);
+            if self.config.keep_worktree {
+                self.worktree_path = temp_dir.keep();
+            } else {
+                self.temp_dir = Some(temp_dir);
+            }
         } else if let Some(parent) = self.worktree_path.parent() {
             fs::create_dir_all(parent).await?;
         }

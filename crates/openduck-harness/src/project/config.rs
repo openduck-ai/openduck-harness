@@ -63,9 +63,15 @@ fn default_concurrency() -> usize {
     4
 }
 
+fn default_auto_commit() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionConfig {
+    #[serde(default = "default_auto_commit", alias = "auto_commit")]
+    pub auto_commit: bool,
     #[serde(default = "default_max_turns", alias = "max_turns")]
     pub max_turns: usize,
     #[serde(default = "default_timeout_seconds", alias = "timeout_seconds")]
@@ -115,6 +121,7 @@ pub struct ExecutionConfig {
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
+            auto_commit: default_auto_commit(),
             max_turns: default_max_turns(),
             timeout_seconds: default_timeout_seconds(),
             concurrency: default_concurrency(),

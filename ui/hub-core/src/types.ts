@@ -858,6 +858,7 @@ export interface ProjectHarnessConfig {
     envVars: Record<string, string>
   }
   execution: {
+    autoCommit?: boolean
     maxTurns: number
     timeoutSeconds: number
     concurrency: number

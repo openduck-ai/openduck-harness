@@ -986,6 +986,87 @@ pub async fn suggest_commit_message(
     }
 }
 
+pub struct TaskAutoCommit {
+    root: std::path::PathBuf,
+    initially_dirty: std::collections::HashSet<String>,
+    excluded: Vec<std::path::PathBuf>,
+}
+
+impl TaskAutoCommit {
+    async fn changes(root: &Path) -> Result<Vec<GitFileChange>> {
+        let output = run_git_ok(
+            root,
+            &[
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "-b",
+                "--untracked-files=all",
+            ],
+            STATUS_TIMEOUT,
+        )
+        .await?;
+        Ok(parse_porcelain_z(output.as_bytes()).1)
+    }
+
+    pub async fn capture(
+        workspace: &Path,
+        excluded: Vec<std::path::PathBuf>,
+    ) -> Result<Option<Self>> {
+        if ensure_repo(workspace).await.is_err() {
+            return Ok(None);
+        }
+        let root = run_git_ok(workspace, &["rev-parse", "--show-toplevel"], STATUS_TIMEOUT).await?;
+        let root = std::path::PathBuf::from(root.trim());
+        let current = Self::changes(&root).await?;
+        let initially_dirty = current
+            .into_iter()
+            .flat_map(|file| std::iter::once(file.path).chain(file.original_path))
+            .collect();
+        Ok(Some(Self {
+            root,
+            initially_dirty,
+            excluded,
+        }))
+    }
+
+    pub async fn finish(self) -> Result<Option<GitCommitResponse>> {
+        let current = Self::changes(&self.root).await?;
+        let owned: Vec<GitFileChange> = current
+            .into_iter()
+            .filter(|file| {
+                !file.conflict
+                    && !self.initially_dirty.contains(&file.path)
+                    && !file
+                        .original_path
+                        .as_ref()
+                        .is_some_and(|path| self.initially_dirty.contains(path))
+                    && !self
+                        .excluded
+                        .iter()
+                        .any(|path| self.root.join(&file.path).starts_with(path))
+            })
+            .collect();
+        let paths: Vec<String> = owned
+            .iter()
+            .flat_map(|file| std::iter::once(file.path.clone()).chain(file.original_path.clone()))
+            .collect();
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        let diff = collect_diff_for_message(&self.root, &owned).await?;
+        let generated = if diff.trim().is_empty() {
+            heuristic_commit_message(&owned)
+        } else {
+            generate_with_model(&diff)
+                .await
+                .unwrap_or_else(|_| heuristic_commit_message(&owned))
+        };
+        let message = format!("{}\n\nGenerated-by: OpenDuck Harness", generated.trim());
+        commit(&self.root, &message, &paths).await.map(Some)
+    }
+}
+
 pub fn parse_worktree_porcelain(raw: &str) -> Vec<GitWorktreeEntry> {
     let mut entries = Vec::new();
     let mut current_path: Option<String> = None;

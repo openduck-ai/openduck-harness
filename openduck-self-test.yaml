@@ -14,6 +14,7 @@ activities:
   - Test extension discovery and management
   - Validate per-session HTTPS proxy configuration for TUI agents
   - Validate project task FIFO queueing, cancellation, and isolation between projects
+  - Validate default project task Git commits and the auto-commit setting
   - Validate recorded TUI agent status in task run Agent Logs
   - Test load tool for knowledge injection and discovery
   - Test delegate tool for task delegation (sync and async)
@@ -134,6 +135,16 @@ instructions: |
   Record unavailable pane states or missing UI prerequisites as SKIPPED.
 
   ### Phase 3: Delegate & Load Testing
+  In a disposable Git project, complete a project harness task that edits a clean
+  tracked file and creates a new file. Verify a commit is created with a generated
+  message and `Generated-by: OpenDuck Harness`. Verify pre-existing staged and
+  unstaged changes and task scratch notes are excluded. A clean successful task,
+  failed task, cancelled task, echo run, and non-Git project must not auto-commit.
+  Disable "Automatically commit completed tasks" in the project Harness settings,
+  save and reload, then run another editing task. Verify no commit is created and
+  changes remain available. Repeat enabled and disabled runs in a worktree sandbox,
+  including recording, and verify changes remain accessible if committing fails.
+
   Test the unified delegation and knowledge-loading tools:
   - Load tool for discovery and knowledge injection
   - Delegate tool for synchronous task delegation

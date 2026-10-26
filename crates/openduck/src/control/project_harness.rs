@@ -965,15 +965,11 @@ async fn execute_project_task(
     }
     let mut sandbox: Box<dyn SandboxDriver> = match config.sandbox.kind.to_lowercase().as_str() {
         "worktree" => {
-            let branch = format!("agent/task-{}", task_spec.id.replace('/', "-"));
-            let commit_msg = format!(
-                "Task {}: {}",
-                task_spec.id,
-                task_spec.problem_statement.trim()
-            );
-            let wt_config = WorktreeConfig::new(&root)
+            let branch = format!("agent/task-{}-{}", task_spec.id.replace('/', "-"), job_id);
+            let mut wt_config = WorktreeConfig::new(&root)
                 .with_branch(branch.clone())
-                .with_commit_message(commit_msg);
+                .with_auto_commit(false);
+            wt_config.keep_worktree = true;
             tracing::info!(
                 task_id = %task_spec.id,
                 branch = %branch,
@@ -984,6 +980,22 @@ async fn execute_project_task(
         _ => Box::new(LocalSandbox::new(root)),
     };
     sandbox.initialize().await?;
+
+    let auto_commit = if config.execution.auto_commit && !req.echo.unwrap_or(false) {
+        let workspace = sandbox.workspace_root();
+        super::git::TaskAutoCommit::capture(
+            workspace,
+            vec![
+                workspace.join(".agent"),
+                project_runs_dir(workspace),
+                config.resolve_results_dir(workspace),
+                config.resolve_cassettes_dir(workspace),
+            ],
+        )
+        .await?
+    } else {
+        None
+    };
 
     if req.echo.unwrap_or(false) {
         let base_policy = EchoPolicy::default();
@@ -1001,6 +1013,7 @@ async fn execute_project_task(
             continuation.clone(),
             extra_turns,
             history_follow_up.clone(),
+            auto_commit,
         )
         .await;
     }
@@ -1060,6 +1073,7 @@ async fn execute_project_task(
         continuation,
         extra_turns,
         history_follow_up,
+        auto_commit,
     )
     .await
 }
@@ -1079,6 +1093,7 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy, S: S
     continuation: Option<ContinuationCheckpoint>,
     extra_turns: Option<usize>,
     history_follow_up: Option<HistoryFollowUp>,
+    auto_commit: Option<super::git::TaskAutoCommit>,
 ) -> Result<HarnessRunResponseDto> {
     if let Some(c_path) = cassette_path {
         let mut cas_obj = Cassette::new(&task_spec.id);
@@ -1116,6 +1131,7 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy, S: S
         }
         let mut harness = with_live_snapshot(harness, job_id, &task_spec.id);
         let run_res = harness.run_task(task_spec).await;
+        let run_res = finish_project_task_commit(run_res, auto_commit).await;
         if let Ok(cas) = cassette.try_lock() {
             if !cas.frames.is_empty() {
                 let _ = cas.save_to_file(&c_path).await;
@@ -1165,6 +1181,7 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy, S: S
         }
         let mut harness = with_live_snapshot(harness, job_id, &task_spec.id);
         let run_res = harness.run_task(task_spec).await;
+        let run_res = finish_project_task_commit(run_res, auto_commit).await;
         let _ = harness.sandbox_mut().cleanup().await;
         let res = run_res?;
         let mut dto = to_run_dto(res, None);
@@ -1176,6 +1193,26 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy, S: S
         }
         Ok(dto)
     }
+}
+
+async fn finish_project_task_commit(
+    result: Result<openduck_harness::runtime::TaskExecutionResult>,
+    auto_commit: Option<super::git::TaskAutoCommit>,
+) -> Result<openduck_harness::runtime::TaskExecutionResult> {
+    let mut result = result?;
+    if result.status == openduck_harness::types::RunStatus::Success {
+        if let Some(auto_commit) = auto_commit {
+            if let Some(commit) = auto_commit
+                .finish()
+                .await
+                .context("Automatic task commit failed; changes remain in the workspace")?
+            {
+                let answer = result.final_answer.get_or_insert_with(String::new);
+                answer.push_str(&format!("\n\nCommitted {}: {}", commit.sha, commit.subject));
+            }
+        }
+    }
+    Ok(result)
 }
 
 pub async fn eval_project_tasks(
