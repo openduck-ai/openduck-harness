@@ -579,12 +579,16 @@ pub async fn run_project_task(
         Err(_) => Err(bad("Project harness task worker ended unexpectedly")),
     }
 }
-
+/// Per-project FIFO queue. Tasks within the same project workspace are serialized
+/// to prevent workspace and git conflicts, while distinct projects execute concurrently.
 type ProjectTaskQueue = VecDeque<(String, Option<tokio::sync::oneshot::Sender<()>>)>;
 
 static PROJECT_TASK_QUEUES: LazyLock<std::sync::Mutex<HashMap<String, ProjectTaskQueue>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+/// RAII guard representing a slot in the project's task execution queue.
+/// Dropping this entry (on completion, cancellation, or panic) automatically
+/// advances the queue and unblocks the next pending task.
 struct ProjectTaskQueueEntry {
     slug: String,
     job_id: String,

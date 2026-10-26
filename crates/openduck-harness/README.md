@@ -69,10 +69,11 @@ Multi-tiered, model-aware token budgeting and semantic context compaction:
 - **Layer 1 Tool Output Snipping**: `snip_tool_output` automatically folds high-volume tool execution outputs (lines & bytes limits) with UTF-8 safety while preserving key diagnostics and exit codes.
 - **Layer 2/3 Semantic Compaction**: `compact_context_messages` extracts structured facts (explored files, modified files, test execution outcomes, errors, system nudges) and synthesizes a high-density Markdown summary block between initial task instructions and recent active context.
 
-### 6. `project` (`ProjectHarnessConfig`, `ProjectTaskStore`)
+### 6. `project` (`ProjectHarnessConfig`, `ProjectTaskStore`, Concurrency Queue)
 Project-level harness integration:
 - Configured via `.goose/harness.yaml` or `.openduck/harness.yaml`.
 - Reads task definitions from `.goose/tasks/*.yaml` or `.openduck/tasks/*.yaml`.
+- **FIFO Task Queue**: Enforces per-project serial execution to prevent concurrent workspace/Git collisions while keeping independent projects fully parallel. Pending runs enter a `queued` state and automatically wake upon previous task completion. See [`design-docs/project-task-queue-architecture.md`](../../design-docs/project-task-queue-architecture.md).
 
 ---
 
