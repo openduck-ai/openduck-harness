@@ -17,7 +17,7 @@ use openduck_harness::eval::{
 use openduck_harness::policy::adapters::EchoPolicy;
 use openduck_harness::policy::{
     AgentAction, AgentPolicy, HarnessContextView, MessageRole, PartialGeneration,
-    PartialThinkingObserver, StepTelemetry,
+    PartialThinkingObserver, StepTelemetry, YieldReason,
 };
 use openduck_harness::replay::{Cassette, ReplayPolicy};
 use openduck_harness::runtime::AgentHarness;
@@ -1719,6 +1719,32 @@ pub struct HarnessActiveJobDto {
     pub project_slug: Option<String>,
 }
 
+/// What a live job is doing right now, without the trajectory payload.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessJobActivityDto {
+    /// `starting`, `thinking`, `tool`, `answer`, or `waiting`.
+    pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_arguments: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Active job plus the compact live status used by the hub running-tasks page.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessActiveJobListItem {
+    #[serde(flatten)]
+    pub job: HarnessActiveJobDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<HarnessJobActivityDto>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessJobInspectDto {
@@ -2443,6 +2469,140 @@ pub fn active_jobs_for_project(slug: &str) -> Vec<HarnessActiveJobDto> {
         .into_iter()
         .filter(|job| job.project_slug.as_deref() == Some(slug))
         .collect()
+}
+
+const ACTIVITY_ARG_KEYS: &[&str] = &[
+    "command",
+    "path",
+    "query",
+    "prompt",
+    "url",
+    "name",
+    "agent",
+    "session_id",
+];
+
+fn truncate_activity(text: &str) -> String {
+    let trimmed = text.trim();
+    let mut chars = trimmed.chars();
+    let short: String = chars.by_ref().take(160).collect();
+    if chars.next().is_some() {
+        format!("{short}…")
+    } else {
+        short
+    }
+}
+
+fn compact_tool_arguments(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let obj = value.as_object()?;
+    let mut out = serde_json::Map::new();
+    for key in ACTIVITY_ARG_KEYS {
+        let Some(text) = obj.get(*key).and_then(|item| item.as_str()) else {
+            continue;
+        };
+        let short = truncate_activity(text);
+        if short.is_empty() {
+            continue;
+        }
+        out.insert((*key).to_string(), serde_json::Value::String(short));
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(out))
+    }
+}
+
+fn activity_from_snapshot(snapshot: &HarnessRunResponseDto) -> HarnessJobActivityDto {
+    if snapshot
+        .partial_thinking
+        .as_ref()
+        .is_some_and(|text| !text.trim().is_empty())
+    {
+        return HarnessJobActivityDto {
+            phase: "thinking".into(),
+            tool_name: None,
+            tool_arguments: None,
+            detail: None,
+        };
+    }
+
+    let Some(step) = snapshot.trajectory.steps.last() else {
+        return HarnessJobActivityDto {
+            phase: "starting".into(),
+            tool_name: None,
+            tool_arguments: None,
+            detail: None,
+        };
+    };
+
+    match &step.action {
+        AgentAction::CallTools(calls) => {
+            let Some(call) = calls.last() else {
+                return HarnessJobActivityDto {
+                    phase: "tool".into(),
+                    tool_name: None,
+                    tool_arguments: None,
+                    detail: None,
+                };
+            };
+            HarnessJobActivityDto {
+                phase: "tool".into(),
+                tool_name: Some(call.name.clone()),
+                tool_arguments: compact_tool_arguments(&call.arguments),
+                detail: None,
+            }
+        }
+        AgentAction::FinalAnswer(_) => HarnessJobActivityDto {
+            phase: "answer".into(),
+            tool_name: None,
+            tool_arguments: None,
+            detail: None,
+        },
+        AgentAction::YieldControl { reason } => {
+            let detail = match reason {
+                YieldReason::MaxTurnsReached => "Reached the turn limit",
+                YieldReason::WaitingForExternalEvent => "Waiting for an external event",
+                YieldReason::Interrupted => "Interrupted",
+            };
+            HarnessJobActivityDto {
+                phase: "waiting".into(),
+                tool_name: None,
+                tool_arguments: None,
+                detail: Some(detail.into()),
+            }
+        }
+        AgentAction::RequestInput { prompt } => {
+            let detail = truncate_activity(prompt);
+            HarnessJobActivityDto {
+                phase: "waiting".into(),
+                tool_name: None,
+                tool_arguments: None,
+                detail: if detail.is_empty() {
+                    None
+                } else {
+                    Some(detail)
+                },
+            }
+        }
+    }
+}
+
+fn activity_for_job(job_id: &str) -> Option<(usize, HarnessJobActivityDto)> {
+    let snapshots = HARNESS_LIVE_SNAPSHOTS.read().ok()?;
+    let snapshot = snapshots.get(job_id)?;
+    Some((snapshot.step_count, activity_from_snapshot(snapshot)))
+}
+
+fn active_job_list_item(job: HarnessActiveJobDto) -> HarnessActiveJobListItem {
+    let (step_count, activity) = activity_for_job(&job.job_id)
+        .map(|(count, activity)| (Some(count), Some(activity)))
+        .unwrap_or((None, None));
+    HarnessActiveJobListItem {
+        job,
+        step_count,
+        activity,
+    }
 }
 
 const LEGACY_HARNESS_RUNS_DIR: &str = "harness_runs";
@@ -3188,8 +3348,13 @@ fn not_found<T: std::fmt::Display>(e: T) -> (StatusCode, Json<serde_json::Value>
     )
 }
 
-pub async fn list_active_harness_jobs() -> Json<Vec<HarnessActiveJobDto>> {
-    Json(get_active_jobs_list())
+pub async fn list_active_harness_jobs() -> Json<Vec<HarnessActiveJobListItem>> {
+    Json(
+        get_active_jobs_list()
+            .into_iter()
+            .map(active_job_list_item)
+            .collect(),
+    )
 }
 
 pub async fn inspect_harness_job(
@@ -4440,6 +4605,48 @@ mod tests {
 
         remove_active_job(&job_id);
         assert!(!get_active_jobs_list().iter().any(|j| j.job_id == job_id));
+    }
+
+    #[test]
+    fn activity_from_snapshot_reports_latest_tool_then_thinking() {
+        let mut snapshot = sample_run_dto("live");
+        snapshot.step_count = 1;
+        snapshot.trajectory.steps = vec![TrajectoryStep {
+            step_number: 0,
+            timestamp: Utc::now(),
+            action: AgentAction::CallTools(vec![ToolCallRequest::new(
+                "call-1",
+                "developer__shell",
+                serde_json::json!({
+                    "command": "cargo test -p openduck",
+                    "content": "x".repeat(400),
+                }),
+            )]),
+            tool_results: None,
+            duration_ms: 10,
+            token_usage: None,
+            llm_request: Some(serde_json::json!({"prompt": "huge"})),
+            llm_response: None,
+            judgments: None,
+            provider_calls: None,
+        }];
+
+        let activity = activity_from_snapshot(&snapshot);
+        assert_eq!(activity.phase, "tool");
+        assert_eq!(activity.tool_name.as_deref(), Some("developer__shell"));
+        let args = activity.tool_arguments.expect("compact arguments");
+        assert_eq!(args["command"], "cargo test -p openduck");
+        assert!(args.get("content").is_none());
+
+        snapshot.partial_thinking = Some("planning the next edit".into());
+        let thinking = activity_from_snapshot(&snapshot);
+        assert_eq!(thinking.phase, "thinking");
+        assert!(thinking.tool_name.is_none());
+
+        snapshot.partial_thinking = None;
+        snapshot.trajectory.steps.clear();
+        snapshot.step_count = 0;
+        assert_eq!(activity_from_snapshot(&snapshot).phase, "starting");
     }
 
     #[test]

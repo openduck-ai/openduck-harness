@@ -698,6 +698,13 @@ export interface HarnessTrajectoryRecord {
   providerStats?: TaskProviderStats | null
 }
 
+export interface HarnessJobActivity {
+  phase: 'starting' | 'thinking' | 'tool' | 'answer' | 'waiting' | string
+  toolName?: string | null
+  toolArguments?: Record<string, unknown> | null
+  detail?: string | null
+}
+
 export interface HarnessActiveJob {
   jobId: string
   taskId: string
@@ -708,6 +715,8 @@ export interface HarnessActiveJob {
   provider?: string | null
   model?: string | null
   projectSlug?: string | null
+  stepCount?: number | null
+  activity?: HarnessJobActivity | null
 }
 
 export interface HarnessHistorySummary {

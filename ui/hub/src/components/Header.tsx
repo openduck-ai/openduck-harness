@@ -1,4 +1,5 @@
 import {
+  Activity,
   FolderKanban,
   Settings,
   Plus,
@@ -8,8 +9,9 @@ import {
   Moon,
 } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext'
+import type { NavPage } from '../urlNav'
 
-export type NavPage = 'projects' | 'settings'
+export type { NavPage }
 
 interface HeaderProps {
   currentPage: NavPage
@@ -17,6 +19,7 @@ interface HeaderProps {
   isConnected: boolean
   onNewProject: () => void
   openProjectsCount: number
+  runningTasksCount: number
 }
 
 export function Header({
@@ -25,6 +28,7 @@ export function Header({
   isConnected,
   onNewProject,
   openProjectsCount,
+  runningTasksCount,
 }: HeaderProps) {
   const { resolvedTheme, themePreference, toggleTheme } = useTheme()
 
@@ -52,6 +56,17 @@ export function Header({
             <FolderKanban size={16} />
             <span>Projects</span>
             {openProjectsCount > 0 && <span className="nav-counter">{openProjectsCount}</span>}
+          </button>
+          <button
+            type="button"
+            className={`nav-link ${currentPage === 'running' ? 'active' : ''}`}
+            onClick={() => onSelectPage('running')}
+          >
+            <Activity size={16} />
+            <span>Running</span>
+            {runningTasksCount > 0 && (
+              <span className="nav-counter">{runningTasksCount}</span>
+            )}
           </button>
           <button
             type="button"

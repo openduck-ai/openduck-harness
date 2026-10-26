@@ -52,9 +52,24 @@ test('parseUrlNav extracts split project parameter', () => {
   })
 })
 
+test('parseUrlNav parses the running tasks page', () => {
+  const state = parseUrlNav('?page=running')
+  assert.deepEqual(state, {
+    page: 'running',
+    project: null,
+    tab: null,
+    split: null,
+  })
+})
+
 test('formatUrlNavQuery formats settings correctly', () => {
   const query = formatUrlNavQuery({ page: 'settings' })
   assert.equal(query, '?page=settings')
+})
+
+test('formatUrlNavQuery formats the running tasks page', () => {
+  const query = formatUrlNavQuery({ page: 'running' })
+  assert.equal(query, '?page=running')
 })
 
 test('formatUrlNavQuery formats project and tab query', () => {

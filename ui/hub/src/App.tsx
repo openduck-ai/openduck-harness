@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, lazy, Suspense } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import {
   useAllProjectSessions,
+  type HarnessActiveJob,
   type Project,
   type ProjectDetail as ProjectDetailType,
   type ProjectInput,
@@ -8,6 +9,7 @@ import {
 import { createApi } from './api'
 import { Header, type NavPage } from './components/Header'
 import { ProjectList } from './components/ProjectList'
+import { RunningTasksPage } from './components/RunningTasksPage'
 import { RegisterProjectModal } from './components/RegisterProjectModal'
 import { TabSkeleton, ProjectDetailHeaderSkeleton } from './components/Skeletons'
 import { parseUrlNav, syncUrlNav } from './urlNav'
@@ -54,6 +56,13 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [isConnected, setIsConnected] = useState(false)
+  const [runningJobs, setRunningJobs] = useState<HarnessActiveJob[]>([])
+  const [runningJobsLoaded, setRunningJobsLoaded] = useState(false)
+  const [runningJobsError, setRunningJobsError] = useState('')
+  const [runningJobsRefreshing, setRunningJobsRefreshing] = useState(false)
+  const [stoppingJobId, setStoppingJobId] = useState<string | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+  const runningRequestRef = useRef(0)
 
   const allSessions = useAllProjectSessions()
 
@@ -200,12 +209,69 @@ export default function App() {
 
   const handleSelectPage = (page: NavPage) => {
     setCurrentPage(page)
+    const stayOnProject = page === 'projects'
     syncUrlNav({
       page,
-      project: page === 'settings' ? null : activeSlug,
-      tab: page === 'settings' ? null : activeTab,
-      split: page === 'settings' ? null : splitSlug,
+      project: stayOnProject ? activeSlug : null,
+      tab: stayOnProject ? activeTab : null,
+      split: stayOnProject ? splitSlug : null,
     })
+  }
+
+  const refreshRunningJobs = useCallback(async () => {
+    const requestId = ++runningRequestRef.current
+    try {
+      const jobs = await api.listActiveHarnessJobs()
+      if (requestId !== runningRequestRef.current) return
+      setRunningJobs(jobs)
+      setRunningJobsError('')
+    } catch (cause) {
+      if (requestId !== runningRequestRef.current) return
+      setRunningJobsError(
+        cause instanceof Error ? cause.message : 'Unable to load running tasks',
+      )
+    } finally {
+      if (requestId === runningRequestRef.current) {
+        setRunningJobsLoaded(true)
+        setRunningJobsRefreshing(false)
+      }
+    }
+  }, [api])
+
+  useEffect(() => {
+    if (!isConnected) return
+    void refreshRunningJobs()
+    const interval = window.setInterval(() => {
+      if (document.hidden) return
+      void refreshRunningJobs()
+    }, 3000)
+    const onVisible = () => {
+      if (!document.hidden) void refreshRunningJobs()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [isConnected, refreshRunningJobs])
+
+  useEffect(() => {
+    if (runningJobs.length === 0) return
+    const interval = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [runningJobs.length])
+
+  const handleStopRunningJob = async (job: HarnessActiveJob) => {
+    setStoppingJobId(job.jobId)
+    setRunningJobsError('')
+    try {
+      await api.stopHarnessJob(job.jobId)
+      await refreshRunningJobs()
+    } catch (cause) {
+      setRunningJobsError(cause instanceof Error ? cause.message : 'Unable to stop task')
+    } finally {
+      setStoppingJobId(null)
+    }
   }
 
   const closeTab = (slug: string, event?: React.MouseEvent) => {
@@ -278,6 +344,7 @@ export default function App() {
           setShowRegisterModal(true)
         }}
         openProjectsCount={openProjects.length}
+        runningTasksCount={runningJobs.length}
       />
 
       <main className="app-main-content">
@@ -475,6 +542,27 @@ export default function App() {
                 onOpenRegisterModal={() => setShowRegisterModal(true)}
               />
             )}
+          </div>
+        )}
+
+        {currentPage === 'running' && (
+          <div className="page-view running-tasks-page-view">
+            <RunningTasksPage
+              jobs={runningJobs}
+              projects={projects}
+              loaded={runningJobsLoaded}
+              isConnected={isConnected}
+              error={runningJobsError}
+              now={now}
+              refreshing={runningJobsRefreshing}
+              stoppingJobId={stoppingJobId}
+              onRefresh={() => {
+                setRunningJobsRefreshing(true)
+                void refreshRunningJobs()
+              }}
+              onOpenProject={project => void open(project, 'harness')}
+              onStopJob={job => void handleStopRunningJob(job)}
+            />
           </div>
         )}
 

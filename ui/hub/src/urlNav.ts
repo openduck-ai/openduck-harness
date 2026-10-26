@@ -1,6 +1,6 @@
 import { isProjectSubTab, type ProjectSubTab } from './lazyTabs.ts'
 
-export type NavPage = 'projects' | 'settings'
+export type NavPage = 'projects' | 'running' | 'settings'
 
 export interface UrlNavState {
   page: NavPage
@@ -14,7 +14,8 @@ export function parseUrlNav(search: string): UrlNavState {
   const params = new URLSearchParams(cleanSearch)
 
   const pageParam = params.get('page')
-  const page: NavPage = pageParam === 'settings' ? 'settings' : 'projects'
+  const page: NavPage =
+    pageParam === 'settings' ? 'settings' : pageParam === 'running' ? 'running' : 'projects'
 
   const rawProject = params.get('project')?.trim() || null
   const project = rawProject || null
@@ -44,8 +45,8 @@ export function formatUrlNavQuery(state: Partial<UrlNavState>): string {
     if (state.split) {
       params.set('split', state.split)
     }
-  } else if (state.page === 'settings') {
-    params.set('page', 'settings')
+  } else if (state.page === 'settings' || state.page === 'running') {
+    params.set('page', state.page)
   }
 
   const query = params.toString()
