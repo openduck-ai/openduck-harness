@@ -691,42 +691,158 @@ export function generateTaskPdfHtml(data: TaskPdfData): string {
 </html>`
 }
 
+const CLOSING_PUNCTUATION = new Set([
+  '，', '。', '！', '？', '、', '：', '；', '）', '》', '】', '”', '’',
+  ')', ']', '}', '>', '.', ',', '!', '?', ';', ':',
+])
+
 /**
- * Sanitizes plain text for standard PDF Type 1 Helvetica font.
+ * Computes the visual display width of a single character.
+ * CJK characters, fullwidth punctuation, and wide symbols occupy 2 units (1em),
+ * while standard ASCII/Latin characters occupy 1 unit (0.5em).
  */
-function sanitizePdfString(str: string): string {
-  if (!str) return ''
-  return str.replace(/[\\()]/g, '\\$&').replace(/[^\x20-\x7E\r\n\t]/g, '?')
+export function charWidth(char: string): number {
+  const code = char.codePointAt(0) ?? 0
+  if (
+    (code >= 0x2e80 && code <= 0x9fff) || // CJK Radicals, Kangxi, CJK Unified Ideographs
+    (code >= 0xf900 && code <= 0xfaff) || // CJK Compatibility Ideographs
+    (code >= 0xff01 && code <= 0xff60) || // Fullwidth ASCII variants and punctuation
+    (code >= 0xffe0 && code <= 0xffe6) || // Fullwidth symbol variants
+    (code >= 0x3000 && code <= 0x303f) || // CJK Symbols and Punctuation
+    (code >= 0x20000 && code <= 0x2fa1f)  // CJK Unified Ideographs Extension
+  ) {
+    return 2
+  }
+  return 1
 }
 
 /**
- * Word wraps plain text to fit into line width limits.
+ * Word wraps plain text to fit into visual width limits.
+ * Handles both space-delimited English words and unspaced CJK ideographs,
+ * respecting Chinese punctuation boundaries (Kinsoku Shori).
  */
-function wrapLines(text: string, maxChars = 75): string[] {
+export function wrapLines(text: string, maxVisualWidth = 72): string[] {
   const result: string[] = []
   const paragraphs = text.split(/\r?\n/)
+
   for (const para of paragraphs) {
     if (!para.trim()) {
       result.push('')
       continue
     }
-    const words = para.split(/\s+/)
+
     let currentLine = ''
-    for (const w of words) {
-      if ((currentLine + ' ' + w).trim().length <= maxChars) {
-        currentLine = (currentLine + ' ' + w).trim()
+    let currentWidth = 0
+
+    let i = 0
+    while (i < para.length) {
+      const ch = para[i]
+      const cw = charWidth(ch)
+
+      if (cw === 2) {
+        if (
+          CLOSING_PUNCTUATION.has(ch) &&
+          currentWidth > 0 &&
+          currentWidth + cw <= maxVisualWidth + 2
+        ) {
+          currentLine += ch
+          currentWidth += cw
+          i++
+          continue
+        }
+
+        if (currentWidth + cw > maxVisualWidth) {
+          result.push(currentLine.trimEnd())
+          currentLine = ch
+          currentWidth = cw
+        } else {
+          currentLine += ch
+          currentWidth += cw
+        }
+        i++
+      } else if (/\s/.test(ch)) {
+        if (currentWidth + 1 <= maxVisualWidth) {
+          currentLine += ch
+          currentWidth += 1
+        } else {
+          result.push(currentLine.trimEnd())
+          currentLine = ''
+          currentWidth = 0
+        }
+        i++
       } else {
-        if (currentLine) result.push(currentLine)
-        currentLine = w
+        let word = ''
+        while (i < para.length && charWidth(para[i]) === 1 && !/\s/.test(para[i])) {
+          word += para[i]
+          i++
+        }
+        const wWidth = word.length
+        if (currentWidth + wWidth <= maxVisualWidth) {
+          currentLine += word
+          currentWidth += wWidth
+        } else {
+          if (currentLine) {
+            result.push(currentLine.trimEnd())
+            currentLine = ''
+            currentWidth = 0
+          }
+          if (wWidth <= maxVisualWidth) {
+            currentLine = word
+            currentWidth = wWidth
+          } else {
+            let chunk = ''
+            for (const c of word) {
+              if (chunk.length >= maxVisualWidth) {
+                result.push(chunk)
+                chunk = c
+              } else {
+                chunk += c
+              }
+            }
+            currentLine = chunk
+            currentWidth = chunk.length
+          }
+        }
       }
     }
-    if (currentLine) result.push(currentLine)
+    if (currentLine) {
+      result.push(currentLine.trimEnd())
+    }
   }
+
   return result
 }
 
 /**
- * Generates a valid multi-page PDF 1.4 binary file with basic info and conclusion.
+ * Strips common Markdown formatting for clean plain-text PDF rendering.
+ */
+export function stripMarkdownForPdf(md: string): string {
+  if (!md) return ''
+  return md
+    .replace(/^#{1,6}\s+(.*)$/gm, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/(^|[^*])\*([^*]+)\*([^*]|$)/g, '$1$2$3')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
+}
+
+/**
+ * Encodes text as a PDF UTF-16BE hexadecimal string `<HEX>`.
+ * Supports full Unicode (including CJK ideographs and symbols) without gibberish or character loss.
+ */
+export function encodePdfUtf16Hex(str: string): string {
+  if (!str) return '<>'
+  let hex = ''
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i)
+    hex += code.toString(16).padStart(4, '0')
+  }
+  return `<${hex}>`
+}
+
+/**
+ * Generates a valid multi-page PDF 1.4 binary file with basic info and conclusion,
+ * supporting full UTF-16BE CJK (Chinese, Japanese, Korean) and Latin characters.
  */
 export function generateTaskPdfBinary(data: TaskPdfData): Uint8Array {
   interface PdfLineItem {
@@ -738,31 +854,30 @@ export function generateTaskPdfBinary(data: TaskPdfData): Uint8Array {
 
   const lines: PdfLineItem[] = []
   lines.push({ text: '==========================================================================', bold: false, size: 8 })
-  lines.push({ text: 'OPENDUCK AGENT TASK EXECUTION REPORT', bold: true, size: 16, leading: 22 })
-  lines.push({ text: `Exported at: ${data.exportDate || new Date().toISOString()}`, bold: false, size: 9, leading: 14 })
+  lines.push({ text: 'OPENDUCK AGENT TASK REPORT / 任务执行报告', bold: true, size: 15, leading: 22 })
+  lines.push({ text: `Project: ${data.projectSlug || 'default'}  |  Exported: ${data.exportDate || new Date().toISOString()}`, bold: false, size: 9, leading: 14 })
   lines.push({ text: '==========================================================================', bold: false, size: 8, leading: 16 })
 
   // Basic info section
-  lines.push({ text: 'TASK BASIC INFORMATION', bold: true, size: 12, leading: 16 })
-  lines.push({ text: `Task ID:           ${data.taskId}`, bold: false, size: 10 })
+  lines.push({ text: 'BASIC INFORMATION / 基本信息', bold: true, size: 12, leading: 16 })
+  lines.push({ text: `Task ID (任务 ID):          ${data.taskId}`, bold: false, size: 10 })
   if (data.taskName && data.taskName !== data.taskId) {
-    lines.push({ text: `Task Name:         ${data.taskName}`, bold: false, size: 10 })
+    lines.push({ text: `Task Name (任务名称):      ${data.taskName}`, bold: false, size: 10 })
   }
-  lines.push({ text: `Project:           ${data.projectSlug || 'default'}`, bold: false, size: 10 })
-  lines.push({ text: `Status:            ${data.status.toUpperCase()}`, bold: true, size: 10 })
-  lines.push({ text: `Policy:            ${data.policyName || 'agent'}`, bold: false, size: 10 })
-  lines.push({ text: `Duration:          ${data.durationFormatted}`, bold: false, size: 10 })
-  lines.push({ text: `Total Steps:       ${data.totalSteps}`, bold: false, size: 10 })
-  lines.push({ text: `Tool Calls:        ${data.toolCallsCount}`, bold: false, size: 10 })
+  lines.push({ text: `Project (所属项目):        ${data.projectSlug || 'default'}`, bold: false, size: 10 })
+  lines.push({ text: `Status (执行状态):         ${data.status.toUpperCase()}`, bold: true, size: 10 })
+  lines.push({ text: `Policy (执行策略):         ${data.policyName || 'agent'}`, bold: false, size: 10 })
+  lines.push({ text: `Duration (执行耗时):       ${data.durationFormatted}`, bold: false, size: 10 })
+  lines.push({ text: `Steps & Tools (步骤/调用):  ${data.totalSteps} 步 / ${data.toolCallsCount} 次调用`, bold: false, size: 10 })
   if (data.startedAt) {
-    lines.push({ text: `Started At:        ${data.startedAt}`, bold: false, size: 10 })
+    lines.push({ text: `Started At (开始时间):     ${data.startedAt}`, bold: false, size: 10 })
   }
   if (data.completedAt) {
-    lines.push({ text: `Completed At:      ${data.completedAt}`, bold: false, size: 10 })
+    lines.push({ text: `Completed At (完成时间):   ${data.completedAt}`, bold: false, size: 10 })
   }
   if (data.totalTokens > 0) {
     lines.push({
-      text: `Total Tokens:      ${data.totalTokens.toLocaleString()} (Prompt: ${data.inputTokens.toLocaleString()}, Output: ${data.outputTokens.toLocaleString()})`,
+      text: `Tokens (Token 消耗):       ${data.totalTokens.toLocaleString()} (Prompt: ${data.inputTokens.toLocaleString()}, Output: ${data.outputTokens.toLocaleString()})`,
       bold: false,
       size: 10,
     })
@@ -771,31 +886,37 @@ export function generateTaskPdfBinary(data: TaskPdfData): Uint8Array {
 
   // Error section
   if (data.error) {
-    lines.push({ text: 'EXECUTION ERROR', bold: true, size: 12, leading: 16 })
-    for (const l of wrapLines(data.error, 75)) {
+    lines.push({ text: 'EXECUTION ERROR / 异常与错误', bold: true, size: 12, leading: 16 })
+    for (const l of wrapLines(data.error, 72)) {
       lines.push({ text: `  ${l}`, bold: false, size: 10 })
     }
     lines.push({ text: '', bold: false, size: 10, leading: 10 })
   }
 
   // Conclusion section
-  lines.push({ text: 'TASK CONCLUSION / FINAL ANSWER', bold: true, size: 12, leading: 16 })
+  lines.push({ text: 'TASK CONCLUSION / 任务结论与最终回答', bold: true, size: 12, leading: 16 })
   if (data.finalAnswer && data.finalAnswer.trim()) {
-    for (const l of wrapLines(data.finalAnswer, 75)) {
+    const cleanFinalAnswer = stripMarkdownForPdf(data.finalAnswer)
+    for (const l of wrapLines(cleanFinalAnswer, 72)) {
       lines.push({ text: l, bold: false, size: 10 })
     }
   } else {
-    lines.push({ text: '(No final answer recorded)', bold: false, size: 10 })
+    lines.push({ text: '(无记录的最终回答 / No final answer recorded)', bold: false, size: 10 })
   }
   lines.push({ text: '', bold: false, size: 10, leading: 10 })
 
   // Subtask outcomes
   if (data.subtasks && data.subtasks.length > 0) {
-    lines.push({ text: 'SUBTASK OUTCOMES AND CONCLUSIONS', bold: true, size: 12, leading: 16 })
+    lines.push({ text: 'SUBTASK OUTCOMES / 子任务结论与成果', bold: true, size: 12, leading: 16 })
     for (const st of data.subtasks) {
-      lines.push({ text: `[${st.subtaskId}] ${st.title} - Status: ${String(st.status).toUpperCase()}`, bold: true, size: 10 })
+      lines.push({
+        text: `[${st.subtaskId}] ${st.title} - Status: ${String(st.status).toUpperCase()}`,
+        bold: true,
+        size: 10,
+      })
       if (st.summary) {
-        for (const l of wrapLines(st.summary, 72)) {
+        const cleanSummary = stripMarkdownForPdf(st.summary)
+        for (const l of wrapLines(cleanSummary, 68)) {
           lines.push({ text: `    ${l}`, bold: false, size: 9 })
         }
       }
@@ -814,38 +935,76 @@ export function generateTaskPdfBinary(data: TaskPdfData): Uint8Array {
   addObj('<< /Type /Catalog /Pages 2 0 R >>')
   // Obj 2: Pages (placeholder)
   const pagesObjIndex = addObj('')
-  // Obj 3: Regular Font
-  const fontRegularId = addObj('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
-  // Obj 4: Bold Font
-  const fontBoldId = addObj('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>')
 
+  // Obj 3: FontDescriptor for STSong-Light
+  const fontDescId = addObj(
+    '<< /Type /FontDescriptor /FontName /STSong-Light /Flags 39 /FontBBox [-250 -250 1200 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 800 /StemV 80 >>',
+  )
+  // Obj 4: CIDFontType0 (with /W [ 1 95 500 ] for proper ASCII glyph widths)
+  const cidFontId = addObj(
+    `<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> /FontDescriptor ${fontDescId} 0 R /DW 1000 /W [ 1 95 500 ] >>`,
+  )
+  // Obj 5: Type0 Font with UniGB-UTF16-H encoding (CJK + Latin Unicode)
+  const fontRegularId = addObj(
+    `<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UTF16-H /DescendantFonts [${cidFontId} 0 R] >>`,
+  )
+
+  // Dynamic pagination based on available vertical space
   const pageIds: number[] = []
-  const linesPerPage = 42
-  const totalPages = Math.max(1, Math.ceil(lines.length / linesPerPage))
+  const pages: PdfLineItem[][] = []
+  let currentPage: PdfLineItem[] = []
+  let currentY = 780
+
+  for (const item of lines) {
+    const lead = item.leading || (item.size ? Math.round(item.size * 1.35) : 14)
+    if (currentY - lead < 55 && currentPage.length > 0) {
+      pages.push(currentPage)
+      currentPage = []
+      currentY = 780
+    }
+    currentPage.push(item)
+    currentY -= lead
+  }
+  if (currentPage.length > 0) {
+    pages.push(currentPage)
+  }
+
+  const totalPages = Math.max(1, pages.length)
 
   for (let p = 0; p < totalPages; p++) {
-    const pageLines = lines.slice(p * linesPerPage, (p + 1) * linesPerPage)
+    const pageLines = pages[p] || []
     let stream = 'BT\n'
     let y = 780
     for (const item of pageLines) {
-      const font = item.bold ? '/F2' : '/F1'
       const size = item.size || 10
-      stream += `${font} ${size} Tf\n`
-      stream += `50 ${y} Td\n`
-      stream += `(${sanitizePdfString(item.text)}) Tj\n`
-      stream += 'ET\nBT\n'
-      y -= item.leading || 14
+      const lead = item.leading || (item.size ? Math.round(item.size * 1.35) : 14)
+      if (item.text) {
+        stream += `/F1 ${size} Tf\n`
+        if (item.bold) {
+          stream += '2 Tr 0.4 w\n'
+        } else {
+          stream += '0 Tr 0 w\n'
+        }
+        stream += `50 ${y} Td\n`
+        stream += `${encodePdfUtf16Hex(item.text)} Tj\n`
+        if (item.bold) {
+          stream += '0 Tr 0 w\n'
+        }
+        stream += 'ET\nBT\n'
+      }
+      y -= lead
     }
+
     // Footer
-    stream += '/F1 9 Tf\n'
+    stream += '/F1 9 Tf\n0 Tr 0 w\n'
     stream += '50 35 Td\n'
-    stream += `(OpenDuck Harness - Page ${p + 1} of ${totalPages}) Tj\n`
+    stream += `${encodePdfUtf16Hex(`OpenDuck Harness · Page ${p + 1} of ${totalPages}`)} Tj\n`
     stream += 'ET\n'
 
     const streamBytes = new TextEncoder().encode(stream)
     const streamId = addObj(`<< /Length ${streamBytes.length} >>\nstream\n${stream}endstream`)
     const pageId = addObj(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Contents ${streamId} 0 R /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> >> >>`,
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Contents ${streamId} 0 R /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontRegularId} 0 R >> >> >>`,
     )
     pageIds.push(pageId)
   }

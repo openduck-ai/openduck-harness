@@ -10,6 +10,10 @@ import {
   generateTaskPdfHtml,
   generateTaskPdfBinary,
   exportTaskPdf,
+  encodePdfUtf16Hex,
+  wrapLines,
+  charWidth,
+  stripMarkdownForPdf,
 } from './taskPdfExport.ts'
 
 test('formatDuration formats milliseconds into human-readable strings', () => {
@@ -204,10 +208,83 @@ test('generateTaskPdfBinary produces a valid PDF 1.4 binary', () => {
   assert.ok(text.startsWith('%PDF-1.4'))
   assert.ok(text.includes('/Type /Catalog'))
   assert.ok(text.includes('/Type /Pages'))
-  assert.ok(text.includes('task-bin-pdf'))
-  assert.ok(text.includes('Validation passed successfully without warnings.'))
+  assert.ok(text.includes('/STSong-Light'))
+  assert.ok(text.includes('/UniGB-UTF16-H'))
+  const rawHex = (s: string) => encodePdfUtf16Hex(s).slice(1, -1)
+  assert.ok(text.includes(rawHex('task-bin-pdf')))
+  assert.ok(text.includes(encodePdfUtf16Hex('Validation passed successfully without warnings.')))
   assert.ok(text.includes('startxref'))
   assert.ok(text.trim().endsWith('%%EOF'))
+})
+
+test('generateTaskPdfBinary correctly encodes Chinese without garbled characters', () => {
+  const data = {
+    taskId: 'task-chinese-999',
+    taskName: '知识库向量检索构建',
+    projectSlug: 'rag-service',
+    status: 'SUCCESS',
+    policyName: 'agent',
+    startedAt: '2026-10-26T04:20:00Z',
+    completedAt: '2026-10-26T04:20:10Z',
+    durationMs: 10000,
+    durationFormatted: '10.00s',
+    totalSteps: 5,
+    toolCallsCount: 2,
+    totalTokens: 1200,
+    inputTokens: 1000,
+    outputTokens: 200,
+    finalAnswer: '已成功修复数据库索引问题并执行迁移验证。测试用例全部通过。',
+    subtasks: [
+      {
+        subtaskId: 'st-01',
+        title: '分词插件安装与表结构迁移',
+        status: 'success',
+        summary: 'pgvector 插件已加载，表结构迁移成功。',
+      },
+    ],
+    error: null,
+    exportDate: '2026-10-26 05:00:00',
+  }
+
+  const bytes = generateTaskPdfBinary(data)
+  const text = new TextDecoder('latin1').decode(bytes)
+
+  // Verify that Chinese characters are not converted into '????'
+  assert.ok(!text.includes('????'))
+  const rawHex = (s: string) => encodePdfUtf16Hex(s).slice(1, -1)
+  // Verify Chinese text is properly encoded in UTF-16BE hex
+  assert.ok(text.includes(rawHex('知识库向量检索构建')))
+  assert.ok(text.includes(encodePdfUtf16Hex('已成功修复数据库索引问题并执行迁移验证。测试用例全部通过。')))
+  assert.ok(text.includes(rawHex('分词插件安装与表结构迁移')))
+  assert.ok(text.includes(rawHex('pgvector 插件已加载，表结构迁移成功。')))
+})
+
+test('charWidth measures CJK and ASCII widths accurately', () => {
+  assert.equal(charWidth('a'), 1)
+  assert.equal(charWidth('1'), 1)
+  assert.equal(charWidth(' '), 1)
+  assert.equal(charWidth('中'), 2)
+  assert.equal(charWidth('文'), 2)
+  assert.equal(charWidth('，'), 2)
+  assert.equal(charWidth('。'), 2)
+})
+
+test('wrapLines wraps mixed CJK and English without stranding punctuation', () => {
+  const text = '已成功修复数据库索引问题并执行迁移验证。所有数据均已对齐，测试用例全部通过。'
+  const lines = wrapLines(text, 20)
+  assert.ok(lines.length > 1)
+  // Ensure lines do not start with Chinese comma or period
+  for (const l of lines) {
+    assert.ok(!l.startsWith('，') && !l.startsWith('。'))
+  }
+})
+
+test('stripMarkdownForPdf removes markdown symbols', () => {
+  const md = '### 总结\n**已完成**所有测试，请参见 [文档](https://openduck.ai)'
+  const stripped = stripMarkdownForPdf(md)
+  assert.ok(!stripped.includes('###'))
+  assert.ok(!stripped.includes('**'))
+  assert.ok(stripped.includes('已完成所有测试，请参见 文档 (https://openduck.ai)'))
 })
 
 test('exportTaskPdf routes to appropriate method without throwing', () => {
