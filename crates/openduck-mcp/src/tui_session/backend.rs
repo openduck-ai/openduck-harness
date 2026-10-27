@@ -336,11 +336,33 @@ pub struct MockPane {
     pub alive: bool,
     pub cols: u16,
     pub rows: u16,
+    pub screen_transitions: Vec<String>,
 }
 
 impl MockMultiplexerBackend {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn preconfigure_pane(&self, id: &str, screen: impl Into<String>, transitions: Vec<String>) {
+        if let Ok(mut guard) = self.panes.lock() {
+            let pid = 42000 + guard.len() as u32;
+            guard.insert(
+                id.to_string(),
+                MockPane {
+                    pid,
+                    env: Vec::new(),
+                    screen: screen.into(),
+                    pasted: Vec::new(),
+                    keys_sent: Vec::new(),
+                    enter_keys_to_ignore: 0,
+                    alive: true,
+                    cols: 160,
+                    rows: 48,
+                    screen_transitions: transitions,
+                },
+            );
+        }
     }
 
     pub fn ignore_next_enter_keys(&self, id: &str, count: usize) {
@@ -382,6 +404,13 @@ impl MultiplexerBackend for MockMultiplexerBackend {
         env_vars: &[(String, String)],
     ) -> Result<u32> {
         let mut guard = self.panes.lock().unwrap();
+        if let Some(pane) = guard.get_mut(id) {
+            pane.env = env_vars.to_vec();
+            pane.cols = cols;
+            pane.rows = rows;
+            return Ok(pane.pid);
+        }
+
         let pid = 42000 + guard.len() as u32;
         guard.insert(
             id.to_string(),
@@ -395,6 +424,7 @@ impl MultiplexerBackend for MockMultiplexerBackend {
                 alive: true,
                 cols,
                 rows,
+                screen_transitions: Vec::new(),
             },
         );
         Ok(pid)
@@ -418,7 +448,9 @@ impl MultiplexerBackend for MockMultiplexerBackend {
             .get_mut(id)
             .ok_or_else(|| anyhow!("Mock pane {id} not found"))?;
         pane.keys_sent.extend(keys.iter().cloned());
-        if keys.iter().any(|k| k == "Enter") {
+        if !pane.screen_transitions.is_empty() {
+            pane.screen = pane.screen_transitions.remove(0);
+        } else if keys.iter().any(|k| k == "Enter") {
             if pane.enter_keys_to_ignore > 0 {
                 pane.enter_keys_to_ignore -= 1;
                 return Ok(());

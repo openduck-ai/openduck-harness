@@ -210,39 +210,148 @@ pub(crate) fn user_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-pub(crate) fn detect_approval_modal(bottom_lines: &[&str]) -> Option<String> {
+pub fn detect_approval_modal(bottom_lines: &[&str]) -> Option<String> {
     let joined = bottom_lines.join("\n");
     let lower = joined.to_ascii_lowercase();
 
     let approval_patterns = [
-        "do you trust the files in this folder",
+        "trust the files",
+        "trust the authors",
+        "trust this folder",
+        "trust this directory",
+        "trust the directory",
+        "do you trust",
+        "is this folder trusted",
+        "is this directory trusted",
+        "workspace trust",
+        "trust this repository",
+        "trust the repository",
         "do you want to allow",
+        "do you want to proceed",
+        "do you want to continue",
         "allow this action",
         "approve this command",
+        "approve tool",
+        "allow claude",
+        "allow command",
+        "confirm action",
         "requires approval",
+        "approval required",
+        "[y/n]",
+        "[y/n/a]",
+        "[y/n/d]",
+        "[y/n/all]",
+        "[y/n/always]",
+        "[y/n/q]",
+        "[y/n/e]",
+        "[y/n/c]",
+        "[y/n/d/s]",
+        "[y/n/a/d]",
+        "[y/n/always/never]",
+        "(y/n)",
         "[y/n]",
         "(y/n)",
-        "[y/n/a]",
+        "yes/no",
+        "[yes/no]",
         "yes, allow",
         "press enter to confirm",
+        "press enter to continue",
+        "press any key to continue",
+        "hit enter to continue",
+        "select a theme",
+        "choose a theme",
+        "enable telemetry",
+        "allow anonymous telemetry",
+        "send crash reports",
+        "send error reports",
+        "share analytics",
     ];
 
-    for pat in approval_patterns {
-        if lower.contains(pat) {
-            let snippet = bottom_lines
-                .iter()
-                .rev()
-                .take(4)
-                .copied()
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join(" | ");
-            return Some(snippet);
-        }
+    let is_approval = approval_patterns.iter().any(|pat| lower.contains(pat))
+        || (lower.contains("trust")
+            && (lower.contains("folder")
+                || lower.contains("director")
+                || lower.contains("author")
+                || lower.contains("file")
+                || lower.contains("workspace")
+                || lower.contains("repo")))
+        || (lower.contains("proceed")
+            && (lower.contains('?') || lower.contains("[y/") || lower.contains("(y/")))
+        || (lower.contains("approve")
+            && (lower.contains('?') || lower.contains("[y/") || lower.contains("(y/")))
+        || (lower.contains("confirm")
+            && (lower.contains('?') || lower.contains("[y/") || lower.contains("(y/")));
+
+    if is_approval {
+        let non_empty: Vec<&str> = bottom_lines
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        let snippet = non_empty
+            .iter()
+            .rev()
+            .take(4)
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join(" | ");
+        return Some(if snippet.is_empty() {
+            "Approval required".to_string()
+        } else {
+            snippet
+        });
     }
     None
+}
+
+pub fn suggested_approval_keys(screen_text: &str) -> Vec<String> {
+    let clean = strip_ansi_codes(screen_text);
+    let lower = clean.to_ascii_lowercase();
+    let options: Vec<_> = lower
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let selected = line.starts_with(['>', '❯', '›', '→']);
+            let option = line.trim_start_matches(['>', '❯', '›', '→', ' ']);
+            let digit_end = option.find(|c: char| !c.is_ascii_digit())?;
+            let (number, label) = option.split_at(digit_end);
+            if number.is_empty() || !label.starts_with(['.', ')']) {
+                return None;
+            }
+            Some((number, label[1..].trim(), selected))
+        })
+        .collect();
+    if let Some(target) = options.iter().position(|(_, label, _)| {
+        label.starts_with("yes") || label.starts_with("allow") || label.starts_with("trust")
+    }) {
+        let mut keys = if let Some(current) = options.iter().position(|(_, _, selected)| *selected)
+        {
+            let direction = if target < current { "Up" } else { "Down" };
+            vec![direction.to_string(); target.abs_diff(current)]
+        } else {
+            vec![options[target].0.to_string()]
+        };
+        keys.push("Enter".to_string());
+        return keys;
+    }
+
+    if lower.contains("[y/n") || lower.contains("(y/n") || lower.contains("yes/no") {
+        vec!["y".to_string(), "Enter".to_string()]
+    } else if lower.contains("press enter")
+        || lower.contains("hit enter")
+        || lower.contains("enter to continue")
+        || lower.contains("enter to confirm")
+        || lower.contains("press any key")
+        || lower.contains("select a theme")
+        || lower.contains("choose a theme")
+    {
+        vec!["Enter".to_string()]
+    } else {
+        vec!["y".to_string(), "Enter".to_string()]
+    }
 }
 
 pub(crate) fn detect_common_working_status(bottom_lines: &[&str]) -> Option<String> {

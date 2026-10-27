@@ -2,7 +2,11 @@ use anyhow::{anyhow, Result};
 use std::path::Path;
 
 use super::AgentTuiProfile;
-use super::{AgentCliKind, TuiPaneState, TuiSessionConfig};
+use super::{
+    detect_approval_modal, detect_composer_idle_prompt, AgentCliKind, TuiPaneState,
+    TuiSessionConfig,
+};
+use crate::tui_session::screen::{contains_braille_spinner, ScreenSnapshot};
 
 #[derive(Debug, Default, Clone)]
 pub struct GenericTuiProfile {
@@ -24,38 +28,24 @@ impl AgentTuiProfile for GenericTuiProfile {
     }
 
     fn classify_screen(&self, screen_text: &str) -> TuiPaneState {
-        let text = screen_text.trim();
+        let snapshot = ScreenSnapshot::new(screen_text.to_string());
+        let bottom = snapshot.bottom_non_empty_lines(14);
+        if bottom.is_empty() {
+            return TuiPaneState::Initializing;
+        }
 
-        if text.contains("[y/n]")
-            || text.contains("[y/N]")
-            || text.contains("[Y/n]")
-            || text.contains("Confirm:")
-            || text.contains("Proceed?")
-        {
-            let snippet = text
-                .lines()
-                .filter(|l| l.contains('?') || l.contains("[y/"))
-                .take(2)
-                .collect::<Vec<_>>()
-                .join(" ");
+        if let Some(snippet) = detect_approval_modal(&bottom) {
             return TuiPaneState::WaitingApproval {
                 prompt_snippet: snippet,
             };
         }
 
-        let has_spinner = text.contains('⠋')
-            || text.contains('⠙')
-            || text.contains('⠹')
-            || text.contains('⠸')
-            || text.contains('⠼')
-            || text.contains('⠴')
-            || text.contains('⠦')
-            || text.contains('⠧')
-            || text.contains('⠇')
-            || text.contains('⠏')
-            || text.contains('⣷');
+        let text = screen_text.trim();
+        let has_spinner = contains_braille_spinner(text)
+            || text.contains("Working...")
+            || text.contains("Running...");
 
-        if has_spinner || text.contains("Working...") || text.contains("Running...") {
+        if has_spinner {
             return TuiPaneState::Working {
                 status_line: Some("Working...".to_string()),
             };
@@ -65,7 +55,8 @@ impl AgentTuiProfile for GenericTuiProfile {
             if text.contains(pattern) {
                 return TuiPaneState::IdlePrompt;
             }
-        } else if text.contains("\n>")
+        } else if detect_composer_idle_prompt(&bottom)
+            || text.contains("\n>")
             || text.starts_with('>')
             || text.ends_with('>')
             || text.ends_with("$ ")
@@ -73,11 +64,7 @@ impl AgentTuiProfile for GenericTuiProfile {
             return TuiPaneState::IdlePrompt;
         }
 
-        if text.is_empty() {
-            TuiPaneState::Initializing
-        } else {
-            TuiPaneState::IdlePrompt
-        }
+        TuiPaneState::Initializing
     }
 
     fn strip_chrome(&self, captured_scrollback: &str, submitted_prompt: &str) -> String {

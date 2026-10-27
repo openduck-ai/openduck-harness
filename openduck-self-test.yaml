@@ -13,6 +13,7 @@ activities:
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
   - Validate per-session HTTPS proxy configuration for TUI agents
+  - Validate automatic startup confirmations and directory trust for TUI agents
   - Validate project task FIFO queueing, cancellation, and isolation between projects
   - Validate default project task Git commits and the auto-commit setting
   - Validate recorded TUI agent status in task run Agent Logs
@@ -63,6 +64,16 @@ instructions: |
   This is meta-testing in the truest sense: not unit tests or external test harnesses, but you using your tools
   to validate your own functionality from within your active session. You can only test what you can observe and
   control from inside your running instance - your tools, your behaviors, your error handling, your consistency.
+
+  ## TUI Agent Startup Confirmation Validation
+  Start a TUI agent in a fresh workspace with auto_approve enabled and an initial
+  prompt. Verify that directory trust questions and consecutive startup dialogs
+  are answered before the task is submitted. Cover yes/no prompts and numbered
+  menus where the negative option is initially selected. Verify that a dialog
+  which stays on screen does not receive repeated keystrokes or task text.
+  Repeat with auto_approve disabled: the session must report waiting_approval
+  without sending confirmation keys or the initial task. Use tui_agent_keys to
+  confirm manually, then submit the task with tui_agent_prompt.
 
   ## Project Task Queue Validation
   Start a long-running task A in a project, then start tasks B and C in that project.

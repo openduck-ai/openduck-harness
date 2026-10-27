@@ -8,8 +8,8 @@ use tokio::sync::{Mutex, RwLock};
 
 use super::backend::{MultiplexerBackend, TmuxBackend};
 use super::profiles::{
-    profile_for_kind, AgentCliKind, AgentTuiProfile, TuiPaneState, TuiSessionConfig,
-    TuiSessionSummary, TuiTurnResult,
+    profile_for_kind, suggested_approval_keys, AgentCliKind, AgentTuiProfile, TuiPaneState,
+    TuiSessionConfig, TuiSessionSummary, TuiTurnResult,
 };
 use super::screen::{strip_ansi_codes, QuiescenceDetector};
 
@@ -27,6 +27,63 @@ pub struct TuiSessionHandle {
 }
 
 impl TuiSessionHandle {
+    pub async fn settle_startup(&self, timeout: Duration) -> Result<TuiPaneState> {
+        let deadline = Instant::now() + timeout;
+        let poll_interval = Duration::from_millis(200);
+        let mut approved_screen = None;
+
+        while Instant::now() < deadline {
+            if !self.backend.is_alive(&self.config.session_id).await? {
+                let mut exited = self.exited_at_unix_secs.lock().await;
+                if exited.is_none() {
+                    *exited = Some(chrono::Utc::now().timestamp() as u64);
+                }
+                let state = TuiPaneState::Exited { exit_code: None };
+                *self.last_state.lock().await = state.clone();
+                return Ok(state);
+            }
+
+            let screen = self
+                .backend
+                .capture_screen(&self.config.session_id, false, Some(100))
+                .await?;
+
+            let state = self.profile.classify_screen(&screen);
+            *self.last_screen.lock().await = screen.clone();
+            *self.last_state.lock().await = state.clone();
+
+            match &state {
+                TuiPaneState::IdlePrompt => {
+                    return Ok(state);
+                }
+                TuiPaneState::WaitingApproval { .. } => {
+                    if !self.config.auto_approve {
+                        return Ok(state);
+                    }
+                    let clean_screen = strip_ansi_codes(&screen);
+                    if approved_screen.as_ref() != Some(&clean_screen) {
+                        let keys = suggested_approval_keys(&screen);
+                        self.backend
+                            .send_keys(&self.config.session_id, &keys)
+                            .await?;
+                        approved_screen = Some(clean_screen);
+                    }
+                    tokio::time::sleep(poll_interval).await;
+                }
+                TuiPaneState::Exited { .. } => {
+                    return Ok(state);
+                }
+                TuiPaneState::Working { .. } | TuiPaneState::Initializing => {
+                    approved_screen = None;
+                    tokio::time::sleep(poll_interval).await;
+                }
+            }
+        }
+
+        let final_state = self.last_state.lock().await.clone();
+        Ok(final_state)
+    }
+
     pub async fn send_prompt(
         &self,
         prompt: &str,
@@ -48,12 +105,37 @@ impl TuiSessionHandle {
             .store(chrono::Utc::now().timestamp() as u64, Ordering::Relaxed);
         let start_time = Instant::now();
 
+        let state = self
+            .settle_startup(timeout.min(Duration::from_secs(10)))
+            .await?;
+        match state {
+            TuiPaneState::IdlePrompt => {}
+            TuiPaneState::WaitingApproval { prompt_snippet } => {
+                return Err(anyhow!(
+                    "Session '{}' is waiting for approval: {}. Inspect with tui_agent_read or confirm with tui_agent_keys before sending a prompt.",
+                    self.config.session_id,
+                    prompt_snippet
+                ));
+            }
+            _ => {
+                return Err(anyhow!(
+                    "Session '{}': input composer did not become ready ({state:?}); prompt was not submitted",
+                    self.config.session_id
+                ));
+            }
+        }
+
         if self.config.kind == AgentCliKind::Agy {
             if prompt.trim().is_empty() {
                 return Err(anyhow!("agy prompt must not be empty"));
             }
-            self.wait_for_agy_composer(true, timeout.min(Duration::from_secs(15)))
-                .await?;
+            self.wait_for_agy_composer(
+                true,
+                timeout
+                    .saturating_sub(start_time.elapsed())
+                    .min(Duration::from_secs(15)),
+            )
+            .await?;
         }
 
         // Inject prompt using bracketed paste mode to prevent early submission on newlines
@@ -481,6 +563,16 @@ impl TuiSessionManager {
             .write()
             .await
             .insert(config.session_id.clone(), handle.clone());
+
+        handle
+            .settle_startup(Duration::from_secs(10))
+            .await
+            .with_context(|| {
+                format!(
+                    "Session '{}' started, but startup handling failed; inspect it with tui_agent_read",
+                    config.session_id
+                )
+            })?;
 
         Ok(handle)
     }

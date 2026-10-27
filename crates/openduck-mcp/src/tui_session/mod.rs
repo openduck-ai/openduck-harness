@@ -41,8 +41,8 @@ use std::time::Duration;
 
 pub use backend::{MultiplexerBackend, TmuxBackend};
 pub use profiles::{
-    profile_for_kind, AgentCliKind, AgentTuiProfile, TuiPaneState, TuiSessionConfig,
-    TuiSessionSummary, TuiTurnResult,
+    detect_approval_modal, profile_for_kind, suggested_approval_keys, AgentCliKind,
+    AgentTuiProfile, TuiPaneState, TuiSessionConfig, TuiSessionSummary, TuiTurnResult,
 };
 pub use session::{TuiSessionHandle, TuiSessionManager};
 
@@ -233,27 +233,32 @@ impl TuiAgentServer {
             )
         })?;
 
+        let current_state = handle.last_state.lock().await.clone();
         let mut initial_turn = None;
         if let Some(prompt) = params.initial_prompt {
-            if kind != AgentCliKind::Agy {
-                tokio::time::sleep(Duration::from_millis(800)).await;
-            }
-            match handle
-                .send_prompt(&prompt, true, Duration::from_secs(600))
-                .await
-            {
-                Ok(turn) => initial_turn = Some(turn),
-                Err(e) if kind == AgentCliKind::Agy => {
-                    return Err(ErrorData::new(
-                        ErrorCode::INTERNAL_ERROR,
-                        format!(
-                            "Session '{session_id}' started, but initial prompt submission failed: {e}. Inspect this session before resending."
-                        ),
-                        None,
-                    ));
-                }
-                Err(e) => {
-                    tracing::warn!("Failed initial prompt injection: {e}");
+            if matches!(current_state, TuiPaneState::WaitingApproval { .. }) {
+                tracing::warn!(
+                    "Session '{}' is waiting for approval at startup; holding initial prompt until confirmed",
+                    session_id
+                );
+            } else {
+                match handle
+                    .send_prompt(&prompt, true, Duration::from_secs(600))
+                    .await
+                {
+                    Ok(turn) => initial_turn = Some(turn),
+                    Err(e) if kind == AgentCliKind::Agy => {
+                        return Err(ErrorData::new(
+                            ErrorCode::INTERNAL_ERROR,
+                            format!(
+                                "Session '{session_id}' started, but initial prompt submission failed: {e}. Inspect this session before resending."
+                            ),
+                            None,
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed initial prompt injection: {e}");
+                    }
                 }
             }
         }
@@ -271,7 +276,7 @@ impl TuiAgentServer {
             .await
             .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
         let state = if alive {
-            handle.profile.classify_screen(&screen)
+            handle.last_state.lock().await.clone()
         } else {
             TuiPaneState::Exited { exit_code: None }
         };

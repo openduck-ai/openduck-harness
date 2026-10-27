@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use openduck_harness::runtime::HarnessToolExtension;
 use openduck_harness::types::{ToolCallRequest, ToolCallResponse, ToolDefinition};
-use openduck_mcp::tui_session::{AgentCliKind, TuiSessionConfig, TuiSessionManager};
+use openduck_mcp::tui_session::{AgentCliKind, TuiPaneState, TuiSessionConfig, TuiSessionManager};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -104,9 +104,22 @@ impl TuiAgentHarnessExtension {
         };
 
         let handle = self.manager.start_session(config).await?;
+        let current_state = handle.last_state.lock().await.clone();
 
         if let Some(p) = prompt {
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            if let TuiPaneState::WaitingApproval { ref prompt_snippet } = current_state {
+                return Ok(ToolCallResponse {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    output: format!(
+                        "Session started: {}\nAttach command: {}\nState: Waiting for approval: {}\nNote: Initial prompt was held because confirmation is required. Use tui_agent_keys to approve.",
+                        session_id,
+                        handle.backend.attach_command(&session_id),
+                        prompt_snippet
+                    ),
+                    is_error: false,
+                });
+            }
             let turn = handle
                 .send_prompt(&p, true, Duration::from_secs(timeout_secs))
                 .await?;
@@ -128,13 +141,21 @@ impl TuiAgentHarnessExtension {
                 is_error: false,
             })
         } else {
+            let state_str = match &current_state {
+                TuiPaneState::WaitingApproval { prompt_snippet } => {
+                    format!("Waiting for approval: {prompt_snippet}")
+                }
+                TuiPaneState::IdlePrompt => "Ready".to_string(),
+                other => other.label().to_string(),
+            };
             Ok(ToolCallResponse {
                 id: call.id.clone(),
                 name: call.name.clone(),
                 output: format!(
-                    "Session started: {}\nAttach command: {}\nState: Ready",
+                    "Session started: {}\nAttach command: {}\nState: {}",
                     session_id,
-                    handle.backend.attach_command(&session_id)
+                    handle.backend.attach_command(&session_id),
+                    state_str
                 ),
                 is_error: false,
             })

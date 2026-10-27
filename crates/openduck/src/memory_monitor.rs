@@ -288,7 +288,7 @@ async fn run_monitor(config: MemoryMonitorConfig, scheduler: Option<Arc<dyn Sche
             }
             None => {
                 read_failures = read_failures.saturating_add(1);
-                if read_failures == 1 || read_failures % 20 == 0 {
+                if read_failures == 1 || read_failures.is_multiple_of(20) {
                     tracing::warn!("Harness memory monitor could not read memory statistics");
                 }
                 crate::memory_log::record(crate::memory_log::MemoryLogEntry::new(

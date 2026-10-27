@@ -615,3 +615,232 @@ async fn test_tui_session_reclaim_inherits_harness_config() {
     assert_eq!(handle.config.idle_timeout_mins, Some(45));
     assert_eq!(handle.config.exited_retention_mins, Some(15));
 }
+
+#[test]
+fn test_detects_directory_trust_questions_across_all_profiles() {
+    let trust_screens = [
+        "Quick safety check: Do you trust the authors of the files in this folder? (y/n)",
+        "Do you trust the files in this directory? [y/N]",
+        "Trust the authors of the files in this folder before proceeding: [y/n]",
+        "Workspace trust: Do you trust this folder? (y/n)",
+    ];
+
+    for kind in [
+        AgentCliKind::Claude,
+        AgentCliKind::Codex,
+        AgentCliKind::Grok,
+        AgentCliKind::Agy,
+        AgentCliKind::Custom,
+    ] {
+        let profile = profile_for_kind(kind);
+        for screen in trust_screens {
+            let state = profile.classify_screen(screen);
+            assert!(
+                matches!(state, TuiPaneState::WaitingApproval { .. }),
+                "Profile {:?} failed to detect approval modal in: {}",
+                kind,
+                screen
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_startup_auto_approves_directory_trust_question() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let trust_screen =
+        "Quick safety check: Do you trust the authors of the files in this folder? (y/n)";
+    let ready_screen = "Claude Code\n>";
+
+    backend.preconfigure_pane(
+        "trust_session",
+        trust_screen,
+        vec![ready_screen.to_string()],
+    );
+
+    let manager = TuiSessionManager::with_backend(backend.clone());
+    let handle = manager
+        .start_session(TuiSessionConfig {
+            session_id: "trust_session".to_string(),
+            kind: AgentCliKind::Claude,
+            cwd: dir.path().to_path_buf(),
+            auto_approve: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let pane = backend.get_pane("trust_session").unwrap();
+    assert_eq!(pane.keys_sent, vec!["y", "Enter"]);
+    assert_eq!(*handle.last_state.lock().await, TuiPaneState::IdlePrompt);
+}
+
+#[tokio::test]
+async fn test_startup_auto_approves_multiple_sequential_questions() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let question1 = "Do you trust the authors of the files in this directory? [y/N]";
+    let question2 = "Do you want to enable anonymous error reporting? [Y/n]";
+    let ready_screen = "────────────────────────────────────────────\n>\n────────────────────────────────────────────";
+
+    backend.preconfigure_pane(
+        "multi_questions",
+        question1,
+        vec![question2.to_string(), ready_screen.to_string()],
+    );
+
+    let manager = TuiSessionManager::with_backend(backend.clone());
+    let handle = manager
+        .start_session(TuiSessionConfig {
+            session_id: "multi_questions".to_string(),
+            kind: AgentCliKind::Agy,
+            cwd: dir.path().to_path_buf(),
+            auto_approve: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let pane = backend.get_pane("multi_questions").unwrap();
+    assert_eq!(pane.keys_sent, vec!["y", "Enter", "y", "Enter"]);
+    assert_eq!(*handle.last_state.lock().await, TuiPaneState::IdlePrompt);
+}
+
+#[tokio::test]
+async fn test_startup_retains_waiting_approval_when_auto_approve_disabled() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let trust_screen =
+        "Quick safety check: Do you trust the authors of the files in this folder? (y/n)";
+
+    backend.preconfigure_pane("manual_trust", trust_screen, Vec::new());
+
+    let manager = TuiSessionManager::with_backend(backend.clone());
+    let handle = manager
+        .start_session(TuiSessionConfig {
+            session_id: "manual_trust".to_string(),
+            kind: AgentCliKind::Claude,
+            cwd: dir.path().to_path_buf(),
+            auto_approve: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let pane = backend.get_pane("manual_trust").unwrap();
+    assert!(pane.keys_sent.is_empty());
+    match &*handle.last_state.lock().await {
+        TuiPaneState::WaitingApproval { prompt_snippet } => {
+            assert!(prompt_snippet.contains("trust"));
+        }
+        other => panic!("Expected WaitingApproval, got {:?}", other),
+    }
+
+    let err = handle
+        .send_prompt("fix bug", false, Duration::from_millis(500))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("waiting for approval"));
+}
+
+#[test]
+fn test_approval_keys_select_affirmative_option_in_numbered_menus() {
+    use openduck_mcp::tui_session::profiles::suggested_approval_keys;
+
+    for (screen, expected) in [
+        (
+            "Do you trust this directory?\n❯ 1. Yes, proceed\n  2. No, exit",
+            vec!["Enter"],
+        ),
+        (
+            "Do you trust this directory?\n  1. Yes, proceed\n❯ 2. No, exit\nEnter to confirm",
+            vec!["Up", "Enter"],
+        ),
+        (
+            "Do you trust this directory?\n> 1) No, exit\n  2) Yes, trust this folder",
+            vec!["Down", "Enter"],
+        ),
+        (
+            "Do you trust this directory?\n1. Yes, proceed\n2. No, exit",
+            vec!["1", "Enter"],
+        ),
+        ("Do you trust this directory? [y/N]", vec!["y", "Enter"]),
+        ("Choose a theme", vec!["Enter"]),
+    ] {
+        assert_eq!(suggested_approval_keys(screen), expected, "{screen}");
+    }
+}
+
+#[tokio::test]
+async fn test_unchanged_confirmation_is_not_repeated_or_given_task_text() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_agy_session(backend.clone(), dir.path()).await;
+    backend.set_screen("agy_submit", "Do you trust this directory? [y/N]");
+
+    let error = handle
+        .send_prompt("fix bug", false, Duration::from_millis(700))
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("waiting for approval"));
+    let pane = backend.get_pane("agy_submit").unwrap();
+    assert_eq!(pane.keys_sent, vec!["y", "Enter"]);
+    assert!(pane.pasted.is_empty());
+}
+
+#[tokio::test]
+async fn test_task_is_not_pasted_before_composer_is_ready() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_agy_session(backend.clone(), dir.path()).await;
+    backend.set_screen("agy_submit", "Starting agent...");
+
+    let error = handle
+        .send_prompt("fix bug", false, Duration::from_millis(300))
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("prompt was not submitted"));
+    let pane = backend.get_pane("agy_submit").unwrap();
+    assert!(pane.keys_sent.is_empty());
+    assert!(pane.pasted.is_empty());
+}
+
+#[tokio::test]
+async fn test_numbered_startup_confirmation_is_completed_before_task_submission() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let ready = "────────────────────\n>\n────────────────────";
+    backend.preconfigure_pane(
+        "numbered_trust",
+        "Do you trust this directory?\n  1. Yes, proceed\n❯ 2. No, exit\nEnter to confirm",
+        vec!["Press Enter to continue".to_string(), ready.to_string()],
+    );
+    let manager = TuiSessionManager::with_backend(backend.clone());
+    let handle = manager
+        .start_session(TuiSessionConfig {
+            session_id: "numbered_trust".to_string(),
+            kind: AgentCliKind::Custom,
+            cwd: dir.path().to_path_buf(),
+            extra_args: vec!["mock-agent".to_string()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(*handle.last_state.lock().await, TuiPaneState::IdlePrompt);
+    assert!(backend
+        .get_pane("numbered_trust")
+        .unwrap()
+        .pasted
+        .is_empty());
+
+    handle
+        .send_prompt("fix bug", false, Duration::from_secs(2))
+        .await
+        .unwrap();
+    let pane = backend.get_pane("numbered_trust").unwrap();
+    assert_eq!(pane.keys_sent, vec!["Up", "Enter", "Enter", "Enter"]);
+    assert_eq!(pane.pasted, vec![("fix bug".to_string(), true)]);
+}

@@ -197,15 +197,20 @@ pub async fn start_project_tui_session(
 
     let manager = get_tui_session_manager();
     let handle = manager.start_session(config).await?;
+    let current_state = handle.last_state.lock().await.clone();
 
     let mut initial_turn = None;
     if let Some(prompt) = req.initial_prompt {
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        if let Ok(turn) = handle
-            .send_prompt(&prompt, true, Duration::from_secs(600))
-            .await
-        {
-            initial_turn = Some(turn);
+        if !matches!(
+            current_state,
+            openduck_mcp::tui_session::TuiPaneState::WaitingApproval { .. }
+        ) {
+            if let Ok(turn) = handle
+                .send_prompt(&prompt, true, Duration::from_secs(600))
+                .await
+            {
+                initial_turn = Some(turn);
+            }
         }
     }
 
@@ -222,6 +227,7 @@ pub async fn start_project_tui_session(
         "attachCommand": handle.backend.attach_command(&session_id),
         "initialScreen": screen,
         "initialTurn": initial_turn,
+        "state": current_state,
     }))
 }
 
