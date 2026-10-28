@@ -1573,6 +1573,10 @@ pub struct HarnessRunRequest {
     pub echo: Option<bool>,
     pub record_path: Option<String>,
     pub sandbox: Option<String>,
+    #[serde(default)]
+    pub continue_from_run_id: Option<String>,
+    #[serde(default)]
+    pub extra_turns: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1785,6 +1789,10 @@ pub struct HarnessHistorySummaryDto {
     pub continuable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_subtask_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_subtask_title: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1857,6 +1865,10 @@ struct HarnessRunSummaryPayload {
 struct ContinuationSummaryLite {
     #[serde(default)]
     compacted_summary: String,
+    #[serde(default)]
+    resume_subtask_id: Option<String>,
+    #[serde(default)]
+    subtask_plan: Vec<openduck_harness::SubtaskSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2665,6 +2677,18 @@ fn history_summary_from_payload(
             .as_ref()
             .map(|c| c.compacted_summary.clone())
             .filter(|s| !s.trim().is_empty()),
+        resume_subtask_id: run
+            .continuation
+            .as_ref()
+            .and_then(|c| c.resume_subtask_id.clone()),
+        resume_subtask_title: run.continuation.as_ref().and_then(|c| {
+            c.resume_subtask_id.as_ref().and_then(|rid| {
+                c.subtask_plan
+                    .iter()
+                    .find(|s| &s.id == rid)
+                    .map(|s| s.title.clone())
+            })
+        }),
         provider_stats: run.provider_stats.clone().or_else(|| {
             Some(openduck_harness::telemetry::TaskProviderStats::from_steps(
                 &run.trajectory.steps,
@@ -2777,9 +2801,14 @@ pub fn failed_run_dto(
     error: &str,
     snapshot: Option<HarnessRunResponseDto>,
 ) -> HarnessRunResponseDto {
+    let formatted_error = if error.starts_with("## ❌") || error.starts_with("## ⚠️") {
+        error.to_string()
+    } else {
+        format!("## ❌ Task Failed\n\n**Failure Reason**: {}", error)
+    };
     if let Some(mut s) = snapshot {
         s.status = RunStatus::Failure;
-        s.final_answer = Some(error.to_string());
+        s.final_answer = Some(formatted_error.clone());
         s.trajectory.completed_at = Some(Utc::now());
         s.trajectory.success = false;
         s.partial_thinking = None;
@@ -2788,7 +2817,7 @@ pub fn failed_run_dto(
             task_id,
             &s.trajectory.session_id,
             RunStatus::Failure,
-            Some(error.to_string()),
+            Some(formatted_error.clone()),
             &s.trajectory.steps,
         ));
         s
@@ -2799,7 +2828,7 @@ pub fn failed_run_dto(
             step_count: 0,
             tool_calls_count: 0,
             duration_ms: 0,
-            final_answer: Some(error.to_string()),
+            final_answer: Some(formatted_error),
             trajectory: TrajectoryRecord {
                 session_id: format!("harness-failed-{task_id}"),
                 task_id: task_id.to_string(),
@@ -2862,9 +2891,17 @@ pub fn cancelled_run_dto(
     reason: &str,
     snapshot: Option<HarnessRunResponseDto>,
 ) -> HarnessRunResponseDto {
+    let formatted_reason = if reason.starts_with("## ⚠️") || reason.starts_with("## ❌") {
+        reason.to_string()
+    } else {
+        format!(
+            "## ⚠️ Task Cancelled\n\n**Cancellation Reason**: {}",
+            reason
+        )
+    };
     if let Some(mut s) = snapshot {
         s.status = RunStatus::Cancelled;
-        s.final_answer = Some(reason.to_string());
+        s.final_answer = Some(formatted_reason.clone());
         s.trajectory.completed_at = Some(Utc::now());
         s.trajectory.success = false;
         s.partial_thinking = None;
@@ -2873,7 +2910,7 @@ pub fn cancelled_run_dto(
             task_id,
             &s.trajectory.session_id,
             RunStatus::Cancelled,
-            Some(reason.to_string()),
+            Some(formatted_reason.clone()),
             &s.trajectory.steps,
         ));
         s
@@ -2884,7 +2921,7 @@ pub fn cancelled_run_dto(
             step_count: 0,
             tool_calls_count: 0,
             duration_ms: 0,
-            final_answer: Some(reason.to_string()),
+            final_answer: Some(formatted_reason),
             trajectory: TrajectoryRecord {
                 session_id: format!("harness-cancelled-{task_id}"),
                 task_id: task_id.to_string(),
@@ -2972,6 +3009,24 @@ fn history_summary_from_file(path: &Path) -> Option<HarnessHistorySummaryDto> {
         .unwrap_or(&file_name)
         .to_string();
     let run = p.run_response;
+    let (progress_summary, resume_subtask_id, resume_subtask_title) = match run.continuation {
+        Some(c) => {
+            let sum = if c.compacted_summary.trim().is_empty() {
+                None
+            } else {
+                Some(c.compacted_summary)
+            };
+            let rid = c.resume_subtask_id;
+            let rtitle = rid.as_ref().and_then(|id| {
+                c.subtask_plan
+                    .iter()
+                    .find(|s| &s.id == id)
+                    .map(|s| s.title.clone())
+            });
+            (sum, rid, rtitle)
+        }
+        None => (None, None, None),
+    };
     Some(HarnessHistorySummaryDto {
         id,
         file_name,
@@ -2988,13 +3043,9 @@ fn history_summary_from_file(path: &Path) -> Option<HarnessHistorySummaryDto> {
         project_slug: p.project_slug,
         error: p.error,
         continuable: openduck_harness::is_continuable_status(run.status),
-        progress_summary: run.continuation.and_then(|c| {
-            if c.compacted_summary.trim().is_empty() {
-                None
-            } else {
-                Some(c.compacted_summary)
-            }
-        }),
+        progress_summary,
+        resume_subtask_id,
+        resume_subtask_title,
         provider_stats: run.provider_stats,
     })
 }
@@ -3252,6 +3303,53 @@ fn load_persisted_run(path: &Path) -> Result<HarnessRunResponseDto> {
             &run.trajectory.steps,
             Some(&run.trajectory.policy_name),
         ));
+    }
+    if run.status != RunStatus::Success && run.status != RunStatus::Running {
+        let has_failure_banner = run
+            .final_answer
+            .as_deref()
+            .map(|ans| {
+                ans.contains("Failure Reason")
+                    || ans.contains("Task Incomplete")
+                    || ans.contains("Task Failed")
+            })
+            .unwrap_or(false);
+        if !has_failure_banner {
+            let reason = if let Some(ref cont) = run.continuation {
+                if let Some(ref resume_id) = cont.resume_subtask_id {
+                    let subtask = cont.subtask_plan.iter().find(|s| &s.id == resume_id);
+                    let title = subtask
+                        .map(|s| s.title.as_str())
+                        .unwrap_or(resume_id.as_str());
+                    let max_turns_note = subtask
+                        .and_then(|s| s.max_turns)
+                        .map(|t| format!(" (allocated turn limit: {t} turns)"))
+                        .unwrap_or_default();
+                    format!(
+                        "Subtask \"{title}\" ({resume_id}) was cancelled / interrupted before completion{max_turns_note}."
+                    )
+                } else if let Some(ref err) = cont.error {
+                    if !err.starts_with("### Subtask") && Some(err) != run.final_answer.as_ref() {
+                        err.clone()
+                    } else {
+                        format!("Execution cancelled after {} steps.", run.step_count)
+                    }
+                } else {
+                    format!("Execution cancelled after {} steps.", run.step_count)
+                }
+            } else {
+                format!("Execution cancelled after {} steps.", run.step_count)
+            };
+            let prefix = format!(
+                "## ❌ Task Incomplete / Failed ({:?})\n\n**Failure Reason**: {}\n\n---\n\n",
+                run.status, reason
+            );
+            let combined = match run.final_answer {
+                Some(ans) if !ans.trim().is_empty() => format!("{}{}", prefix, ans),
+                _ => prefix.trim_end_matches("\n\n---\n\n").to_string(),
+            };
+            run.final_answer = Some(combined);
+        }
     }
     Ok(run)
 }
@@ -3810,6 +3908,23 @@ async fn execute_standalone_task(
 
     let max_turns = req.max_turns.unwrap_or(25);
     let task_id = task_spec.id.clone();
+    let continuation = if let Some(run_id) = req.continue_from_run_id.as_deref() {
+        let history = read_history_run(run_id, &[])?;
+        let cp = history.continuation.unwrap_or_else(|| {
+            openduck_harness::checkpoint_from_trajectory(
+                &history.task_id,
+                run_id,
+                history.status,
+                history.final_answer.clone(),
+                &history.trajectory.steps,
+            )
+        });
+        Some(cp)
+    } else {
+        None
+    };
+    let extra_turns = req.extra_turns;
+
     let global_settings =
         openduck_harness::types::discover_global_harness_settings(Some(sandbox.workspace_root()));
     let global_judge = global_settings.judge;
@@ -3829,6 +3944,8 @@ async fn execute_standalone_task(
                 );
                 let mut agent_harness = AgentHarness::new(policy, sandbox)
                     .with_max_turns(max_turns)
+                    .with_continuation(continuation.clone())
+                    .with_extra_turns(extra_turns)
                     .with_tool_extension(tui_ext.clone());
                 if let Some(ref judge) = global_judge {
                     agent_harness = agent_harness.with_judge_engine(
@@ -3850,6 +3967,8 @@ async fn execute_standalone_task(
                 );
                 let mut agent_harness = AgentHarness::new(base_policy, sandbox)
                     .with_max_turns(max_turns)
+                    .with_continuation(continuation.clone())
+                    .with_extra_turns(extra_turns)
                     .with_tool_extension(tui_ext);
                 if let Some(ref judge) = global_judge {
                     agent_harness = agent_harness.with_judge_engine(
@@ -3886,6 +4005,8 @@ async fn execute_standalone_task(
                 );
                 let mut agent_harness = AgentHarness::new(policy, sandbox)
                     .with_max_turns(max_turns)
+                    .with_continuation(continuation.clone())
+                    .with_extra_turns(extra_turns)
                     .with_tool_extension(tui_ext.clone())
                     .with_max_context_tokens(context_limit);
                 if let Some(ref judge) = global_judge {
@@ -3908,6 +4029,8 @@ async fn execute_standalone_task(
                 );
                 let mut agent_harness = AgentHarness::new(base_policy, sandbox)
                     .with_max_turns(max_turns)
+                    .with_continuation(continuation)
+                    .with_extra_turns(extra_turns)
                     .with_tool_extension(tui_ext)
                     .with_max_context_tokens(context_limit);
                 if let Some(ref judge) = global_judge {
@@ -4382,6 +4505,8 @@ mod tests {
             error: None,
             continuable: false,
             progress_summary: None,
+            resume_subtask_id: None,
+            resume_subtask_title: None,
             provider_stats: None,
         }
     }

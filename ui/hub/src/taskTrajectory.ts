@@ -101,28 +101,124 @@ export function parseAgentAction(action: unknown): ParsedAgentAction {
 }
 
 /**
+ * Extracts a concise failure reason from a run's continuation checkpoint or metadata.
+ */
+export function extractFailureReason(run: HarnessRunResponse | null | undefined): string | null {
+  if (!run) return null
+  const statusStr = String(run.status || '').toLowerCase()
+  if (statusStr === 'success' || statusStr === 'running') return null
+
+  // 1. Explicit error field on run
+  if (typeof run.error === 'string' && run.error.trim().length > 0) {
+    const err = run.error.trim()
+    if (!err.startsWith('### Subtask') && err !== run.finalAnswer?.trim()) {
+      return err
+    }
+  }
+
+  // 2. Check continuation.error if present and not a raw subtasks dump or identical to finalAnswer
+  if (
+    run.continuation?.error &&
+    typeof run.continuation.error === 'string' &&
+    run.continuation.error.trim().length > 0
+  ) {
+    const err = run.continuation.error.trim()
+    if (!err.startsWith('### Subtask') && err !== run.finalAnswer?.trim()) {
+      return err
+    }
+  }
+
+  // 3. Check failed subtask in continuation.completedSubtasks
+  const completed = run.continuation?.completedSubtasks as
+    | Array<{
+        subtaskId?: string
+        title?: string
+        status?: unknown
+        summary?: string
+        outputCheck?: string
+        stepsTaken?: number
+        stepCount?: number
+      }>
+    | undefined
+  if (Array.isArray(completed)) {
+    const failedSub = completed.find(
+      s => s.status && String(s.status).toLowerCase() !== 'success',
+    )
+    if (failedSub) {
+      const name = failedSub.title || failedSub.subtaskId || 'subtask'
+      if (failedSub.outputCheck) {
+        return `Subtask "${name}" failed expected output check: ${failedSub.outputCheck}`
+      }
+      if (
+        failedSub.summary &&
+        !failedSub.summary.startsWith('Finished with status:') &&
+        !failedSub.summary.startsWith('### Subtask')
+      ) {
+        return `Subtask "${name}" failed: ${failedSub.summary}`
+      }
+      const steps = failedSub.stepsTaken ?? failedSub.stepCount
+      return `Subtask "${name}" ended with status ${String(failedSub.status)}${steps ? ` after ${steps} steps` : ''}.`
+    }
+  }
+
+  // 4. Check continuation.resumeSubtaskId
+  if (run.continuation?.resumeSubtaskId) {
+    const resumeId = run.continuation.resumeSubtaskId
+    const plan = run.continuation?.subtaskPlan
+    const subtask = Array.isArray(plan)
+      ? plan.find(s => s.id === resumeId)
+      : undefined
+    const name = subtask?.title || resumeId
+    const maxTurns = subtask?.maxTurns
+    return `Subtask "${name}" (${resumeId}) was cancelled / interrupted before completion${maxTurns ? ` (allocated turn limit: ${maxTurns} turns)` : ''}.`
+  }
+
+  // 5. Default based on status and step count
+  const steps = run.stepCount || run.trajectory?.steps?.length || 0
+  if (statusStr === 'cancelled') {
+    return `Execution cancelled after ${steps} steps.`
+  }
+  return `Execution ended with status ${run.status}${steps ? ` after ${steps} steps` : ''}.`
+}
+
+/**
  * Extracts the final agent answer from a HarnessRunResponse,
  * falling back to the last FinalAnswer step in the trajectory if top-level field is absent.
  */
 export function extractFinalAnswer(run: HarnessRunResponse | null | undefined): string | null {
   if (!run) return null
 
+  let ans: string | null = null
   if (typeof run.finalAnswer === 'string' && run.finalAnswer.trim().length > 0) {
-    return run.finalAnswer
-  }
-
-  const steps = run.trajectory?.steps
-  if (Array.isArray(steps)) {
-    for (let i = steps.length - 1; i >= 0; i--) {
-      const step = steps[i] as HarnessTrajectoryStep
-      const parsed = parseAgentAction(step.agentAction)
-      if (parsed.kind === 'final_answer' && parsed.finalAnswer && parsed.finalAnswer.trim().length > 0) {
-        return parsed.finalAnswer
+    ans = run.finalAnswer
+  } else {
+    const steps = run.trajectory?.steps
+    if (Array.isArray(steps)) {
+      for (let i = steps.length - 1; i >= 0; i--) {
+        const step = steps[i] as HarnessTrajectoryStep
+        const parsed = parseAgentAction(step.agentAction)
+        if (parsed.kind === 'final_answer' && parsed.finalAnswer && parsed.finalAnswer.trim().length > 0) {
+          ans = parsed.finalAnswer
+          break
+        }
       }
     }
   }
 
-  return null
+  const statusStr = String(run.status || '').toLowerCase()
+  if (statusStr !== 'success' && statusStr !== 'running') {
+    const reason = extractFailureReason(run)
+    if (reason) {
+      if (!ans) {
+        return `## ❌ Task Incomplete / Failed (${run.status})\n\n**Failure Reason**: ${reason}`
+      }
+      if (!ans.includes('Failure Reason') && !ans.includes('Task Failed') && !ans.includes('Task Incomplete')) {
+        return `## ❌ Task Incomplete / Failed (${run.status})\n\n**Failure Reason**: ${reason}\n\n---\n\n${ans}`
+      }
+    }
+  }
+
+  return ans
 }
 
 /**

@@ -235,7 +235,11 @@ export function HarnessHistoryTable({
                         title="Continue this run"
                       >
                         <FastForward size={13} fill="currentColor" />
-                        <span>Continue</span>
+                        <span>
+                          {item.resumeSubtaskTitle
+                            ? `Resume: ${item.resumeSubtaskTitle}`
+                            : 'Continue'}
+                        </span>
                       </button>
                     )}
                     {isHistoryFollowUpStatus(String(item.status)) && (

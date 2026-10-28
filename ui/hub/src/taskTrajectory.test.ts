@@ -4,6 +4,7 @@ import {
   buildAgentLog,
   calculateTrajectoryMetrics,
   extractFinalAnswer,
+  extractFailureReason,
   extractLlmTelemetry,
   filterAgentLogTurns,
   filterTrajectorySteps,
@@ -243,6 +244,56 @@ test('extractFinalAnswer falls back to latest step FinalAnswer if top-level is a
   }
 
   assert.equal(extractFinalAnswer(run), 'Fallback answer from last step')
+})
+
+test('extractFinalAnswer and extractFailureReason include failure notice for cancelled/failed runs', () => {
+  const cancelledRun: HarnessRunResponse = {
+    taskId: 'task-opencpu-emulator-bugfixes',
+    status: 'Cancelled',
+    stepCount: 291,
+    toolCallsCount: 301,
+    durationMs: 5282976,
+    finalAnswer: '### Subtask 1: explore\nDone',
+    continuation: {
+      taskId: 'task-opencpu-emulator-bugfixes',
+      stopReason: 'cancelled',
+      compactedSummary: 'summary',
+      resumeSubtaskId: 'opencpu-fix-audio',
+      completedSubtasks: [
+        {
+          subtaskId: 'opencpu-explore-structure',
+          title: 'Explore',
+          status: 'Success' as any,
+          modifiedFiles: [],
+          summary: 'Done',
+          stepCount: 19,
+        },
+        {
+          subtaskId: 'opencpu-fix-audio',
+          title: '修复声音播放与录音功能',
+          status: 'Cancelled' as any,
+          modifiedFiles: [],
+          summary: 'Finished with status: Cancelled',
+          stepCount: 291,
+          stepsTaken: 150,
+        },
+      ],
+      subtaskPlan: [
+        { id: 'opencpu-explore-structure', title: 'Explore', description: 'desc', maxTurns: 60 },
+        { id: 'opencpu-fix-audio', title: '修复声音播放与录音功能', description: 'desc', maxTurns: 150 },
+      ],
+    },
+  }
+
+  const reason = extractFailureReason(cancelledRun)
+  assert.match(reason || '', /修复声音播放与录音功能/)
+  assert.match(reason || '', /150/)
+
+  const finalAns = extractFinalAnswer(cancelledRun)
+  assert.match(finalAns || '', /## ❌ Task Incomplete \/ Failed \(Cancelled\)/)
+  assert.match(finalAns || '', /Failure Reason/)
+  assert.match(finalAns || '', /修复声音播放与录音功能/)
+  assert.match(finalAns || '', /### Subtask 1: explore/)
 })
 
 test('formatToolArguments handles objects and strings', () => {

@@ -736,6 +736,8 @@ export interface HarnessHistorySummary {
   error?: string | null
   continuable?: boolean
   progressSummary?: string | null
+  resumeSubtaskId?: string | null
+  resumeSubtaskTitle?: string | null
   providerStats?: TaskProviderStats | null
 }
 

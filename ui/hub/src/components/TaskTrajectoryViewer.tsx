@@ -7,6 +7,7 @@ import type {
 import {
   parseAgentAction,
   extractFinalAnswer,
+  extractFailureReason,
   formatToolArguments,
   extractLlmTelemetry,
   filterTrajectorySteps,
@@ -93,6 +94,9 @@ interface TaskTrajectoryViewerProps {
     taskName?: string,
     runId?: string,
     progressSummary?: string,
+    resumeSubtaskId?: string,
+    resumeSubtaskTitle?: string,
+    failureReason?: string,
   ) => void
 }
 
@@ -720,6 +724,13 @@ export function TaskTrajectoryViewer({
   const telemetryStepCount = steps.filter(step => Boolean(step.llmRequest || step.llmResponse || step.tokenUsage)).length
 
   const finalAnswer = extractFinalAnswer(run)
+  const failureReason = useMemo(() => extractFailureReason(run), [run])
+  const resumeSubtaskId = run.continuation?.resumeSubtaskId
+  const resumeSubtask = useMemo(() => {
+    if (!resumeSubtaskId || !Array.isArray(run.continuation?.subtaskPlan)) return undefined
+    return run.continuation.subtaskPlan.find(s => s.id === resumeSubtaskId)
+  }, [resumeSubtaskId, run.continuation?.subtaskPlan])
+  const resumeSubtaskTitle = resumeSubtask?.title || resumeSubtaskId
   const mentionedFiles = useMemo(() => {
     return finalAnswer ? extractMentionedFiles(finalAnswer) : []
   }, [finalAnswer])
@@ -997,10 +1008,20 @@ export function TaskTrajectoryViewer({
       </div>
 
       {/* Continuable Run Warning Banner */}
-      {viewMode !== 'log' && isContinuableStatus(String(run.status)) && !liveInspect && onContinueTask && onOpenContinueModal && (
+      {isContinuableStatus(String(run.status)) && !liveInspect && onContinueTask && onOpenContinueModal && (
         <div className="cancelled-warning-banner">
           <div className="cancelled-warning-content">
             <h4>⚠️ Incomplete run — continue from saved progress summary</h4>
+            {failureReason && (
+              <p style={{ marginTop: 4, marginBottom: 8, color: '#f87171', fontWeight: 500 }}>
+                <strong>Failure Reason:</strong> {failureReason}
+              </p>
+            )}
+            {resumeSubtaskTitle && (
+              <p style={{ marginTop: 2, marginBottom: 6, color: '#93c5fd' }}>
+                Target Subtask to Resume: <strong style={{ color: '#60a5fa' }}>{resumeSubtaskTitle}</strong> {resumeSubtaskId ? `(${resumeSubtaskId})` : ''}
+              </p>
+            )}
             <p>
               This execution took {metrics.totalSteps} steps and stopped before completion.
               Continue starts a <strong>new</strong> run seeded with the summary below.
@@ -1012,6 +1033,23 @@ export function TaskTrajectoryViewer({
             )}
           </div>
           <div className="cancelled-warning-actions">
+            {resumeSubtaskTitle && (
+              <button
+                type="button"
+                className="btn-action continue-btn continue-btn-highlight"
+                onClick={() => onContinueTask(run.taskId, 25)}
+                disabled={runningTaskId === run.taskId}
+                title={`Resume subtask "${resumeSubtaskTitle}" with +25 turns`}
+                style={{
+                  fontWeight: 600,
+                  background: '#2563eb',
+                  color: '#fff',
+                  padding: '6px 14px',
+                }}
+              >
+                ⏩ Resume Subtask: {resumeSubtaskTitle} (+25 Turns)
+              </button>
+            )}
             {[10, 25, 50, 100].map(n => (
               <button
                 key={n}
@@ -1059,6 +1097,9 @@ export function TaskTrajectoryViewer({
                   undefined,
                   selectedHistoryId ?? undefined,
                   run.continuation?.compactedSummary ?? undefined,
+                  resumeSubtaskId ?? undefined,
+                  resumeSubtaskTitle ?? undefined,
+                  failureReason ?? undefined,
                 )
               }
               disabled={runningTaskId === run.taskId}
@@ -1170,7 +1211,11 @@ export function TaskTrajectoryViewer({
         <div className="trajectory-final-answer">
           <div className="final-answer-header">
             <div className="final-answer-title-group">
-              <h4 className="final-answer-title">🏁 Final Agent Answer</h4>
+              <h4 className="final-answer-title">
+                {String(run.status).toLowerCase() === 'success' || liveInspect
+                  ? '🏁 Final Agent Answer'
+                  : '❌ Task Conclusion / Failure Report'}
+              </h4>
               <span
                 className={`status-badge ${
                   liveInspect ? 'running' : String(run.status).toLowerCase()
@@ -1636,6 +1681,8 @@ export function TaskTrajectoryViewer({
           onSelectDynamicTask={(task, text) => {
             void runWithSelection(task, formatSelectionExtraPrompt('Final Agent Answer', text))
           }}
+          finalAnswer={finalAnswer}
+          failureReason={failureReason}
           continueRequest={
             onContinueTask &&
             !liveInspect &&
@@ -1646,6 +1693,9 @@ export function TaskTrajectoryViewer({
                   summary: isHistoryFollowUpStatus(String(run.status))
                     ? undefined
                     : run.continuation?.compactedSummary,
+                  resumeSubtaskId: resumeSubtaskId ?? undefined,
+                  resumeSubtaskTitle: resumeSubtaskTitle ?? undefined,
+                  failureReason: failureReason ?? undefined,
                   onContinue: (extraTurns, extraPrompt) => onContinueTask(run.taskId, extraTurns, extraPrompt),
                   onSpecifiedTurns:
                     isHistoryFollowUpStatus(String(run.status)) || !onOpenContinueModal
@@ -1657,6 +1707,9 @@ export function TaskTrajectoryViewer({
                             undefined,
                             selectedHistoryId ?? undefined,
                             run.continuation?.compactedSummary ?? undefined,
+                            resumeSubtaskId ?? undefined,
+                            resumeSubtaskTitle ?? undefined,
+                            failureReason ?? undefined,
                           ),
                 }
               : undefined

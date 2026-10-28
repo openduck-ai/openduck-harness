@@ -77,6 +77,14 @@ pub struct RunArgs {
     #[arg(long, default_value_t = 25)]
     pub max_turns: usize,
 
+    /// Resume from a previous incomplete or failed task run (run ID or JSON path)
+    #[arg(long, visible_alias = "resume")]
+    pub continue_from: Option<String>,
+
+    /// Additional turns allocated when continuing a run
+    #[arg(long)]
+    pub extra_turns: Option<usize>,
+
     /// Provider to use (e.g., openai, anthropic, google). Defaults to configured provider.
     #[arg(long)]
     pub provider: Option<String>,
@@ -212,6 +220,26 @@ async fn handle_eval(args: EvalArgs) -> Result<()> {
 }
 
 async fn handle_run(args: RunArgs) -> Result<()> {
+    let (continuation, previous_task_id) = if let Some(ref run_id) = args.continue_from {
+        let history = openduck::control::harness::read_history_run(run_id, &[])?;
+        let cp = history.continuation.unwrap_or_else(|| {
+            openduck_harness::checkpoint_from_trajectory(
+                &history.task_id,
+                run_id,
+                history.status,
+                history.final_answer.clone(),
+                &history.trajectory.steps,
+            )
+        });
+        println!(
+            "Resuming from previous run '{}' (task '{}', stopped at step {})",
+            run_id, cp.task_id, cp.step_count
+        );
+        (Some(cp), Some(history.task_id))
+    } else {
+        (None, None)
+    };
+
     let task_spec = if let Some(task_file) = &args.task {
         if task_file.extension().and_then(|e| e.to_str()) == Some("yaml")
             || task_file.extension().and_then(|e| e.to_str()) == Some("yml")
@@ -228,8 +256,12 @@ async fn handle_run(args: RunArgs) -> Result<()> {
         }
     } else if let Some(ref prompt) = args.prompt {
         TaskSpec::new("cli-task", "cli-adhoc", prompt)
+    } else if let Some(ref tid) = previous_task_id {
+        TaskSpec::new(tid, "cli-resumed", tid)
     } else {
-        anyhow::bail!("Must provide either --task <path> or --prompt <text>");
+        anyhow::bail!(
+            "Must provide either --task <path>, --prompt <text>, or --continue-from <run_id>"
+        );
     };
 
     let sandbox: Box<dyn SandboxDriver> = if args.worktree {
@@ -260,7 +292,10 @@ async fn handle_run(args: RunArgs) -> Result<()> {
             cas_obj.task_spec = Some(task_spec.clone());
             let cassette = Arc::new(Mutex::new(cas_obj));
             let policy = ReplayPolicy::new_record(base_policy, cassette.clone());
-            let mut harness = AgentHarness::new(policy, sandbox).with_max_turns(args.max_turns);
+            let mut harness = AgentHarness::new(policy, sandbox)
+                .with_max_turns(args.max_turns)
+                .with_continuation(continuation)
+                .with_extra_turns(args.extra_turns);
 
             println!(
                 "Running task '{}' with cassette recording (EchoPolicy)...",
@@ -272,12 +307,20 @@ async fn handle_run(args: RunArgs) -> Result<()> {
             cas.save_to_file(&record_path).await?;
             println!("Cassette saved to {:?}", record_path);
             println!("Task finished with status: {:?}", res.status);
+            if let Some(ans) = res.final_answer {
+                println!("\nConclusion:\n{}", ans);
+            }
         } else {
-            let mut harness =
-                AgentHarness::new(base_policy, sandbox).with_max_turns(args.max_turns);
+            let mut harness = AgentHarness::new(base_policy, sandbox)
+                .with_max_turns(args.max_turns)
+                .with_continuation(continuation)
+                .with_extra_turns(args.extra_turns);
             println!("Running task '{}' with EchoPolicy...", task_spec.id);
             let res = harness.run_task(&task_spec).await?;
             println!("Task finished with status: {:?}", res.status);
+            if let Some(ans) = res.final_answer {
+                println!("\nConclusion:\n{}", ans);
+            }
         }
     } else {
         let base_policy =
@@ -300,6 +343,8 @@ async fn handle_run(args: RunArgs) -> Result<()> {
             );
             let mut harness = AgentHarness::new(policy, sandbox)
                 .with_max_turns(args.max_turns)
+                .with_continuation(continuation)
+                .with_extra_turns(args.extra_turns)
                 .with_tool_extension(tui_ext);
 
             let res = harness.run_task(&task_spec).await?;
@@ -309,7 +354,7 @@ async fn handle_run(args: RunArgs) -> Result<()> {
             println!("Cassette saved to {:?}", record_path);
             println!("Task finished with status: {:?}", res.status);
             if let Some(ans) = res.final_answer {
-                println!("Final Answer:\n{}", ans);
+                println!("\nConclusion:\n{}", ans);
             }
         } else {
             let tui_ext = Arc::new(
@@ -319,11 +364,13 @@ async fn handle_run(args: RunArgs) -> Result<()> {
             );
             let mut harness = AgentHarness::new(base_policy, sandbox)
                 .with_max_turns(args.max_turns)
+                .with_continuation(continuation)
+                .with_extra_turns(args.extra_turns)
                 .with_tool_extension(tui_ext);
             let res = harness.run_task(&task_spec).await?;
             println!("Task finished with status: {:?}", res.status);
             if let Some(ans) = res.final_answer {
-                println!("Final Answer:\n{}", ans);
+                println!("\nConclusion:\n{}", ans);
             }
         }
     }

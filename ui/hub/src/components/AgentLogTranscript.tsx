@@ -42,7 +42,10 @@ export interface AgentLogContinueRequest {
   /** `history` replays the saved conversation and appends the typed prompt. */
   mode?: 'summary' | 'history'
   summary?: string
-  onContinue: (extraTurns: number, extraPrompt: string) => Promise<void> | void
+  resumeSubtaskId?: string
+  resumeSubtaskTitle?: string
+  failureReason?: string
+  onContinue: (extraTurns: number, extraPrompt?: string) => Promise<void> | void
   onSpecifiedTurns?: () => void
 }
 
@@ -73,6 +76,8 @@ interface AgentLogTranscriptProps {
   projectSlug?: string | null
   onSelectDynamicTask: (task: DynamicPromptTaskOption, text: string) => void
   continueRequest?: AgentLogContinueRequest
+  finalAnswer?: string | null
+  failureReason?: string | null
 }
 
 function isUnifiedDiff(text: string): boolean {
@@ -134,6 +139,8 @@ export function AgentLogTranscript({
   projectSlug,
   onSelectDynamicTask,
   continueRequest,
+  finalAnswer,
+  failureReason,
 }: AgentLogTranscriptProps) {
   const finalProseRef = useRef<HTMLDivElement>(null)
   const [thinkingChoice, setThinkingChoice] = useState<Record<string, ThinkingOpenChoice>>({})
@@ -293,6 +300,62 @@ export function AgentLogTranscript({
                 >
                   Last »
                 </button>
+              </div>
+            </div>
+          )}
+          {finalAnswer && (!lastFinalId || status.toLowerCase() !== 'success') && (
+            <div
+              className="agent-transcript-conclusion-card"
+              style={{
+                margin: '1.5rem 0',
+                padding: '1.25rem',
+                borderRadius: '8px',
+                border:
+                  status.toLowerCase() === 'cancelled'
+                    ? '1px solid rgba(245, 158, 11, 0.4)'
+                    : '1px solid rgba(239, 68, 68, 0.4)',
+                background: 'rgba(15, 23, 42, 0.6)',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '0.75rem',
+                  flexWrap: 'wrap',
+                  gap: '8px',
+                }}
+              >
+                <span
+                  style={{
+                    fontWeight: 600,
+                    fontSize: '1rem',
+                    color: status.toLowerCase() === 'cancelled' ? '#f59e0b' : '#ef4444',
+                  }}
+                >
+                  {status.toLowerCase() === 'cancelled'
+                    ? '⚠️ Task Incomplete / Cancelled'
+                    : '❌ Task Failed'}
+                </span>
+                {failureReason && (
+                  <span
+                    style={{
+                      fontSize: '0.875rem',
+                      color: '#f87171',
+                      fontWeight: 500,
+                    }}
+                  >
+                    Failure Reason: {failureReason}
+                  </span>
+                )}
+              </div>
+              <div className="conclusion-card-markdown">
+                <MarkdownPreview
+                  content={finalAnswer}
+                  resolveImageUrl={resolveImageUrl}
+                  onOpenFile={onOpenFile}
+                />
               </div>
             </div>
           )}
@@ -951,8 +1014,9 @@ function AgentLogDock({
     const historyFollowUp = continueRequest.mode === 'history'
     const send = () => {
       const text = draft.trim()
-      if (!text || continueRequest.busy) return
-      void continueRequest.onContinue(extraTurns, text)
+      if (historyFollowUp && !text) return
+      if (continueRequest.busy) return
+      void continueRequest.onContinue(extraTurns, text || undefined)
     }
     return (
       <div className="agent-log-dock">
@@ -966,7 +1030,24 @@ function AgentLogDock({
             </div>
           </div>
         )}
-        {!historyFollowUp && summary && noteOpen && (
+        {!historyFollowUp && (continueRequest.failureReason || continueRequest.resumeSubtaskTitle) && noteOpen && (
+          <div className="agent-continue-note" style={{ borderLeft: '3px solid #f87171' }}>
+            <div className="agent-continue-note-head">
+              <p style={{ color: '#f87171', fontWeight: 600 }}>
+                {continueRequest.failureReason ? `⚠️ ${continueRequest.failureReason}` : '⚠️ Incomplete Run'}
+              </p>
+              <button type="button" className="agent-note-dismiss" onClick={() => setNoteOpen(false)}>
+                Dismiss
+              </button>
+            </div>
+            {continueRequest.resumeSubtaskTitle && (
+              <p style={{ fontSize: '0.85rem', color: '#93c5fa', marginTop: 4 }}>
+                Target Subtask to Resume: <strong>{continueRequest.resumeSubtaskTitle}</strong> {continueRequest.resumeSubtaskId ? `(${continueRequest.resumeSubtaskId})` : ''}
+              </p>
+            )}
+          </div>
+        )}
+        {!historyFollowUp && summary && noteOpen && !continueRequest.failureReason && !continueRequest.resumeSubtaskTitle && (
           <div className="agent-continue-note">
             <div className="agent-continue-note-head">
               <p>This run stopped before completion. A follow-up starts a new run from the saved summary.</p>
@@ -989,7 +1070,13 @@ function AgentLogDock({
           <textarea
             value={draft}
             onChange={event => setDraft(event.target.value)}
-            placeholder={historyFollowUp ? 'Continue with a new prompt' : 'Send a follow-up'}
+            placeholder={
+              historyFollowUp
+                ? 'Continue with a new prompt'
+                : continueRequest.resumeSubtaskTitle
+                  ? `Optional prompt before resuming "${continueRequest.resumeSubtaskTitle}"`
+                  : 'Optional prompt / notes before resuming'
+            }
             rows={2}
             disabled={continueRequest.busy}
             onKeyDown={event => {
@@ -1022,8 +1109,24 @@ function AgentLogDock({
                 Specified turns
               </button>
             )}
-            <button type="submit" className="agent-continue-btn" disabled={continueRequest.busy || draft.trim().length === 0}>
-              Continue
+            {continueRequest.resumeSubtaskTitle && (
+              <button
+                type="button"
+                className="agent-continue-btn"
+                style={{ background: '#2563eb', color: '#fff', fontWeight: 600 }}
+                onClick={() => void continueRequest.onContinue(extraTurns, draft.trim() || undefined)}
+                disabled={continueRequest.busy}
+                title={`Resume subtask "${continueRequest.resumeSubtaskTitle}" with +${extraTurns} turns`}
+              >
+                ⏩ Resume Subtask: {continueRequest.resumeSubtaskTitle} (+{extraTurns})
+              </button>
+            )}
+            <button
+              type="submit"
+              className="agent-continue-btn"
+              disabled={continueRequest.busy || (historyFollowUp && draft.trim().length === 0)}
+            >
+              {historyFollowUp ? 'Send' : continueRequest.resumeSubtaskTitle ? `Continue (+${extraTurns})` : `Resume (+${extraTurns})`}
             </button>
           </div>
         </form>

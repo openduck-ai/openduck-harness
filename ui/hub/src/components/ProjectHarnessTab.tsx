@@ -322,6 +322,9 @@ export function ProjectHarnessTab({
     taskName?: string
     previousSteps: number
     progressSummary?: string
+    resumeSubtaskId?: string
+    resumeSubtaskTitle?: string
+    failureReason?: string
   } | null>(null)
   const [continueTurnsMode, setContinueTurnsMode] = useState<'additional' | 'total'>('additional')
   const [continueTurnsInput, setContinueTurnsInput] = useState<number>(25)
@@ -1530,6 +1533,9 @@ export function ProjectHarnessTab({
     taskName?: string,
     runId?: string,
     progressSummary?: string,
+    resumeSubtaskId?: string,
+    resumeSubtaskTitle?: string,
+    failureReason?: string,
   ) => {
     setContinueModalTask({
       taskId,
@@ -1537,6 +1543,9 @@ export function ProjectHarnessTab({
       taskName: taskName || tasks.find(t => t.id === taskId)?.name || taskId,
       previousSteps,
       progressSummary,
+      resumeSubtaskId,
+      resumeSubtaskTitle,
+      failureReason,
     })
     setContinueTurnsMode('additional')
     setContinueTurnsInput(25)
@@ -2753,13 +2762,20 @@ export function ProjectHarnessTab({
                                         t.name,
                                         latest.id,
                                         latest.progressSummary ?? undefined,
+                                        latest.resumeSubtaskId ?? undefined,
+                                        latest.resumeSubtaskTitle ?? undefined,
+                                        latest.error ?? undefined,
                                       )
                                     }
                                     disabled={isTaskBusy}
                                     title="Continue task seeded with progress from previous run"
                                   >
                                     <FastForward size={13} fill="currentColor" />
-                                    <span>Continue</span>
+                                    <span>
+                                      {latest.resumeSubtaskTitle
+                                        ? `Resume: ${latest.resumeSubtaskTitle}`
+                                        : 'Continue'}
+                                    </span>
                                   </button>
                                   {isHistoryFollowUpStatus(String(latest.status)) && (
                                     <button
@@ -3485,6 +3501,9 @@ export function ProjectHarnessTab({
                   historyTaskTitle(item, taskNamesById),
                   item.id,
                   item.progressSummary ?? undefined,
+                  item.resumeSubtaskId ?? undefined,
+                  item.resumeSubtaskTitle ?? undefined,
+                  item.error ?? undefined,
                 )
               }
             />
@@ -3612,6 +3631,20 @@ export function ProjectHarnessTab({
                     ) : null}
                   </span>
                 </div>
+                {continueModalTask.failureReason && (
+                  <div className="continue-modal-info-row" style={{ color: '#f87171' }}>
+                    <span className="info-label" style={{ color: '#f87171' }}>Failure Reason:</span>
+                    <span className="info-value" style={{ fontWeight: 500 }}>{continueModalTask.failureReason}</span>
+                  </div>
+                )}
+                {continueModalTask.resumeSubtaskTitle && (
+                  <div className="continue-modal-info-row" style={{ background: 'rgba(37, 99, 235, 0.12)', padding: '6px 10px', borderRadius: 6, border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                    <span className="info-label" style={{ color: '#60a5fa' }}>Resume Subtask:</span>
+                    <span className="info-value" style={{ fontWeight: 600, color: '#93c5fd' }}>
+                      {continueModalTask.resumeSubtaskTitle} {continueModalTask.resumeSubtaskId ? `(${continueModalTask.resumeSubtaskId})` : ''}
+                    </span>
+                  </div>
+                )}
                 {continueModalTask.progressSummary && (
                   <div className="continuation-summary-panel">
                     <MarkdownPreview content={continueModalTask.progressSummary} />
@@ -3785,6 +3818,12 @@ export function ProjectHarnessTab({
                 >
                   {runningTaskId === continueModalTask.taskId ? (
                     '⏳ Launching…'
+                  ) : continueModalTask.resumeSubtaskTitle ? (
+                    `⏩ Resume Subtask: ${continueModalTask.resumeSubtaskTitle} (+${
+                      continueTurnsMode === 'additional'
+                        ? Math.max(1, continueTurnsInput)
+                        : Math.max(1, continueTurnsInput - continueModalTask.previousSteps)
+                    } Turns)`
                   ) : (
                     `⏩ Continue Task (${
                       continueTurnsMode === 'additional'

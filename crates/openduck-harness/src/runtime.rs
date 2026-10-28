@@ -1203,11 +1203,49 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             let _ = logger.log_trajectory(&trajectory).await;
         }
 
+        let (explicit_final_answer, failure_reason) = if status != RunStatus::Success {
+            let reason = if status == RunStatus::Cancelled && trajectory.steps.len() >= max_steps {
+                format!(
+                    "Reached maximum turn limit ({} turns) without completing or returning a final answer.",
+                    max_steps
+                )
+            } else if let Some(ref ans) = final_answer {
+                ans.clone()
+            } else {
+                format!(
+                    "Task stopped with status {:?} after {} turns.",
+                    status,
+                    trajectory.steps.len()
+                )
+            };
+            let conclusion = if let Some(ref ans) = final_answer {
+                if ans.contains("Failure Reason")
+                    || ans.contains("Task Failed")
+                    || ans.contains("Task Incomplete")
+                {
+                    ans.clone()
+                } else {
+                    format!(
+                        "## ❌ Task Failed: Status {:?}\n\n**Failure Reason**: {}\n\n---\n\n{}",
+                        status, reason, ans
+                    )
+                }
+            } else {
+                format!(
+                    "## ❌ Task Failed: Status {:?}\n\n**Failure Reason**: {}",
+                    status, reason
+                )
+            };
+            (Some(conclusion), Some(reason))
+        } else {
+            (final_answer, None)
+        };
+
         let mut continuation = build_continuation_checkpoint(
             task,
             session_id,
             status,
-            final_answer.as_deref(),
+            failure_reason.as_deref(),
             &trajectory.steps,
             Vec::new(),
             Vec::new(),
@@ -1221,7 +1259,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             step_count: trajectory.steps.len(),
             tool_calls_count: total_tool_calls,
             duration_ms,
-            final_answer,
+            final_answer: explicit_final_answer,
             trajectory,
             continuation,
             provider_stats: Some(provider_stats),
@@ -1255,8 +1293,27 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             .unwrap_or_default();
         let mut cumulative_steps: Vec<TrajectoryStep> = Vec::new();
         let mut total_tool_calls = 0;
-        let mut final_answers = Vec::new();
+        let mut final_answers: Vec<String> = previous_outcomes
+            .iter()
+            .map(|outcome| {
+                if let Some(pos) = subtasks.iter().position(|s| s.id == outcome.subtask_id) {
+                    format!(
+                        "### Subtask {} ({}): {}\n{}",
+                        pos + 1,
+                        outcome.subtask_id,
+                        outcome.title,
+                        outcome.summary
+                    )
+                } else {
+                    format!(
+                        "### Subtask ({}): {}\n{}",
+                        outcome.subtask_id, outcome.title, outcome.summary
+                    )
+                }
+            })
+            .collect();
         let mut overall_status = RunStatus::Success;
+        let mut overall_failure_info: Option<(usize, String, String)> = None;
 
         for (subtask_idx, subtask) in subtasks.iter().enumerate() {
             if subtask_idx < resume_idx {
@@ -1341,7 +1398,48 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                 }
             }
 
-            if let Some(ref ans) = subtask_answer {
+            let subtask_failure_reason = if subtask_status != RunStatus::Success {
+                let reason = if let Some(ref output_err) = output_check {
+                    format!("Expected output verification failed:\n{}", output_err)
+                } else if subtask_status == RunStatus::Cancelled && steps_taken >= subtask_max_turns
+                {
+                    format!(
+                        "Reached maximum turn limit ({} turns) without completing or returning a final answer.",
+                        subtask_max_turns
+                    )
+                } else if let Some(ref ans) = subtask_answer {
+                    ans.clone()
+                } else {
+                    format!(
+                        "Subtask ended with status {:?} after {} turns (outcome: {}).",
+                        subtask_status, steps_taken, outcome_summary
+                    )
+                };
+                Some(reason)
+            } else {
+                None
+            };
+
+            if let Some(ref reason) = subtask_failure_reason {
+                let subtask_content = if let Some(ref ans) = subtask_answer {
+                    format!(
+                        "{}\n\n❌ **Subtask Status: {:?}**\n**Failure Reason**: {}",
+                        ans, subtask_status, reason
+                    )
+                } else {
+                    format!(
+                        "❌ **Subtask Status: {:?}**\n**Failure Reason**: {}",
+                        subtask_status, reason
+                    )
+                };
+                final_answers.push(format!(
+                    "### Subtask {} ({}): {}\n{}",
+                    subtask_idx + 1,
+                    subtask.id,
+                    subtask.title,
+                    subtask_content
+                ));
+            } else if let Some(ref ans) = subtask_answer {
                 final_answers.push(format!(
                     "### Subtask {} ({}): {}\n{}",
                     subtask_idx + 1,
@@ -1364,6 +1462,11 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
 
             if subtask_status != RunStatus::Success {
                 overall_status = subtask_status;
+                overall_failure_info = Some((
+                    subtask_idx + 1,
+                    subtask.id.clone(),
+                    subtask_failure_reason.unwrap_or_default(),
+                ));
                 break;
             }
         }
@@ -1389,16 +1492,37 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         }
 
         let final_combined_answer = if final_answers.is_empty() {
-            None
+            if let Some((idx, ref id, ref reason)) = overall_failure_info {
+                Some(format!(
+                    "## ❌ Task Incomplete / Failed ({:?})\n\n**Failure Reason**: Subtask {} (`{}`) failed: {}",
+                    overall_status, idx, id, reason
+                ))
+            } else if overall_status != RunStatus::Success {
+                Some(format!(
+                    "## ❌ Task Incomplete / Failed ({:?})\n\n**Failure Reason**: Task stopped with status {:?}.",
+                    overall_status, overall_status
+                ))
+            } else {
+                None
+            }
+        } else if let Some((idx, ref id, ref reason)) = overall_failure_info {
+            Some(format!(
+                "## ❌ Task Incomplete / Failed ({:?})\n\n**Failure Reason**: Subtask {} (`{}`) failed: {}\n\n---\n\n{}",
+                overall_status, idx, id, reason, final_answers.join("\n\n")
+            ))
         } else {
             Some(final_answers.join("\n\n"))
         };
+
+        let checkpoint_error = overall_failure_info
+            .as_ref()
+            .map(|(_, id, reason)| format!("Subtask `{id}` failed: {reason}"));
 
         let mut continuation = build_continuation_checkpoint(
             task,
             session_id,
             overall_status,
-            final_combined_answer.as_deref(),
+            checkpoint_error.as_deref(),
             &trajectory.steps,
             previous_outcomes,
             subtasks.to_vec(),
@@ -1818,6 +1942,12 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
 
             if step_idx == max_steps - 1 {
                 status = RunStatus::Cancelled;
+                if final_answer.is_none() {
+                    final_answer = Some(format!(
+                        "Reached maximum turn limit ({} turns) without completing or returning a final answer.",
+                        max_steps
+                    ));
+                }
             }
         }
 

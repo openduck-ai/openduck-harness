@@ -769,11 +769,16 @@ pub async fn launch_project_task(
                     }
                     _ => crate::notification::TaskStatus::Failed,
                 };
+                let error_message = if st != crate::notification::TaskStatus::Succeeded {
+                    dto.final_answer.clone()
+                } else {
+                    None
+                };
                 (
                     st,
                     (dto.duration_ms / 1000) as u64,
                     dto.final_answer.clone(),
-                    None,
+                    error_message,
                 )
             }
             Err(e) => {

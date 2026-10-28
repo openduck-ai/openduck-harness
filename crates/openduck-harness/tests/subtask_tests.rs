@@ -450,3 +450,191 @@ async fn test_sequential_subtasks_stop_when_expected_output_is_missing() {
         "the failed output check is stored on the subtask outcome"
     );
 }
+
+#[tokio::test]
+async fn test_failed_subtask_writes_explicit_failure_reason_in_conclusion() {
+    struct HangsOnSecondPolicy;
+
+    #[async_trait]
+    impl AgentPolicy for HangsOnSecondPolicy {
+        fn name(&self) -> &str {
+            "hangs-on-second"
+        }
+        async fn step(
+            &mut self,
+            context: &HarnessContextView,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<AgentAction> {
+            let active = context
+                .messages
+                .iter()
+                .find_map(|m| {
+                    m.content
+                        .lines()
+                        .find(|l| l.starts_with("## Current Subtask"))
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_default();
+            if active.contains("Subtask (1/2)") {
+                Ok(AgentAction::FinalAnswer(
+                    "Subtask 1 completed successfully".into(),
+                ))
+            } else {
+                // In subtask 2, call a tool repeatedly to exhaust turn budget
+                Ok(AgentAction::CallTools(vec![ToolCallRequest {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "dummy.txt"}),
+                    error: None,
+                    metadata: None,
+                }]))
+            }
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let sandbox = LocalSandbox::new(dir.path().to_path_buf());
+    let mut harness = AgentHarness::new(HangsOnSecondPolicy, sandbox);
+    let subtasks = vec![
+        SubtaskSpec::new("st-1", "Setup Base", "Setup base").with_max_turns(5),
+        SubtaskSpec::new("st-2", "Audio Module", "Fix audio").with_max_turns(3),
+    ];
+    let task = TaskSpec::new("task-hang", "test", "Fix audio bugs").with_subtasks(subtasks);
+    let result = harness.run_task(&task).await.unwrap();
+
+    assert_eq!(result.status, RunStatus::Cancelled);
+    let conclusion = result
+        .final_answer
+        .expect("conclusion must be present on failure");
+    assert!(
+        conclusion.contains("## ❌ Task Incomplete / Failed (Cancelled)"),
+        "conclusion must contain failure banner: {conclusion}"
+    );
+    assert!(
+        conclusion.contains("Failure Reason"),
+        "conclusion must state Failure Reason: {conclusion}"
+    );
+    assert!(
+        conclusion.contains("Audio Module") || conclusion.contains("st-2"),
+        "conclusion must identify the failing subtask: {conclusion}"
+    );
+    assert!(
+        conclusion.contains("Reached maximum turn limit (3 turns)"),
+        "conclusion must specify that max turn limit was exhausted: {conclusion}"
+    );
+    assert!(
+        conclusion.contains("Subtask 1 completed successfully"),
+        "conclusion must retain prior successful subtask answers: {conclusion}"
+    );
+}
+
+#[tokio::test]
+async fn test_continue_from_checkpoint_preserves_earlier_subtask_conclusions() {
+    struct ResumeAndFinishPolicy;
+
+    #[async_trait]
+    impl AgentPolicy for ResumeAndFinishPolicy {
+        fn name(&self) -> &str {
+            "resume-and-finish"
+        }
+        async fn step(
+            &mut self,
+            _context: &HarnessContextView,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<AgentAction> {
+            Ok(AgentAction::FinalAnswer(
+                "Subtask 2 completed on resume".into(),
+            ))
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let sandbox = LocalSandbox::new(dir.path().to_path_buf());
+    let subtasks = vec![
+        SubtaskSpec::new("st-1", "Button Fix", "Fix button"),
+        SubtaskSpec::new("st-2", "Audio Fix", "Fix audio"),
+    ];
+    let checkpoint = openduck_harness::ContinuationCheckpoint {
+        task_id: "task-audio".into(),
+        source_job_id: "job-orig".into(),
+        created_at: chrono::Utc::now(),
+        stop_reason: openduck_harness::ContinuationStopReason::Cancelled,
+        error: Some("Reached turn limit".into()),
+        compacted_summary: "Subtask 1 was done".into(),
+        completed_subtasks: vec![openduck_harness::SubtaskOutcome {
+            subtask_id: "st-1".into(),
+            title: "Button Fix".into(),
+            status: RunStatus::Success,
+            modified_files: vec!["src/btn.py".into()],
+            summary: "Button relief displacement fixed".into(),
+            step_count: 5,
+            steps_taken: 5,
+            output_check: None,
+        }],
+        resume_subtask_id: Some("st-2".into()),
+        subtask_plan: subtasks.clone(),
+        step_count: 5,
+        advisor_sessions: Default::default(),
+    };
+
+    let mut harness = AgentHarness::new(ResumeAndFinishPolicy, sandbox)
+        .with_continuation(Some(checkpoint))
+        .with_extra_turns(Some(10));
+    let task = TaskSpec::new("task-audio", "test", "Fix button and audio").with_subtasks(subtasks);
+    let result = harness.run_task(&task).await.unwrap();
+
+    assert_eq!(result.status, RunStatus::Success);
+    let conclusion = result.final_answer.expect("conclusion must exist");
+    assert!(
+        conclusion.contains("Button relief displacement fixed"),
+        "conclusion must preserve earlier subtask summary: {conclusion}"
+    );
+    assert!(
+        conclusion.contains("Subtask 2 completed on resume"),
+        "conclusion must contain new subtask summary: {conclusion}"
+    );
+}
+
+#[tokio::test]
+async fn test_single_task_failure_includes_explicit_reason_in_conclusion() {
+    struct InfiniteToolPolicy;
+
+    #[async_trait]
+    impl AgentPolicy for InfiniteToolPolicy {
+        fn name(&self) -> &str {
+            "infinite-tool"
+        }
+        async fn step(
+            &mut self,
+            _context: &HarnessContextView,
+            _tools: &[ToolDefinition],
+        ) -> anyhow::Result<AgentAction> {
+            Ok(AgentAction::CallTools(vec![ToolCallRequest {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "file.txt"}),
+                error: None,
+                metadata: None,
+            }]))
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let sandbox = LocalSandbox::new(dir.path().to_path_buf());
+    let mut harness = AgentHarness::new(InfiniteToolPolicy, sandbox).with_max_turns(3);
+    let task = TaskSpec::new("task-single-burn", "test", "Fix bug in single task").with_turns(3);
+    let result = harness.run_task(&task).await.unwrap();
+
+    assert_eq!(result.status, RunStatus::Cancelled);
+    let conclusion = result
+        .final_answer
+        .expect("conclusion must exist on failure");
+    assert!(
+        conclusion.contains("## ❌ Task Failed: Status Cancelled"),
+        "conclusion must contain failure banner: {conclusion}"
+    );
+    assert!(
+        conclusion.contains("Reached maximum turn limit (3 turns)"),
+        "conclusion must specify turn limit was reached: {conclusion}"
+    );
+}
