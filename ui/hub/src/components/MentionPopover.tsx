@@ -15,6 +15,7 @@ import {
   Paperclip,
   Loader2,
   CornerDownLeft,
+  ListTodo,
 } from 'lucide-react'
 import {
   filterAndRankMentionItems,
@@ -45,6 +46,8 @@ function renderItemIcon(item: MentionDisplayItem) {
   switch (item.itemType) {
     case 'Attachment':
       return <Paperclip size={14} className="mention-type-icon attachment" />
+    case 'Task':
+      return <ListTodo size={14} className="mention-type-icon task" />
     case 'Agent':
       return <Sparkles size={14} className="mention-type-icon agent" />
     case 'Rule':
@@ -212,6 +215,8 @@ export const MentionPopover = forwardRef<MentionPopoverHandle, MentionPopoverPro
       switch (type) {
         case 'Attachment':
           return 'attached'
+        case 'Task':
+          return 'task'
         case 'Agent':
           return 'agent'
         case 'Rule':

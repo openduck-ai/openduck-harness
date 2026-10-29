@@ -1080,7 +1080,7 @@ impl GooseAcpAgent {
         goose_extensions: Option<Vec<GooseExtension>>,
         recipe_extensions: Option<&[ExtensionConfig]>,
     ) -> Result<ExtensionData, agent_client_protocol::Error> {
-        let extensions = initial_session_extensions(
+        let mut extensions = initial_session_extensions(
             config,
             &self.builtin_selection,
             &session.working_dir,
@@ -1088,6 +1088,12 @@ impl GooseAcpAgent {
             goose_extensions,
             recipe_extensions,
         )?;
+        if session.project_id.is_some() {
+            push_or_replace_extension(
+                &mut extensions,
+                builtin_to_extension_config("project_tasks"),
+            );
+        }
         enabled_extensions_data(session, extensions)
     }
 

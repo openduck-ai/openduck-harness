@@ -12,6 +12,7 @@ import {
   mergeMentionItems,
   scanProjectFiles,
   searchProjectFiles,
+  fetchTaskMentions,
   type MentionDisplayItem,
   type DismissedMention,
 } from './mention.ts'
@@ -360,5 +361,58 @@ test('searchProjectFiles maps backend search results to mention items', async ()
   assert.equal(results[0].itemType, 'File')
   assert.equal(results[0].insertText, '@2026-04-16-claude-kyc-script.md ')
   assert.equal(results[1].name, '2026-04-17-claude-kyc-v2-script.md')
+})
+
+test('fetchTaskMentions maps project tasks to Task mention items', async () => {
+  const mockApi = {
+    listProjectTasks: async (slug: string) => {
+      assert.equal(slug, 'my-project')
+      return [
+        {
+          id: 'task-build-index',
+          name: 'Build Search Index',
+          promptPreview: 'Run build index pipeline',
+        },
+        {
+          id: 'task-check-lint',
+          name: '',
+          promptPreview: 'Run cargo clippy',
+        },
+      ]
+    },
+  }
+
+  const results = await fetchTaskMentions(mockApi, 'my-project')
+  assert.equal(results.length, 2)
+  assert.equal(results[0].name, 'Build Search Index')
+  assert.equal(results[0].itemType, 'Task')
+  assert.equal(results[0].insertText, '@task:task-build-index ')
+  assert.equal(results[0].extra, 'Task (task-build-index)')
+  assert.equal(results[1].name, 'task-check-lint')
+  assert.equal(results[1].itemType, 'Task')
+  assert.equal(results[1].insertText, '@task:task-check-lint ')
+})
+
+test('filterAndRankMentionItems prioritizes Task mentions appropriately', () => {
+  const items: MentionDisplayItem[] = [
+    {
+      name: 'build-index',
+      extra: 'Build task',
+      itemType: 'Task',
+      relativePath: 'task-build',
+      insertText: '@task:task-build ',
+    },
+    {
+      name: 'build-index',
+      extra: 'crates/build.rs',
+      itemType: 'File',
+      relativePath: 'crates/build.rs',
+      insertText: '@crates/build.rs ',
+    },
+  ]
+
+  const results = filterAndRankMentionItems(items, 'build')
+  assert.equal(results.length, 2)
+  assert.equal(results[0].itemType, 'Task')
 })
 

@@ -811,6 +811,7 @@ export interface HarnessRunResponse {
   toolCallsCount: number
   durationMs: number
   finalAnswer?: string | null
+  error?: string | null
   trajectory: HarnessTrajectoryRecord
   recordedCassettePath?: string | null
   systemPrompt?: string | null

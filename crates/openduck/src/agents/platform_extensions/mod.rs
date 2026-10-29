@@ -6,6 +6,7 @@ pub mod code_execution;
 pub mod developer;
 pub mod ext_manager;
 pub mod orchestrator;
+pub mod project_tasks;
 pub mod scheduler;
 pub mod summarize;
 pub mod summon;
@@ -218,6 +219,23 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 client_factory: |ctx| {
                     Some(Box::new(crate::skills::SkillsClient::new(ctx).unwrap()))
+                },
+            },
+        );
+
+        map.insert(
+            project_tasks::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: project_tasks::EXTENSION_NAME,
+                display_name: "Project Tasks",
+                description: "View, create, modify, and start project tasks in the current project",
+                default_enabled: true,
+                unprefixed_tools: false,
+                hidden: false,
+                client_factory: |ctx| {
+                    Some(Box::new(
+                        project_tasks::ProjectTasksClient::new(ctx).unwrap(),
+                    ))
                 },
             },
         );

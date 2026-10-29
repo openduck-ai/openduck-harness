@@ -1,7 +1,7 @@
 import type { createApi, ProjectFileEntry, FileListResponse } from '@aaif/goose-hub-core'
 import { getSourcesClient, listRuleSources } from './acp.ts'
 
-export type MentionItemType = 'Attachment' | 'Agent' | 'File' | 'Directory' | 'Rule'
+export type MentionItemType = 'Attachment' | 'Task' | 'Agent' | 'File' | 'Directory' | 'Rule'
 
 export interface MentionDisplayItem {
   name: string
@@ -75,10 +75,11 @@ export function debounce<Args extends unknown[]>(
 
 const typeOrder: Record<MentionItemType, number> = {
   Attachment: 0,
-  Agent: 1,
-  Rule: 2,
-  Directory: 3,
-  File: 4,
+  Task: 1,
+  Agent: 2,
+  Rule: 3,
+  Directory: 4,
+  File: 5,
 }
 
 /**
@@ -588,6 +589,32 @@ export async function fetchRuleMentions(
     }))
   } catch (error) {
     console.debug('Failed to fetch rule mentions:', error)
+    return []
+  }
+}
+
+/**
+ * Fetch project tasks for mention in project chat.
+ */
+export async function fetchTaskMentions(
+  api: { listProjectTasks: (slug: string) => Promise<Array<{ id: string; name?: string; promptPreview?: string }>> },
+  projectSlug: string,
+): Promise<MentionDisplayItem[]> {
+  try {
+    const tasks = await api.listProjectTasks(projectSlug)
+    return (tasks || []).map(task => {
+      const displayName = task.name?.trim() || task.id
+      return {
+        name: displayName,
+        description: task.promptPreview,
+        extra: `Task (${task.id})`,
+        itemType: 'Task',
+        relativePath: task.id,
+        insertText: `@task:${task.id} `,
+      }
+    })
+  } catch (error) {
+    console.debug('Failed to fetch task mentions:', error)
     return []
   }
 }

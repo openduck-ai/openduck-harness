@@ -6,6 +6,7 @@ import {
   createApi,
   type ProjectDetail,
   type SessionSummary,
+  type ProjectTaskSummary,
 } from '@aaif/goose-hub-core'
 import {
   Send,
@@ -26,6 +27,7 @@ import {
   Terminal,
   Folder,
   Cpu,
+  ListTodo,
 } from 'lucide-react'
 import {
   MentionPopover,
@@ -36,6 +38,7 @@ import {
   applyMentionInsertion,
   fetchAgentMentions,
   fetchRuleMentions,
+  fetchTaskMentions,
   scanProjectFiles,
   searchProjectFiles,
   mergeMentionItems,
@@ -44,6 +47,7 @@ import {
   type MentionDisplayItem,
   type DismissedMention,
 } from '../mention.ts'
+import { ProjectChatTasksDrawer } from './ProjectChatTasksDrawer.tsx'
 
 interface ProjectChatProps {
   detail: ProjectDetail
@@ -72,6 +76,16 @@ export function ProjectChat({
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const inputContainerRef = useRef<HTMLDivElement | null>(null)
+
+  const [showTasksDrawer, setShowTasksDrawer] = useState(false)
+  const [projectTasks, setProjectTasks] = useState<ProjectTaskSummary[]>([])
+  const [loadingTasks, setLoadingTasks] = useState(false)
+  const [activeTaskNotification, setActiveTaskNotification] = useState<{
+    taskId: string
+    taskName: string
+    status: 'running' | 'success' | 'error'
+    message?: string
+  } | null>(null)
 
   const [mentionItems, setMentionItems] = useState<MentionDisplayItem[]>([])
   const [loadingMentions, setLoadingMentions] = useState(false)
@@ -110,16 +124,34 @@ export function ProjectChat({
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [session.messages, session.statusLine, session.isPrompting])
 
+  const loadTasks = useCallback(async () => {
+    setLoadingTasks(true)
+    try {
+      const apiInstance = api ?? createApi(baseUrl, secret)
+      const list = await apiInstance.listProjectTasks(detail.project.slug)
+      setProjectTasks(list || [])
+    } catch (err) {
+      console.debug('Failed to load project tasks for chat:', err)
+    } finally {
+      setLoadingTasks(false)
+    }
+  }, [api, baseUrl, secret, detail.project.slug])
+
+  useEffect(() => {
+    void loadTasks()
+  }, [loadTasks])
+
   const loadMentionSources = useCallback(async () => {
     setLoadingMentions(true)
     try {
       const apiInstance = api ?? createApi(baseUrl, secret)
-      const [agentItems, ruleItems, fileItems] = await Promise.all([
+      const [agentItems, ruleItems, fileItems, taskItems] = await Promise.all([
         fetchAgentMentions(baseUrl, secret, detail.project.path, session.sessionId),
         fetchRuleMentions(baseUrl, secret, detail.project.path),
         scanProjectFiles(apiInstance, detail.project.slug),
+        fetchTaskMentions(apiInstance, detail.project.slug),
       ])
-      setMentionItems([...agentItems, ...ruleItems, ...fileItems])
+      setMentionItems([...taskItems, ...agentItems, ...ruleItems, ...fileItems])
     } catch (err) {
       console.debug('Failed to load mention items:', err)
     } finally {
@@ -423,6 +455,21 @@ export function ProjectChat({
             </div>
           )}
 
+          {/* Project Tasks Drawer Trigger Button */}
+          <button
+            type="button"
+            className={`secondary mini-btn chat-tasks-btn ${showTasksDrawer ? 'active' : ''}`}
+            onClick={() => setShowTasksDrawer(prev => !prev)}
+            title="View, create, edit, and start project tasks"
+          >
+            <ListTodo size={13} />
+            <span>Tasks</span>
+            <span className="tasks-count-pill">{projectTasks.length}</span>
+            {projectTasks.some(t => t.currentlyRunning) && (
+              <span className="task-running-pulse-dot" title="A task is currently running" />
+            )}
+          </button>
+
           <button
             type="button"
             className="secondary mini-btn new-chat-btn"
@@ -434,6 +481,33 @@ export function ProjectChat({
           </button>
         </div>
       </div>
+
+      {/* Live Running/Completed Task Notification Banner */}
+      {activeTaskNotification && (
+        <div className={`chat-task-live-banner status-${activeTaskNotification.status}`}>
+          {activeTaskNotification.status === 'running' && (
+            <Loader2 size={14} className="spinning" />
+          )}
+          {activeTaskNotification.status === 'success' && (
+            <CheckCircle2 size={14} className="text-success" />
+          )}
+          {activeTaskNotification.status === 'error' && (
+            <AlertCircle size={14} className="text-danger" />
+          )}
+          <span className="task-banner-text">
+            <strong>Task "{activeTaskNotification.taskName}":</strong>{' '}
+            {activeTaskNotification.message || (activeTaskNotification.status === 'running' ? 'Running…' : 'Finished')}
+          </span>
+          <button
+            type="button"
+            className="banner-close-btn"
+            onClick={() => setActiveTaskNotification(null)}
+            title="Dismiss notification"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Messages Transcript */}
       <div className="transcript-scroll-area">
@@ -684,6 +758,47 @@ export function ProjectChat({
           </div>
         </div>
       </form>
+
+      {/* Project Tasks Drawer */}
+      <ProjectChatTasksDrawer
+        isOpen={showTasksDrawer}
+        onClose={() => setShowTasksDrawer(false)}
+        projectSlug={detail.project.slug}
+        api={api ?? createApi(baseUrl, secret)}
+        tasks={projectTasks}
+        loadingTasks={loadingTasks}
+        onRefreshTasks={loadTasks}
+        onSendToChat={text => {
+          setPrompt(prev => (prev ? `${prev} ${text}` : text))
+          textareaRef.current?.focus()
+        }}
+        onTaskStarted={(taskId, taskName, runPromise) => {
+          setActiveTaskNotification({
+            taskId,
+            taskName,
+            status: 'running',
+            message: 'Task execution started...',
+          })
+          runPromise
+            .then(() => {
+              setActiveTaskNotification({
+                taskId,
+                taskName,
+                status: 'success',
+                message: 'Task completed successfully!',
+              })
+              void loadTasks()
+            })
+            .catch(err => {
+              setActiveTaskNotification({
+                taskId,
+                taskName,
+                status: 'error',
+                message: err instanceof Error ? err.message : 'Task execution failed',
+              })
+            })
+        }}
+      />
     </div>
   )
 }

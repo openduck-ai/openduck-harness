@@ -34,6 +34,17 @@ impl Operation<Session, GooseEffect> for ProjectOperation {
         if !entry.content.is_empty() {
             parts.push(entry.content);
         }
+        parts.push(
+            "## Project Tasks\n\
+             You can view, create, modify, and start project tasks for this project using your `project_tasks` tools:\n\
+             - `project_tasks__list_tasks`: List all tasks in this project\n\
+             - `project_tasks__get_task`: Inspect a specific task's definition\n\
+             - `project_tasks__create_task`: Create a new task\n\
+             - `project_tasks__update_task`: Update/modify an existing task\n\
+             - `project_tasks__run_task`: Start/run a task\n\
+             When the user asks you to view, list, create, edit, or run tasks, use these tools directly."
+                .to_string(),
+        );
         Ok(vec![("project".to_string(), parts.join("\n\n"))])
     }
 }
