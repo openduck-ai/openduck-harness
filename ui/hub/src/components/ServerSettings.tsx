@@ -31,6 +31,26 @@ export function ServerSettings({
   const projectRoots = useProjectRoots(api)
   const [inputUrl, setInputUrl] = useState(baseUrl)
   const [inputSecret, setInputSecret] = useState(secret)
+  const [requestTimeoutSecs, setRequestTimeoutSecs] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem('openduck.api.timeoutMs')
+      if (stored) {
+        const val = parseInt(stored, 10)
+        if (!Number.isNaN(val) && val >= 0) return Math.round(val / 1000)
+      }
+    } catch {}
+    return 12
+  })
+  const [historyTimeoutSecs, setHistoryTimeoutSecs] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem('openduck.harness.historyTimeoutMs')
+      if (stored) {
+        const val = parseInt(stored, 10)
+        if (!Number.isNaN(val) && val >= 0) return Math.round(val / 1000)
+      }
+    } catch {}
+    return 60
+  })
   const [testing, setTesting] = useState(false)
   const [pingLatency, setPingLatency] = useState<number | null>(null)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
@@ -38,6 +58,10 @@ export function ServerSettings({
 
   const handleSave = () => {
     onSaveConnection(inputUrl, inputSecret)
+    try {
+      localStorage.setItem('openduck.api.timeoutMs', String(requestTimeoutSecs * 1000))
+      localStorage.setItem('openduck.harness.historyTimeoutMs', String(historyTimeoutSecs * 1000))
+    } catch {}
     setSavedSuccess(true)
     setTimeout(() => setSavedSuccess(false), 3000)
   }
@@ -105,6 +129,33 @@ export function ServerSettings({
                   placeholder="Optional (if configured on server via GOOSE_SERVER__SECRET_KEY)"
                 />
               </label>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '0.25rem' }}>
+                <label>
+                  Request Timeout (seconds)
+                  <input
+                    type="number"
+                    min={0}
+                    max={300}
+                    value={requestTimeoutSecs}
+                    onChange={e => setRequestTimeoutSecs(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                    placeholder="12 (0 for unlimited)"
+                  />
+                  <small className="muted">Default: 12s. Set 0 for no timeout.</small>
+                </label>
+                <label>
+                  History Timeout (seconds)
+                  <input
+                    type="number"
+                    min={0}
+                    max={600}
+                    value={historyTimeoutSecs}
+                    onChange={e => setHistoryTimeoutSecs(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                    placeholder="60 (0 for unlimited)"
+                  />
+                  <small className="muted">Default: 60s. For project task history.</small>
+                </label>
+              </div>
 
               {savedSuccess && <div className="toast-inline">✓ Connection settings saved!</div>}
 

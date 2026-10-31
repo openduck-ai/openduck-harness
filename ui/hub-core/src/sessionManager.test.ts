@@ -30,6 +30,40 @@ test('projectSessionRegistry isolates sessions by projectId', () => {
   assert.equal(all['project-beta']?.cwd, '/path/to/beta')
 })
 
+test('restored session id is selected before its transcript is loaded', () => {
+  const session = projectSessionRegistry.getOrCreate({
+    baseUrl: 'http://localhost:3000',
+    secretKey: 'test',
+    projectId: 'project-restore',
+    cwd: '/path/to/restore',
+    client: 'goose-hub',
+    sessionId: 'sess-last',
+  })
+
+  const state = session.getState()
+  assert.equal(state.sessionId, 'sess-last')
+  assert.equal(state.messages.length, 0)
+  assert.equal(state.historyLoaded, false)
+  assert.equal(state.statusLine, 'Loading session…')
+})
+
+test('hydrate does nothing when the project has no session yet', async () => {
+  const session = projectSessionRegistry.getOrCreate({
+    baseUrl: 'http://localhost:3000',
+    secretKey: 'test',
+    projectId: 'project-hydrate-empty',
+    cwd: '/path/to/empty',
+    client: 'goose-hub',
+  })
+
+  await session.hydrate()
+  const state = session.getState()
+  assert.equal(state.sessionId, null)
+  assert.equal(state.messages.length, 0)
+  assert.equal(state.historyLoaded, true)
+  assert.equal(state.error, null)
+})
+
 test('projectSessionRegistry notifies subscribers on state changes', () => {
   let callCount = 0
   const unsubscribe = projectSessionRegistry.subscribe(() => {
@@ -50,4 +84,65 @@ test('projectSessionRegistry notifies subscribers on state changes', () => {
   assert.ok(callCount > countBefore)
 
   unsubscribe()
+})
+
+test('cancelPrompt updates statusLine, clears permissions, and sends cancel', async () => {
+  let cancelCalledWith: any = null
+  const session = projectSessionRegistry.getOrCreate({
+    baseUrl: 'http://localhost:3000',
+    secretKey: 'test',
+    projectId: 'project-cancel-test',
+    cwd: '/path/to/cancel',
+    client: 'goose-hub',
+    sessionId: 'sess-to-cancel',
+  })
+
+  // Simulate active prompting state with a mock client
+  session.isPrompting = true
+  session.statusLine = 'Generating…'
+  session.client = {
+    cancel: async (params: any) => {
+      cancelCalledWith = params
+    },
+  } as any
+
+  let permissionCancelled = false
+  session.permissionResolvers.set('perm-1', response => {
+    if (response.outcome.outcome === 'cancelled') {
+      permissionCancelled = true
+    }
+  })
+  session.pendingPermission = {
+    key: 'perm-1',
+    request: { sessionId: 'sess-to-cancel' } as any,
+  }
+
+  await session.cancelPrompt()
+
+  assert.equal(session.statusLine, 'Stopping…')
+  assert.equal(session.pendingPermission, null)
+  assert.equal(permissionCancelled, true)
+  assert.deepEqual(cancelCalledWith, { sessionId: 'sess-to-cancel' })
+})
+
+test('projectSessionRegistry.cancelPrompt delegates to target session', async () => {
+  let cancelled = false
+  const session = projectSessionRegistry.getOrCreate({
+    baseUrl: 'http://localhost:3000',
+    secretKey: 'test',
+    projectId: 'project-registry-cancel',
+    cwd: '/path/to/reg',
+    client: 'goose-hub',
+    sessionId: 'sess-reg',
+  })
+  session.isPrompting = true
+  session.client = {
+    cancel: async () => {
+      cancelled = true
+    },
+  } as any
+
+  await projectSessionRegistry.cancelPrompt('project-registry-cancel')
+  assert.equal(cancelled, true)
+  assert.equal(session.statusLine, 'Stopping…')
 })

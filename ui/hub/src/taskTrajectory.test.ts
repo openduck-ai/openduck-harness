@@ -27,6 +27,7 @@ import {
   extractCompletedSubtasks,
   liveLineText,
   paginateAgentLogTurns,
+  sanitizeSubtaskSummary,
   tuiStatusesForTool,
 } from './taskTrajectory.ts'
 import type { HarnessRunResponse } from '@aaif/goose-hub-core'
@@ -1618,6 +1619,14 @@ test('buildAgentLog inserts subtask_outcome turns with conclusions at completion
   const searchFilter = filterAgentLogTurns(turns, 'all', 'service layer')
   assert.equal(searchFilter.length, 1)
   assert.equal(searchFilter[0].id, 'subtask-outcome-st-2')
+})
+
+test('sanitizeSubtaskSummary removes dangling summary tags and empty code fences', () => {
+  const degenerate = '</parameter>\n\n```\n\n</summary>\n\n```\n\n```\n\n</summary>'
+  assert.equal(sanitizeSubtaskSummary(degenerate), '')
+
+  const mixed = 'Successfully implemented Phase B.\n</summary>\n```\n\n```\nDone.'
+  assert.equal(sanitizeSubtaskSummary(mixed), 'Successfully implemented Phase B.\n\nDone.')
 })
 
 

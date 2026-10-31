@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import {
+  stopProjectChat,
   useAllProjectSessions,
   type HarnessActiveJob,
   type Project,
@@ -16,11 +17,11 @@ import { parseUrlNav, syncUrlNav } from './urlNav'
 import type { ProjectSubTab } from './lazyTabs'
 import {
   LayoutDashboard,
-  Zap,
   ShieldAlert,
   X,
   Columns2,
   Folder,
+  Square,
 } from 'lucide-react'
 import './styles.css'
 
@@ -329,6 +330,10 @@ export default function App() {
     ? openProjects.find(p => p.project.slug === splitSlug) ?? null
     : null
 
+  const activePromptingCount = Object.values(allSessions).filter(
+    s => s?.isPrompting,
+  ).length
+
   const activeLiveSessionsCount = Object.values(allSessions).filter(
     s => s?.isPrompting || s?.sessionId,
   ).length
@@ -344,7 +349,7 @@ export default function App() {
           setShowRegisterModal(true)
         }}
         openProjectsCount={openProjects.length}
-        runningTasksCount={runningJobs.length}
+        runningTasksCount={runningJobs.length + activePromptingCount}
       />
 
       <main className="app-main-content">
@@ -392,9 +397,18 @@ export default function App() {
                       <Folder size={14} className="tab-icon" />
                       <span className="tab-title">{p.project.title || slug}</span>
                       {isWorking && (
-                        <span className="badge working-pulse-badge mini-badge" title="Agent is working…">
-                          <Zap size={11} className="pulse-icon" />
-                        </span>
+                        <button
+                          type="button"
+                          className="tab-stop-btn mini-badge"
+                          title="Agent is working in chat. Click to stop."
+                          onClick={e => {
+                            e.stopPropagation()
+                            void stopProjectChat(slug)
+                          }}
+                        >
+                          <Square size={10} />
+                          <span>Stop</span>
+                        </button>
                       )}
                       {hasPermission && (
                         <span className="badge permission-action-badge mini-badge" title="Permission required">
@@ -539,6 +553,7 @@ export default function App() {
                 onOpenProject={open}
                 onRefresh={() => void load()}
                 allSessionsState={allSessions}
+                onStopChat={slug => void stopProjectChat(slug)}
                 onOpenRegisterModal={() => setShowRegisterModal(true)}
               />
             )}
@@ -556,6 +571,8 @@ export default function App() {
               now={now}
               refreshing={runningJobsRefreshing}
               stoppingJobId={stoppingJobId}
+              allSessionsState={allSessions}
+              onStopChat={slug => void stopProjectChat(slug)}
               onRefresh={() => {
                 setRunningJobsRefreshing(true)
                 void refreshRunningJobs()

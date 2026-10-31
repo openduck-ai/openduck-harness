@@ -33,6 +33,7 @@ import {
   type HarnessEvaluationReport,
   type HarnessHistorySummary,
   type HarnessJobLiveEvent,
+  type HarnessPagination,
   type HarnessProjectEvent,
   type HarnessReportSummary,
   type HarnessRunResponse,
@@ -77,6 +78,7 @@ import {
   workspacePathsForAttachments,
 } from '../taskAttachments.ts'
 import { HarnessHistoryTable } from './HarnessHistoryTable.tsx'
+import { normalizeHistoryResponse } from '../api.ts'
 import { TaskTrajectoryViewer } from './TaskTrajectoryViewer.tsx'
 import { MarkdownPreview } from './MarkdownPreview.tsx'
 import { SkeletonBox } from './Skeletons'
@@ -179,6 +181,18 @@ export function ProjectHarnessTab({
   const [cassettes, setCassettes] = useState<HarnessCassetteSummary[]>([])
   const [activeJobs, setActiveJobs] = useState<HarnessActiveJob[]>([])
   const [history, setHistory] = useState<HarnessHistorySummary[]>([])
+  const [historyPage, setHistoryPage] = useState<number>(1)
+  const [historyPageSize, setHistoryPageSize] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('openduck.history.pageSize')
+      if (saved) {
+        const parsed = parseInt(saved, 10)
+        if ([10, 20, 50, 100].includes(parsed)) return parsed
+      }
+    } catch {}
+    return 20
+  })
+  const [historyPagination, setHistoryPagination] = useState<HarnessPagination | null>(null)
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null)
   const [selectedHistoryFileName, setSelectedHistoryFileName] = useState<string | null>(null)
 
@@ -377,8 +391,12 @@ export function ProjectHarnessTab({
 
       const promise = (async () => {
         try {
-          const hist = await fetchWithRetry(
-            () => api.listProjectHistory(slug),
+          const histRes = await fetchWithRetry(
+            () =>
+              api.listProjectHistory(slug, {
+                page: historyPage,
+                limit: historyPageSize,
+              }),
             {
               maxRetries,
               delayMs: 1000,
@@ -390,7 +408,9 @@ export function ProjectHarnessTab({
             },
           )
           if (reqId === historyRequestIdRef.current) {
-            setHistory(hist || [])
+            const norm = normalizeHistoryResponse(histRes)
+            setHistory(norm.items || [])
+            setHistoryPagination(norm.pagination ?? null)
             setLoadedSections(prev => ({ ...prev, history: true }))
             setHistoryError(null)
             setHistoryRetryAttempt(0)
@@ -414,7 +434,61 @@ export function ProjectHarnessTab({
       inFlightHistoryRef.current = promise
       return promise
     },
-    [api],
+    [api, historyPage, historyPageSize],
+  )
+
+  const handleHistoryPageChange = useCallback(
+    (newPage: number) => {
+      setHistoryPage(newPage)
+      if (selectedProjectSlug) {
+        void (async () => {
+          setLoadingHistory(true)
+          try {
+            const histRes = await api.listProjectHistory(selectedProjectSlug, {
+              page: newPage,
+              limit: historyPageSize,
+            })
+            const norm = normalizeHistoryResponse(histRes)
+            setHistory(norm.items || [])
+            setHistoryPagination(norm.pagination ?? null)
+          } catch (err) {
+            setHistoryError(err instanceof Error ? err.message : 'Failed to load task history')
+          } finally {
+            setLoadingHistory(false)
+          }
+        })()
+      }
+    },
+    [api, selectedProjectSlug, historyPageSize],
+  )
+
+  const handleHistoryPageSizeChange = useCallback(
+    (newSize: number) => {
+      setHistoryPageSize(newSize)
+      setHistoryPage(1)
+      try {
+        localStorage.setItem('openduck.history.pageSize', String(newSize))
+      } catch {}
+      if (selectedProjectSlug) {
+        void (async () => {
+          setLoadingHistory(true)
+          try {
+            const histRes = await api.listProjectHistory(selectedProjectSlug, {
+              page: 1,
+              limit: newSize,
+            })
+            const norm = normalizeHistoryResponse(histRes)
+            setHistory(norm.items || [])
+            setHistoryPagination(norm.pagination ?? null)
+          } catch (err) {
+            setHistoryError(err instanceof Error ? err.message : 'Failed to load task history')
+          } finally {
+            setLoadingHistory(false)
+          }
+        })()
+      }
+    },
+    [api, selectedProjectSlug],
   )
 
   const handleRetryHistory = useCallback(() => {
@@ -595,6 +669,8 @@ export function ProjectHarnessTab({
       historyRequestIdRef.current++
       setLoadedSections({})
       setHistory([])
+      setHistoryPage(1)
+      setHistoryPagination(null)
       setHistoryError(null)
       setHistoryRetryAttempt(0)
       setLoadingHistory(true)
@@ -844,7 +920,8 @@ export function ProjectHarnessTab({
         const taskId = inspectingTaskId
         stopLiveInspect()
         try {
-          const historyList = await api.listProjectHistory(selectedProjectSlug)
+          const historyRes = await api.listProjectHistory(selectedProjectSlug)
+          const historyList = normalizeHistoryResponse(historyRes).items
           const latest = historyList.find(item => !taskId || item.taskId === taskId)
           if (latest) {
             const savedPageSize = getSavedLogPageSize()
@@ -1471,8 +1548,15 @@ export function ProjectHarnessTab({
       })
       setSuccessMsg(`Task ${taskId} completed with status: ${res.status}`)
       await loadTasksAndJobs(selectedProjectSlug, true)
-      const historyList = await api.listProjectHistory(selectedProjectSlug)
-      setHistory(historyList)
+      const historyRes = await api.listProjectHistory(selectedProjectSlug, {
+        page: 1,
+        limit: historyPageSize,
+      })
+      const norm = normalizeHistoryResponse(historyRes)
+      setHistory(norm.items)
+      setHistoryPagination(norm.pagination ?? null)
+      setHistoryPage(1)
+      const historyList = norm.items
       const isThisLogOpen =
         subTab === 'trajectory' &&
         (inspectingJobId !== null || activeTrajectoryView?.taskId === taskId)
@@ -3492,6 +3576,10 @@ export function ProjectHarnessTab({
               tasks={tasks}
               initialTaskId={historyTaskFilter}
               now={now}
+              pagination={historyPagination}
+              onPageChange={handleHistoryPageChange}
+              onPageSizeChange={handleHistoryPageSizeChange}
+              isLoading={isHistoryLoading}
               emptyText="No historical project task runs yet. Run a task to populate this list."
               onInspect={item => void handleSelectHistory(item, 'history')}
               onContinue={item =>

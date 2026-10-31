@@ -34,13 +34,15 @@ use crate::control::harness::{
     active_jobs_for_project, apply_history_task_names, broadcast_job_live_event,
     broadcast_project_event, clean_stale_task_scratchpad, failed_run_dto, get_active_job,
     get_live_snapshot, inspect_active_job, internal_list_cassettes, internal_list_reports,
-    list_history_for_project, new_harness_job_id, persist_harness_run, project_runs_dir,
-    read_history_run, register_abort_handle, register_active_job, remove_active_job,
-    resolve_harness_policy, stop_active_job, subscribe_job_live_events, subscribe_project_events,
-    to_run_dto, try_register_active_job, update_active_job_status, upsert_live_snapshot,
-    with_live_snapshot, with_task_notes_plan, ActiveJobRegisterError, HarnessActiveJobDto,
-    HarnessCassetteSummaryDto, HarnessHistorySummaryDto, HarnessJobInspectDto, HarnessJobLiveEvent,
-    HarnessProjectEvent, HarnessReportSummaryDto, HarnessRunResponseDto, TrajectoryPagingQuery,
+    list_history_for_project, new_harness_job_id, paginate_history, persist_harness_run,
+    project_runs_dir, read_history_run, register_abort_handle, register_active_job,
+    remove_active_job, resolve_harness_policy, stop_active_job, subscribe_job_live_events,
+    subscribe_project_events, to_run_dto, try_register_active_job, update_active_job_status,
+    upsert_live_snapshot, with_live_snapshot, with_task_notes_plan, ActiveJobRegisterError,
+    HarnessActiveJobDto, HarnessCassetteSummaryDto, HarnessHistoryListResponseDto,
+    HarnessHistoryPageResponseDto, HarnessHistorySummaryDto, HarnessJobInspectDto,
+    HarnessJobLiveEvent, HarnessProjectEvent, HarnessReportSummaryDto, HarnessRunResponseDto,
+    TrajectoryPagingQuery,
 };
 use crate::sources;
 
@@ -1498,7 +1500,8 @@ fn resolve_history_timeout(config: &ProjectHarnessConfig) -> std::time::Duration
 
 pub async fn list_project_history(
     AxumPath(slug): AxumPath<String>,
-) -> Result<Json<Vec<HarnessHistorySummaryDto>>, (StatusCode, Json<serde_json::Value>)> {
+    Query(paging): Query<TrajectoryPagingQuery>,
+) -> Result<Json<HarnessHistoryListResponseDto>, (StatusCode, Json<serde_json::Value>)> {
     let (_entry, root) = resolve_project_root(&slug).map_err(not_found)?;
     let config = ProjectHarnessConfig::load_or_default(&root).await;
     let tasks_dir = config.resolve_tasks_dir(&root);
@@ -1530,7 +1533,21 @@ pub async fn list_project_history(
         .into_iter()
         .map(|task| (task.id, task.name))
         .collect();
-    Ok(Json(apply_history_task_names(history, &names)))
+    let full_history = apply_history_task_names(history, &names);
+
+    let is_paging_requested = paging.page.is_some()
+        || paging.limit.is_some()
+        || paging.page_size.is_some()
+        || paging.offset.is_some();
+
+    if is_paging_requested {
+        let (items, pagination) = paginate_history(full_history, paging);
+        Ok(Json(HarnessHistoryListResponseDto::Paged(
+            HarnessHistoryPageResponseDto { items, pagination },
+        )))
+    } else {
+        Ok(Json(HarnessHistoryListResponseDto::List(full_history)))
+    }
 }
 
 pub async fn get_project_history_detail(

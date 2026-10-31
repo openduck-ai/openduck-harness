@@ -23,6 +23,8 @@ export interface ProjectSessionState {
   cwd: string
   sessionId: string | null
   messages: ChatMessage[]
+  /** False while a restored session id has not finished session/load replay. */
+  historyLoaded: boolean
   isPrompting: boolean
   statusLine: string | null
   pendingPermission: PendingPermission | null
@@ -54,6 +56,7 @@ export class ProjectSessionInstance {
   client: GooseClient | null = null
   sessionId: string | null = null
   messages: ChatMessage[] = []
+  historyLoaded = true
   isPrompting = false
   statusLine: string | null = null
   pendingPermission: PendingPermission | null = null
@@ -67,6 +70,10 @@ export class ProjectSessionInstance {
     this.options = options
     this.onChange = onChange
     this.sessionId = options.sessionId ?? getStoredSessionId(options.projectId)
+    // The id is restored immediately so the history picker can select it, but the
+    // transcript stays empty until hydrate() replays session/load.
+    this.historyLoaded = this.sessionId == null
+    if (this.sessionId) this.statusLine = 'Loading session…'
   }
 
   updateOptions(options: ProjectSessionOptions) {
@@ -80,6 +87,7 @@ export class ProjectSessionInstance {
         cwd: this.options.cwd,
         sessionId: this.sessionId,
         messages: this.messages,
+        historyLoaded: this.historyLoaded,
         isPrompting: this.isPrompting,
         statusLine: this.statusLine,
         pendingPermission: this.pendingPermission,
@@ -103,7 +111,8 @@ export class ProjectSessionInstance {
     this.notify()
   }
 
-  async ensureClient(): Promise<GooseClient> {
+  async ensureClient(options?: { createIfMissing?: boolean }): Promise<GooseClient> {
+    const createIfMissing = options?.createIfMissing !== false
     if (this.client && this.sessionId) {
       return this.client
     }
@@ -162,12 +171,15 @@ export class ProjectSessionInstance {
             this.sessionId = targetSessionId
             setStoredSessionId(this.options.projectId, targetSessionId)
             sessionCreated = true
-          } catch {
-            // If loading past session fails, create a new one
+          } catch (cause) {
+            if (!createIfMissing) throw cause
           }
         }
 
         if (!sessionCreated) {
+          if (!createIfMissing) {
+            throw new Error('Unable to load session')
+          }
           const session = await client.newSession({
             cwd: this.options.cwd,
             mcpServers: [],
@@ -177,7 +189,10 @@ export class ProjectSessionInstance {
           setStoredSessionId(this.options.projectId, session.sessionId)
         }
 
+        this.messages = finalizeStreaming(this.messages)
         this.client = client
+        this.historyLoaded = true
+        if (this.statusLine === 'Loading session…') this.statusLine = null
         this.notify()
         return client
       } finally {
@@ -211,11 +226,33 @@ export class ProjectSessionInstance {
       this.messages = finalizeStreaming(this.messages)
       this.statusLine = null
     } catch (cause) {
-      this.error = cause instanceof Error ? cause.message : 'Prompt failed'
+      const msg = cause instanceof Error ? cause.message : String(cause)
+      const isAbort =
+        (cause instanceof Error && cause.name === 'AbortError') ||
+        msg.toLowerCase().includes('cancel') ||
+        msg.toLowerCase().includes('abort')
+      if (!isAbort) {
+        this.error = cause instanceof Error ? cause.message : 'Prompt failed'
+      }
+      this.messages = finalizeStreaming(this.messages)
       this.statusLine = null
     } finally {
       this.isPrompting = false
       this.notify()
+    }
+  }
+
+  async cancelPrompt(): Promise<void> {
+    if (!this.sessionId || !this.isPrompting) return
+    this.statusLine = 'Stopping…'
+    this.clearPermissions()
+    this.notify()
+    if (this.client) {
+      try {
+        await this.client.cancel({ sessionId: this.sessionId })
+      } catch (cause) {
+        console.warn('Failed to cancel prompt:', cause)
+      }
     }
   }
 
@@ -230,11 +267,15 @@ export class ProjectSessionInstance {
   }
 
   async reset(newSession = true) {
+    if (this.isPrompting) {
+      await this.cancelPrompt().catch(() => {})
+    }
     this.clearPermissions()
     this.client = null
     this.sessionId = null
     setStoredSessionId(this.options.projectId, null)
     this.messages = []
+    this.historyLoaded = true
     this.isPrompting = false
     this.statusLine = null
     this.error = null
@@ -244,20 +285,51 @@ export class ProjectSessionInstance {
     }
   }
 
+  /** Replay the restored session when the chat view opens. Does not create a session. */
+  async hydrate(): Promise<void> {
+    const id = this.sessionId ?? this.options.sessionId ?? getStoredSessionId(this.options.projectId)
+    if (!id) return
+    if (this.historyLoaded && this.client && this.sessionId === id) return
+    if (this.connectingPromise) return
+    this.sessionId = id
+    this.error = null
+    if (this.messages.length === 0) this.statusLine = 'Loading session…'
+    this.notify()
+    try {
+      await this.ensureClient({ createIfMissing: false })
+    } catch (cause) {
+      this.historyLoaded = true
+      this.error = cause instanceof Error ? cause.message : 'Unable to load session'
+      if (this.statusLine === 'Loading session…') this.statusLine = null
+      this.messages = finalizeStreaming(this.messages)
+      this.notify()
+    }
+  }
+
   async loadSession(sessionId: string) {
+    if (this.sessionId === sessionId && this.client && this.historyLoaded) return
+    if (this.isPrompting) {
+      await this.cancelPrompt().catch(() => {})
+    }
     this.clearPermissions()
     this.client = null
     this.sessionId = sessionId
     setStoredSessionId(this.options.projectId, sessionId)
     this.messages = []
+    this.historyLoaded = false
     this.isPrompting = false
-    this.statusLine = null
+    this.statusLine = 'Loading session…'
     this.error = null
     this.notify()
-    await this.ensureClient().catch(cause => {
+    try {
+      await this.ensureClient()
+    } catch (cause) {
+      this.historyLoaded = true
       this.error = cause instanceof Error ? cause.message : 'Unable to load session'
+      if (this.statusLine === 'Loading session…') this.statusLine = null
+      this.messages = finalizeStreaming(this.messages)
       this.notify()
-    })
+    }
   }
 }
 
@@ -302,6 +374,13 @@ class ProjectSessionRegistry {
 
   getSession(projectId: string): ProjectSessionInstance | undefined {
     return this.sessions.get(projectId)
+  }
+
+  async cancelPrompt(projectId: string): Promise<void> {
+    const session = this.sessions.get(projectId)
+    if (session) {
+      await session.cancelPrompt()
+    }
   }
 
   getAllStates(): Record<string, ProjectSessionState> {

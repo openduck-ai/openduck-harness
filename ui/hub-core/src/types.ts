@@ -741,6 +741,18 @@ export interface HarnessHistorySummary {
   providerStats?: TaskProviderStats | null
 }
 
+export interface HarnessHistoryPageResponse {
+  items: HarnessHistorySummary[]
+  pagination: HarnessPagination
+}
+
+export type HarnessHistoryResponse = HarnessHistorySummary[] | HarnessHistoryPageResponse
+
+export interface ApiOptions {
+  timeoutMs?: number | null
+  historyTimeoutMs?: number | null
+}
+
 export interface ContinuationCheckpoint {
   taskId: string
   sourceJobId?: string

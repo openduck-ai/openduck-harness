@@ -100,7 +100,7 @@ impl SubtaskDecomposer {
                     o.subtask_id,
                     o.title,
                     files_str,
-                    o.summary.trim()
+                    sanitize_subtask_summary(&o.summary)
                 ));
             }
         }
@@ -326,5 +326,112 @@ async fn check_one(
             }
             Ok(format!("Command `{command}` passed ({label})"))
         }
+    }
+}
+
+pub fn sanitize_subtask_summary(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "Completed without summary.".to_string();
+    }
+
+    let mut text = trimmed.to_string();
+
+    for tag in &[
+        "</summary>",
+        "<summary>",
+        "</parameter>",
+        "<parameter>",
+        "</tool_call>",
+        "<tool_call>",
+        "</think>",
+        "<think>",
+        "</thought>",
+        "<thought>",
+        "</function>",
+        "<function>",
+    ] {
+        text = text.replace(tag, "");
+    }
+
+    while text.contains("```\n\n```") || text.contains("```\n```") {
+        text = text.replace("```\n\n```", "").replace("```\n```", "");
+    }
+
+    if text.chars().all(|c| c.is_whitespace() || c == '`') {
+        return "Completed successfully (empty output sanitized).".to_string();
+    }
+
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() >= 6 {
+        let mut deduplicated = Vec::new();
+        let mut repeat_count = 0;
+        let mut last_line = "";
+        for line in lines {
+            if line == last_line {
+                repeat_count += 1;
+                if repeat_count < 3 {
+                    deduplicated.push(line);
+                }
+            } else {
+                repeat_count = 0;
+                last_line = line;
+                deduplicated.push(line);
+            }
+        }
+        text = deduplicated.join("\n");
+    }
+
+    let cleaned = text.trim();
+    if cleaned.is_empty() {
+        return "Completed successfully (empty output sanitized).".to_string();
+    }
+
+    const MAX_SUMMARY_CHARS: usize = 1500;
+    if cleaned.chars().count() > MAX_SUMMARY_CHARS {
+        let truncated: String = cleaned.chars().take(MAX_SUMMARY_CHARS).collect();
+        format!("{truncated}...\n[Summary truncated]")
+    } else {
+        cleaned.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_subtask_summary_strips_residual_tags() {
+        let input = "</parameter>\n\n```\n\n</summary>\n\n```\n\n```\n\n</summary>";
+        let cleaned = sanitize_subtask_summary(input);
+        assert!(!cleaned.contains("</summary>"));
+        assert!(!cleaned.contains("</parameter>"));
+        assert_eq!(cleaned, "Completed successfully (empty output sanitized).");
+    }
+
+    #[test]
+    fn test_sanitize_subtask_summary_collapses_repeating_lines() {
+        let mut input = String::new();
+        for _ in 0..20 {
+            input.push_str("Same repeated line\n");
+        }
+        let cleaned = sanitize_subtask_summary(&input);
+        let count = cleaned
+            .lines()
+            .filter(|l| *l == "Same repeated line")
+            .count();
+        assert!(count <= 3);
+    }
+
+    #[test]
+    fn test_sanitize_subtask_summary_truncates_long_output() {
+        let long_input = "a".repeat(2000);
+        let cleaned = sanitize_subtask_summary(&long_input);
+        assert!(cleaned.contains("[Summary truncated]"));
+        assert!(cleaned.len() < 2000);
     }
 }

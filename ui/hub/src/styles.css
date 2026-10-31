@@ -2471,6 +2471,101 @@ textarea {
   opacity: 0.6;
 }
 
+.stop-button {
+  height: 34px;
+  padding: 0 0.85rem;
+  border-radius: var(--radius-full);
+  background: var(--accent-rose-tint);
+  border: 1px solid var(--accent-rose-border);
+  color: var(--accent-rose);
+  font-size: 0.82rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.stop-button:hover {
+  background: var(--accent-rose);
+  color: #fff;
+  border-color: var(--accent-rose);
+  box-shadow: 0 2px 10px rgba(244, 63, 94, 0.35);
+}
+
+.stop-button .stop-icon {
+  fill: currentColor;
+}
+
+.stop-mini-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.5rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--accent-rose);
+  background: var(--accent-rose-tint);
+  border: 1px solid var(--accent-rose-border);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.stop-mini-btn:hover {
+  background: var(--accent-rose);
+  color: #fff;
+  border-color: var(--accent-rose);
+}
+
+.stop-mini-btn svg {
+  fill: currentColor;
+}
+
+.tab-stop-btn {
+  background: var(--accent-rose-tint);
+  color: var(--accent-rose);
+  border: 1px solid var(--accent-rose-border);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-full);
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.2;
+}
+
+.tab-stop-btn:hover {
+  background: var(--accent-rose);
+  color: #fff;
+  border-color: var(--accent-rose);
+}
+
+.tab-stop-btn svg {
+  fill: currentColor;
+}
+
+.stop-project-chat-badge {
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.stop-project-chat-badge:hover {
+  background: var(--accent-rose);
+  color: #fff;
+  border-color: var(--accent-rose);
+  animation: none;
+}
+
+.stop-project-chat-badge .stop-icon {
+  fill: currentColor;
+}
+
 /* Mention Autocomplete Popover */
 .mention-popover {
   position: absolute;

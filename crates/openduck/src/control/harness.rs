@@ -1827,6 +1827,54 @@ pub fn apply_history_task_names(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HarnessHistoryPageResponseDto {
+    pub items: Vec<HarnessHistorySummaryDto>,
+    pub pagination: PaginationMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HarnessHistoryListResponseDto {
+    Paged(HarnessHistoryPageResponseDto),
+    List(Vec<HarnessHistorySummaryDto>),
+}
+
+pub fn paginate_history(
+    items: Vec<HarnessHistorySummaryDto>,
+    query: TrajectoryPagingQuery,
+) -> (Vec<HarnessHistorySummaryDto>, PaginationMetadata) {
+    let total = items.len();
+    let limit = query.limit.or(query.page_size).unwrap_or(20).max(1);
+    let total_pages = if total == 0 { 1 } else { total.div_ceil(limit) };
+
+    let (page, start_idx) = if let Some(p) = query.page {
+        let p_clamped = p.clamp(1, total_pages);
+        (p_clamped, (p_clamped - 1) * limit)
+    } else if let Some(off) = query.offset {
+        let p = (off / limit) + 1;
+        (p.clamp(1, total_pages), off.min(total))
+    } else {
+        (1, 0)
+    };
+
+    let end_idx = (start_idx + limit).min(total);
+    let paged_items = if start_idx < total {
+        items[start_idx..end_idx].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    let meta = PaginationMetadata {
+        page,
+        limit,
+        total,
+        total_pages,
+    };
+    (paged_items, meta)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PersistedHarnessRun {
     job_type: String,
     started_at: String,
@@ -3479,11 +3527,25 @@ pub async fn stop_active_harness_job(
 }
 
 pub async fn list_harness_history(
-) -> Result<Json<Vec<HarnessHistorySummaryDto>>, (StatusCode, Json<serde_json::Value>)> {
+    Query(paging): Query<TrajectoryPagingQuery>,
+) -> Result<Json<HarnessHistoryListResponseDto>, (StatusCode, Json<serde_json::Value>)> {
     let history = tokio::task::spawn_blocking(list_all_history)
         .await
         .map_err(|e| bad(e.to_string()))?;
-    Ok(Json(history))
+
+    let is_paging_requested = paging.page.is_some()
+        || paging.limit.is_some()
+        || paging.page_size.is_some()
+        || paging.offset.is_some();
+
+    if is_paging_requested {
+        let (items, pagination) = paginate_history(history, paging);
+        Ok(Json(HarnessHistoryListResponseDto::Paged(
+            HarnessHistoryPageResponseDto { items, pagination },
+        )))
+    } else {
+        Ok(Json(HarnessHistoryListResponseDto::List(history)))
+    }
 }
 
 pub async fn get_harness_history_detail(
@@ -6277,5 +6339,78 @@ mod tests {
         assert_eq!(snapshot.trajectory.steps[0].step_number, 3);
         assert_eq!(snapshot.trajectory.steps[1].step_number, 4);
         assert_eq!(snapshot.pagination.unwrap().page, 2);
+    }
+
+    #[test]
+    fn test_paginate_history() {
+        let items: Vec<HarnessHistorySummaryDto> = (1..=10)
+            .map(|i| HarnessHistorySummaryDto {
+                id: format!("run_{i}"),
+                file_name: format!("run_{i}.json"),
+                task_id: format!("task_{i}"),
+                task_name: None,
+                job_type: "task".to_string(),
+                status: RunStatus::Success,
+                step_count: 5,
+                tool_calls_count: 2,
+                duration_ms: 1000,
+                final_answer: Some("done".to_string()),
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                recorded_cassette_path: None,
+                project_slug: Some("proj".to_string()),
+                error: None,
+                continuable: false,
+                progress_summary: None,
+                resume_subtask_id: None,
+                resume_subtask_title: None,
+                provider_stats: None,
+            })
+            .collect();
+
+        // Page 1, limit 4
+        let (p1, meta1) = paginate_history(
+            items.clone(),
+            TrajectoryPagingQuery {
+                page: Some(1),
+                limit: Some(4),
+                offset: None,
+                page_size: None,
+            },
+        );
+        assert_eq!(p1.len(), 4);
+        assert_eq!(p1[0].id, "run_1");
+        assert_eq!(p1[3].id, "run_4");
+        assert_eq!(meta1.total, 10);
+        assert_eq!(meta1.total_pages, 3);
+        assert_eq!(meta1.page, 1);
+        assert_eq!(meta1.limit, 4);
+
+        // Page 3, limit 4 (last page with 2 items)
+        let (p3, meta3) = paginate_history(
+            items.clone(),
+            TrajectoryPagingQuery {
+                page: Some(3),
+                limit: Some(4),
+                offset: None,
+                page_size: None,
+            },
+        );
+        assert_eq!(p3.len(), 2);
+        assert_eq!(p3[0].id, "run_9");
+        assert_eq!(p3[1].id, "run_10");
+        assert_eq!(meta3.page, 3);
+
+        // Test serialization: List vs Paged
+        let paged_dto = HarnessHistoryListResponseDto::Paged(HarnessHistoryPageResponseDto {
+            items: p1,
+            pagination: meta1,
+        });
+        let paged_json = serde_json::to_string(&paged_dto).unwrap();
+        assert!(paged_json.contains("\"pagination\":{"));
+        assert!(paged_json.contains("\"items\":["));
+
+        let list_dto = HarnessHistoryListResponseDto::List(items);
+        let list_json = serde_json::to_string(&list_dto).unwrap();
+        assert!(list_json.starts_with('['));
     }
 }

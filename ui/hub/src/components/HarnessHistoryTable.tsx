@@ -1,6 +1,15 @@
 import { useState, useMemo, useEffect } from 'react'
-import type { HarnessHistorySummary } from '@aaif/goose-hub-core'
-import { Check, X, FastForward, Loader2 } from 'lucide-react'
+import type { HarnessHistorySummary, HarnessPagination } from '@aaif/goose-hub-core'
+import {
+  Check,
+  X,
+  FastForward,
+  Loader2,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+} from 'lucide-react'
 import {
   filterHistoryItems,
   historyTaskTitle,
@@ -20,6 +29,10 @@ interface HarnessHistoryTableProps {
   onInspect: (item: HarnessHistorySummary) => void
   onContinue?: (item: HarnessHistorySummary) => void
   loadingRunId?: string | null
+  pagination?: HarnessPagination | null
+  onPageChange?: (page: number) => void
+  onPageSizeChange?: (pageSize: number) => void
+  isLoading?: boolean
 }
 
 const STATUS_OPTIONS = [
@@ -43,6 +56,10 @@ export function HarnessHistoryTable({
   onInspect,
   onContinue,
   loadingRunId,
+  pagination,
+  onPageChange,
+  onPageSizeChange,
+  isLoading = false,
 }: HarnessHistoryTableProps) {
   const [statusFilter, setStatusFilter] = useState('')
   const [taskFilter, setTaskFilter] = useState(initialTaskId)
@@ -264,6 +281,89 @@ export function HarnessHistoryTable({
               </div>
             )
           })}
+        </div>
+      )}
+
+      {pagination && (
+        <div
+          className="history-pagination-bar"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0.75rem 0.25rem 0.25rem',
+            marginTop: '0.75rem',
+            borderTop: '1px solid var(--border-subtle)',
+            flexWrap: 'wrap',
+            gap: '0.75rem',
+          }}
+        >
+          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+            Showing {pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.limit + 1}–{Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total} runs
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            {onPageSizeChange && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
+                <span style={{ color: 'var(--text-secondary)' }}>Page size:</span>
+                <select
+                  className="form-input form-select-sm"
+                  value={pagination.limit}
+                  onChange={e => onPageSizeChange(Number(e.target.value))}
+                  style={{ width: 'auto', padding: '2px 6px' }}
+                >
+                  <option value="10">10</option>
+                  <option value="20">20</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </div>
+            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <button
+                type="button"
+                className="btn-secondary mini-btn"
+                disabled={pagination.page <= 1 || isLoading}
+                onClick={() => onPageChange?.(1)}
+                title="First page"
+                style={{ padding: '3px 6px', display: 'inline-flex', alignItems: 'center' }}
+              >
+                <ChevronsLeft size={14} />
+              </button>
+              <button
+                type="button"
+                className="btn-secondary mini-btn"
+                disabled={pagination.page <= 1 || isLoading}
+                onClick={() => onPageChange?.(pagination.page - 1)}
+                title="Previous page"
+                style={{ padding: '3px 6px', display: 'inline-flex', alignItems: 'center' }}
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <span style={{ fontSize: '0.85rem', padding: '0 4px', color: 'var(--text-primary)' }}>
+                Page {pagination.page} / {Math.max(1, pagination.totalPages)}
+              </span>
+              <button
+                type="button"
+                className="btn-secondary mini-btn"
+                disabled={pagination.page >= pagination.totalPages || isLoading}
+                onClick={() => onPageChange?.(pagination.page + 1)}
+                title="Next page"
+                style={{ padding: '3px 6px', display: 'inline-flex', alignItems: 'center' }}
+              >
+                <ChevronRight size={14} />
+              </button>
+              <button
+                type="button"
+                className="btn-secondary mini-btn"
+                disabled={pagination.page >= pagination.totalPages || isLoading}
+                onClick={() => onPageChange?.(pagination.totalPages)}
+                title="Last page"
+                style={{ padding: '3px 6px', display: 'inline-flex', alignItems: 'center' }}
+              >
+                <ChevronsRight size={14} />
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

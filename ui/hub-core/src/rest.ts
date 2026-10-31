@@ -17,9 +17,11 @@ import type {
   HarnessCassetteSummary,
   HarnessEvalRequest,
   HarnessEvaluationReport,
-  HarnessHistorySummary,
+  HarnessHistoryPageResponse,
+  HarnessHistoryResponse,
   HarnessJobInspect,
   HarnessOverview,
+  ApiOptions,
   HarnessReplayRequest,
   HarnessReportSummary,
   HarnessRunRequest,
@@ -100,24 +102,59 @@ export async function readErrorMessage(response: Response): Promise<string> {
   return text
 }
 
-function requestTimeoutMs(path: string, method = 'GET'): number | null {
-  const route = path.toLowerCase()
-  if (route === '/api/v1/network/status') return 40_000
-  if (method === 'POST' && /\/tui-sessions(?:\/[^/]+\/prompt)?$/.test(route)) {
-    return null
+export const DEFAULT_REQUEST_TIMEOUT_MS = 12_000
+export const DEFAULT_HISTORY_TIMEOUT_MS = 60_000
+
+export function normalizeHistoryResponse(
+  res: HarnessHistoryResponse,
+): HarnessHistoryPageResponse {
+  if (Array.isArray(res)) {
+    return {
+      items: res,
+      pagination: {
+        page: 1,
+        limit: res.length || 20,
+        total: res.length,
+        totalPages: 1,
+      },
+    }
   }
-  if (
-    route.includes('/run') ||
-    route.includes('/eval') ||
-    route.includes('/replay') ||
-    route.includes('/exec') ||
-    route.includes('/estimate') ||
-    route.includes('/draft') ||
-    route.includes('/stream')
-  ) {
-    return null
+  return res
+}
+
+function resolveConfiguredTimeout(
+  key: string,
+  envKey: string,
+  fallback: number,
+): number {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const stored = window.localStorage.getItem(key)
+      if (stored) {
+        const parsed = parseInt(stored, 10)
+        if (!Number.isNaN(parsed) && parsed >= 0) {
+          return parsed
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
   }
-  return 12_000
+  try {
+    const envVal =
+      (typeof process !== 'undefined' && process.env?.[envKey]) ||
+      // @ts-ignore
+      (typeof import.meta !== 'undefined' && import.meta.env?.[envKey])
+    if (envVal) {
+      const parsed = parseInt(envVal, 10)
+      if (!Number.isNaN(parsed) && parsed >= 0) {
+        return parsed
+      }
+    }
+  } catch {
+    // ignore environment lookup errors
+  }
+  return fallback
 }
 
 async function fetchWithTimeout(
@@ -145,7 +182,48 @@ async function fetchWithTimeout(
   }
 }
 
-export function createApi(baseUrl: string, secret = '') {
+export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}) {
+  function requestTimeoutMs(path: string, method = 'GET'): number | null {
+    const route = path.toLowerCase()
+    if (route === '/api/v1/network/status') return 40_000
+    if (method === 'POST' && /\/tui-sessions(?:\/[^/]+\/prompt)?$/.test(route)) {
+      return null
+    }
+    if (
+      route.includes('/run') ||
+      route.includes('/eval') ||
+      route.includes('/replay') ||
+      route.includes('/exec') ||
+      route.includes('/estimate') ||
+      route.includes('/draft') ||
+      route.includes('/stream')
+    ) {
+      return null
+    }
+
+    if (route.includes('/harness/history') || route.includes('/harness/reports')) {
+      if (options.historyTimeoutMs !== undefined) {
+        return options.historyTimeoutMs === 0 ? null : options.historyTimeoutMs
+      }
+      const historyMs = resolveConfiguredTimeout(
+        'openduck.harness.historyTimeoutMs',
+        'VITE_HARNESS_HISTORY_TIMEOUT_MS',
+        DEFAULT_HISTORY_TIMEOUT_MS,
+      )
+      return historyMs === 0 ? null : historyMs
+    }
+
+    if (options.timeoutMs !== undefined) {
+      return options.timeoutMs === 0 ? null : options.timeoutMs
+    }
+    const defaultMs = resolveConfiguredTimeout(
+      'openduck.api.timeoutMs',
+      'VITE_API_TIMEOUT_MS',
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    )
+    return defaultMs === 0 ? null : defaultMs
+  }
+
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers)
     headers.set('Accept', 'application/json')
@@ -410,7 +488,10 @@ export function createApi(baseUrl: string, secret = '') {
       request<HarnessJobInspect>(
         `/api/v1/harness/jobs/${encodeURIComponent(jobId)}${formatPagingQuery(paging)}`,
       ),
-    listHarnessHistory: () => request<HarnessHistorySummary[]>('/api/v1/harness/history'),
+    listHarnessHistory: (paging?: TrajectoryPagingOptions) =>
+      request<HarnessHistoryResponse>(
+        `/api/v1/harness/history${formatPagingQuery(paging)}`,
+      ),
     getHarnessHistoryDetail: (runId: string, paging?: TrajectoryPagingOptions) =>
       request<HarnessRunResponse>(
         `/api/v1/harness/history/${encodeURIComponent(runId)}${formatPagingQuery(paging)}`,
@@ -568,9 +649,9 @@ export function createApi(baseUrl: string, secret = '') {
           method: 'POST',
         },
       ),
-    listProjectHistory: (slug: string) =>
-      request<HarnessHistorySummary[]>(
-        `/api/v1/projects/${encodeURIComponent(slug)}/harness/history`,
+    listProjectHistory: (slug: string, paging?: TrajectoryPagingOptions) =>
+      request<HarnessHistoryResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/harness/history${formatPagingQuery(paging)}`,
       ),
     getProjectHistoryDetail: (
       slug: string,

@@ -1370,13 +1370,14 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             let steps_taken = subtask_steps.len();
             cumulative_steps.extend(subtask_steps);
 
-            let mut outcome_summary = subtask_answer.clone().unwrap_or_else(|| {
+            let raw_summary = subtask_answer.clone().unwrap_or_else(|| {
                 if subtask_status == RunStatus::Success {
                     "Completed".to_string()
                 } else {
                     format!("Finished with status: {:?}", subtask_status)
                 }
             });
+            let mut outcome_summary = crate::eval::subtask::sanitize_subtask_summary(&raw_summary);
             let mut output_check = None;
             if subtask_status == RunStatus::Success {
                 let report = crate::eval::subtask::verify_expected_outputs(

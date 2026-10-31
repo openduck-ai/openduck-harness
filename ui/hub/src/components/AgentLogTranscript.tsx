@@ -6,6 +6,7 @@ import {
   liveLineText,
   presentToolCall,
   resolveThinkingOpen,
+  sanitizeSubtaskSummary,
   tuiStatusesForTool,
   type AgentLogPagination,
   type AgentLogToolCall,
@@ -540,7 +541,7 @@ export function CompletedSubtasksSection({
                       <div className="agent-subtask-conclusion-label">Conclusion:</div>
                       <div className="agent-subtask-conclusion-text">
                         <MarkdownPreview
-                          content={subtask.summary}
+                          content={sanitizeSubtaskSummary(subtask.summary)}
                           onOpenFile={onOpenFile}
                           resolveImageUrl={resolveImageUrl}
                         />
@@ -635,7 +636,7 @@ export function SubtaskOutcomeTurn({
           <div className="agent-subtask-conclusion-label">Conclusion:</div>
           <div className="agent-subtask-conclusion-text">
             <MarkdownPreview
-              content={outcome.summary}
+              content={sanitizeSubtaskSummary(outcome.summary)}
               onOpenFile={onOpenFile}
               resolveImageUrl={resolveImageUrl}
             />

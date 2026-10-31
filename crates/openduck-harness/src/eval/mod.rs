@@ -14,7 +14,7 @@ pub use datasets::{load_jsonl_dataset, load_recipe_task, BenchmarkItem, JsonlTas
 pub use metrics::{EvalMetrics, EvaluationReport, TaskResult};
 pub use progress_summary::run_progress_summary_from_steps;
 pub use runner::{EvalRunner, EvalRunnerConfig};
-pub use subtask::{SubtaskDecomposer, SubtaskOutcome};
+pub use subtask::{sanitize_subtask_summary, SubtaskDecomposer, SubtaskOutcome};
 pub use task::{
     CommandVerifier, DiffVerifier, EnvironmentSpec, SubtaskExpectedOutput, SubtaskSpec, TaskSpec,
     VerificationResult, Verifier,

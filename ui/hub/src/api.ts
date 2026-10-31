@@ -4,11 +4,13 @@ import {
   readErrorMessage,
 } from '@aaif/goose-hub-core/rest'
 import type {
+  ApiOptions,
   HarnessJobInspect,
   TrajectoryPagingOptions,
 } from '@aaif/goose-hub-core'
 
-export { apiUrl } from '@aaif/goose-hub-core/rest'
+export { apiUrl, normalizeHistoryResponse } from '@aaif/goose-hub-core/rest'
+export type { ApiOptions } from '@aaif/goose-hub-core'
 export type { Project, ProjectDetail, ProjectInput, ProjectKind } from '@aaif/goose-hub-core/types'
 
 function formatPagingQuery(paging?: TrajectoryPagingOptions): string {
@@ -66,8 +68,8 @@ export function inspectProjectHarnessJob(
   )
 }
 
-export function createApi(baseUrl: string, secret = '') {
-  const api = createCoreApi(baseUrl, secret)
+export function createApi(baseUrl: string, secret = '', options?: ApiOptions) {
+  const api = createCoreApi(baseUrl, secret, options)
   api.inspectHarnessJob = (jobId: string, paging?: TrajectoryPagingOptions) =>
     getJson<HarnessJobInspect>(
       baseUrl,

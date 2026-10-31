@@ -1,0 +1,12 @@
+100.64.0.2:8443 {
+	# 1. 代理 OpenDuck 后端 API 与长连接，flush_interval -1 确保 SSE 和流式响应实时推送到前端                                                                              
+	reverse_proxy /api/* http://127.0.0.1:3000 {
+		flush_interval -1
+	}
+	reverse_proxy /acp* http://127.0.0.1:3000 {
+		flush_interval -1
+	}
+
+	# 2. 代理 Web Hub 前端（Vite 开发服务器，支持 WebSocket HMR 热更新）                                                                                                   
+	reverse_proxy /* http://127.0.0.1:5174
+}

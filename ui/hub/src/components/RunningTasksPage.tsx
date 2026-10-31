@@ -22,9 +22,11 @@ interface RunningTasksPageProps {
   now: number
   refreshing: boolean
   stoppingJobId: string | null
+  allSessionsState?: Record<string, { isPrompting?: boolean; statusLine?: string | null }>
   onRefresh: () => void
   onOpenProject: (project: Project) => void
   onStopJob: (job: HarnessActiveJob) => void
+  onStopChat?: (slug: string) => void
 }
 
 export function RunningTasksPage({
@@ -36,9 +38,11 @@ export function RunningTasksPage({
   now,
   refreshing,
   stoppingJobId,
+  allSessionsState,
   onRefresh,
   onOpenProject,
   onStopJob,
+  onStopChat,
 }: RunningTasksPageProps) {
   const [query, setQuery] = useState('')
   const [projectFilter, setProjectFilter] = useState('')
@@ -69,10 +73,39 @@ export function RunningTasksPage({
     [jobs, query, activeProjectFilter, projectTitles],
   )
 
-  const projectCount = new Set(jobs.map(job => job.projectSlug).filter(Boolean)).size
+  const activeChats = useMemo(() => {
+    if (!allSessionsState) return []
+    return Object.entries(allSessionsState)
+      .filter(([, s]) => s?.isPrompting)
+      .map(([slug, s]) => {
+        const project = projects.find(item => item.slug === slug)
+        return {
+          slug,
+          project,
+          title: project?.title || slug,
+          statusLine: s?.statusLine || 'Generating response…',
+        }
+      })
+      .filter(item => {
+        if (activeProjectFilter && item.slug !== activeProjectFilter) return false
+        if (!query.trim()) return true
+        const q = query.toLowerCase()
+        return (
+          item.slug.toLowerCase().includes(q) ||
+          item.title.toLowerCase().includes(q) ||
+          item.statusLine.toLowerCase().includes(q)
+        )
+      })
+  }, [allSessionsState, projects, activeProjectFilter, query])
+
+  const totalCount = jobs.length + activeChats.length
+  const projectCount = new Set([
+    ...jobs.map(job => job.projectSlug),
+    ...activeChats.map(c => c.slug),
+  ].filter(Boolean)).size
   const projectPhrase =
     projectCount === 0 ? '' : projectCount === 1 ? ' in 1 project' : ` across ${projectCount} projects`
-  const summary = jobs.length === 0 ? 'Nothing is running' : `${jobs.length} in progress${projectPhrase}`
+  const summary = totalCount === 0 ? 'Nothing is running' : `${totalCount} in progress${projectPhrase}`
 
   return (
     <div className="running-tasks-page">
@@ -152,23 +185,60 @@ export function RunningTasksPage({
               : 'Running tasks show up here once OpenDuck is connected.'}
           </p>
         </div>
-      ) : jobs.length === 0 ? (
+      ) : totalCount === 0 ? (
         <div className="empty-state-box">
           <div className="empty-state-icon-box">
             <Activity size={26} />
           </div>
           <h3>No tasks are running</h3>
           <p className="muted">
-            Project tasks that are queued or in progress appear here with their current step.
+            Project tasks and chats that are queued or in progress appear here with their current step.
           </p>
         </div>
-      ) : visibleJobs.length === 0 ? (
+      ) : visibleJobs.length === 0 && activeChats.length === 0 ? (
         <div className="empty-state-box">
           <h3>No matching tasks</h3>
           <p className="muted">Nothing running matches this search.</p>
         </div>
       ) : (
         <ul className="running-task-list">
+          {activeChats.map(chat => (
+            <li key={`chat-${chat.slug}`} className="running-task-card chat-running-card">
+              <div className="running-task-main">
+                <div className="running-task-title-row">
+                  <span className="live-dot" />
+                  <span className="running-status is-live">Chatting</span>
+                  <h3 className="running-task-title">{chat.title} — Project Chat</h3>
+                </div>
+                <p className="running-task-activity">{chat.statusLine}</p>
+                <div className="running-task-meta">
+                  <span>{chat.title}</span>
+                  <span>Interactive Chat Session</span>
+                </div>
+              </div>
+              <div className="running-task-actions">
+                {chat.project && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => onOpenProject(chat.project!)}
+                  >
+                    <FolderOpen size={15} />
+                    <span>Open project</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn-action stop-btn"
+                  onClick={() => onStopChat?.(chat.slug)}
+                  title="Stop running chat"
+                >
+                  <Square size={13} />
+                  <span>Stop</span>
+                </button>
+              </div>
+            </li>
+          ))}
           {visibleJobs.map(job => {
             const project = job.projectSlug
               ? projects.find(item => item.slug === job.projectSlug)

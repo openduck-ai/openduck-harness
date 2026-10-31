@@ -6,7 +6,6 @@ import {
   LayoutGrid,
   List,
   RefreshCw,
-  Zap,
   ShieldAlert,
   Clock,
   ArrowRight,
@@ -19,6 +18,7 @@ import {
   Workflow,
   Sparkles,
   Mail,
+  Square,
 } from 'lucide-react'
 import { ProjectListSkeleton } from './Skeletons'
 
@@ -29,6 +29,7 @@ interface ProjectListProps {
   onRefresh: () => void
   allSessionsState: Record<string, { isPrompting?: boolean; pendingPermission?: unknown }>
   onOpenRegisterModal: () => void
+  onStopChat?: (slug: string) => void
 }
 
 export function ProjectList({
@@ -38,6 +39,7 @@ export function ProjectList({
   onRefresh,
   allSessionsState,
   onOpenRegisterModal,
+  onStopChat,
 }: ProjectListProps) {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'archived'>('all')
@@ -232,9 +234,18 @@ export function ProjectList({
 
                   <div className="card-badges">
                     {isWorking && (
-                      <span className="badge working-pulse-badge" title="Agent is working in background">
-                        <Zap size={12} className="pulse-icon" /> Working
-                      </span>
+                      <button
+                        type="button"
+                        className="badge working-pulse-badge stop-project-chat-badge"
+                        title="Agent is working in chat. Click to stop."
+                        onClick={e => {
+                          e.stopPropagation()
+                          void onStopChat?.(project.slug)
+                        }}
+                      >
+                        <Square size={10} className="stop-icon" />
+                        <span>Stop</span>
+                      </button>
                     )}
                     {hasPermission && (
                       <span className="badge permission-action-badge" title="Permission required">
@@ -335,7 +346,19 @@ export function ProjectList({
                     <td>
                       <div className="table-badges">
                         <span className={`status-pill ${project.status}`}>{project.status}</span>
-                        {isWorking && <span className="badge working-pulse-badge">⚡ Working</span>}
+                        {isWorking && (
+                          <button
+                            type="button"
+                            className="badge working-pulse-badge stop-project-chat-badge"
+                            title="Agent is working in chat. Click to stop."
+                            onClick={e => {
+                              e.stopPropagation()
+                              void onStopChat?.(project.slug)
+                            }}
+                          >
+                            <Square size={10} className="stop-icon" /> Stop
+                          </button>
+                        )}
                         {hasPermission && <span className="badge permission-action-badge">⚠️ Action</span>}
                       </div>
                     </td>

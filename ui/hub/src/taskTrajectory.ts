@@ -858,6 +858,21 @@ function parseSubtasksFromFinalAnswer(finalAnswer: string): CompletedSubtaskInfo
   return results
 }
 
+export function sanitizeSubtaskSummary(raw: string | undefined): string {
+  if (!raw) return ''
+  let text = raw
+    .replace(/<\/?(?:summary|parameter|tool_call|think|thought|function)>/gi, '')
+    .trim()
+  while (text.includes('```\n\n```') || text.includes('```\n```')) {
+    text = text.replace(/```\s*\n\s*```/g, '')
+  }
+  if (/^[`\s]+$/.test(text)) {
+    return ''
+  }
+  text = text.replace(/\n{3,}/g, '\n\n')
+  return text.trim()
+}
+
 function parseUpstreamSubtasksFromPrompt(text: string): CompletedSubtaskInfo[] {
   const sectionMatch = text.match(
     /###\s+Completed Upstream Subtasks:\s*([\s\S]*?)(?=(?:\n###|\n##|\n\[Subtask Execution Contract\]|$))/
@@ -873,7 +888,7 @@ function parseUpstreamSubtasksFromPrompt(text: string): CompletedSubtaskInfo[] {
     const subtaskId = match[2]?.trim()
     const title = match[3]?.trim()
     const filesStr = match[4]?.trim()
-    const summary = match[5]?.trim() || ''
+    const summary = sanitizeSubtaskSummary(match[5]?.trim() || '')
     const modifiedFiles =
       filesStr && filesStr !== 'None' ? filesStr.split(',').map(s => s.trim()).filter(Boolean) : []
     const status = statusLabel.toLowerCase().includes('fail') ? 'failure' : 'success'
@@ -910,7 +925,7 @@ export function extractCompletedSubtasks(run: HarnessRunResponse | null | undefi
       const subtaskId = stringField(rec, 'subtaskId', 'subtask_id', 'id') ?? ''
       const title = stringField(rec, 'title') ?? subtaskId
       const status = stringField(rec, 'status') ?? 'success'
-      const summary = stringField(rec, 'summary', 'conclusion', 'details') ?? ''
+      const summary = sanitizeSubtaskSummary(stringField(rec, 'summary', 'conclusion', 'details') ?? '')
       const rawFiles = rec.modifiedFiles ?? rec.modified_files
       const modifiedFiles = Array.isArray(rawFiles)
         ? rawFiles.map(String).filter(Boolean)

@@ -30,6 +30,10 @@ export function useProjectSession(options: ProjectSessionOptions) {
     [instance],
   )
 
+  const cancelPrompt = useCallback(async () => {
+    await instance.cancelPrompt()
+  }, [instance])
+
   const resolvePermission = useCallback(
     (action: PermissionAction) => {
       instance.resolvePermission(action)
@@ -51,13 +55,23 @@ export function useProjectSession(options: ProjectSessionOptions) {
     [instance],
   )
 
+  const hydrate = useCallback(async () => {
+    await instance.hydrate()
+  }, [instance])
+
   return {
     ...state,
     sendPrompt,
+    cancelPrompt,
     resolvePermission,
     reset,
     loadSession,
+    hydrate,
   }
+}
+
+export function stopProjectChat(projectId: string): Promise<void> {
+  return projectSessionRegistry.cancelPrompt(projectId)
 }
 
 const emptyAllStates: Record<string, ProjectSessionState> = {}

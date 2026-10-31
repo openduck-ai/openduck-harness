@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { apiUrl, createApi, readErrorMessage } from './rest.ts'
+import { apiUrl, createApi, normalizeHistoryResponse, readErrorMessage } from './rest.ts'
 import { defaultJobId } from './cron.ts'
 
 test('apiUrl joins server and route without duplicate slashes', () => {
@@ -287,6 +287,11 @@ test('REST client passes trajectory paging options in query parameters', async (
       calls[3].url,
       'http://host/api/v1/projects/my-proj/harness/history/run_1.json?page=4&limit=20',
     )
+
+    await api.listProjectHistory('my-proj', { page: 2, limit: 15 })
+    await api.listHarnessHistory({ page: 1, pageSize: 30 })
+    assert.equal(calls[4].url, 'http://host/api/v1/projects/my-proj/harness/history?page=2&limit=15')
+    assert.equal(calls[5].url, 'http://host/api/v1/harness/history?page=1&pageSize=30')
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -395,6 +400,60 @@ test('ordinary REST calls still use the short timeout', async () => {
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('timeout options allow configuring or disabling request timeouts', async () => {
+  const originalFetch = globalThis.fetch
+  const signals: (AbortSignal | null | undefined)[] = []
+  globalThis.fetch = async (_input, init) => {
+    signals.push(init?.signal)
+    return new Response(JSON.stringify([]), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    // 0 means no timeout (signal should be null/undefined)
+    const apiUnlimited = createApi('http://host', 'secret', {
+      timeoutMs: 0,
+      historyTimeoutMs: 0,
+    })
+    await apiUnlimited.listProjects()
+    await apiUnlimited.listProjectHistory('my-proj')
+    assert.equal(signals[0] ?? null, null)
+    assert.equal(signals[1] ?? null, null)
+
+    // Specific timeout provides an abort signal
+    const apiCustom = createApi('http://host', 'secret', {
+      timeoutMs: 25_000,
+      historyTimeoutMs: 120_000,
+    })
+    await apiCustom.listProjects()
+    await apiCustom.listProjectHistory('my-proj')
+    assert.ok(signals[2])
+    assert.ok(signals[3])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('normalizeHistoryResponse formats arrays and paged objects uniformly', () => {
+  const arrayRes = [
+    { id: '1', fileName: '1.json', taskId: 't1', jobType: 'task', status: 'success', stepCount: 1, toolCallsCount: 0, durationMs: 10, startedAt: '' },
+  ] as any
+  const normalizedArray = normalizeHistoryResponse(arrayRes)
+  assert.equal(normalizedArray.items.length, 1)
+  assert.equal(normalizedArray.pagination.total, 1)
+  assert.equal(normalizedArray.pagination.page, 1)
+
+  const pagedRes = {
+    items: arrayRes,
+    pagination: { page: 2, limit: 10, total: 25, totalPages: 3 },
+  }
+  const normalizedPaged = normalizeHistoryResponse(pagedRes)
+  assert.equal(normalizedPaged.items.length, 1)
+  assert.equal(normalizedPaged.pagination.page, 2)
+  assert.equal(normalizedPaged.pagination.totalPages, 3)
 })
 
 test('network monitoring authenticates the request and preserves cancellation', async () => {

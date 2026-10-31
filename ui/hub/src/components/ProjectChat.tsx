@@ -28,6 +28,7 @@ import {
   Folder,
   Cpu,
   ListTodo,
+  Square,
 } from 'lucide-react'
 import {
   MentionPopover,
@@ -112,12 +113,15 @@ export function ProjectChat({
     client: 'goose-hub',
   })
 
-  // If a specific session ID was requested from outside (e.g. Sessions page), load it
+  // Restored and externally chosen sessions stay selected in the picker, but the
+  // transcript is empty until session/load replays their history.
   useEffect(() => {
     if (selectedSessionId && selectedSessionId !== session.sessionId) {
       void session.loadSession(selectedSessionId)
+      return
     }
-  }, [selectedSessionId])
+    void session.hydrate()
+  }, [selectedSessionId, session.sessionId, session.loadSession, session.hydrate])
 
   // Scroll transcript to bottom on new messages
   useEffect(() => {
@@ -360,6 +364,12 @@ export function ProjectChat({
       }
     }
 
+    if (e.key === 'Escape' && session.isPrompting) {
+      e.preventDefault()
+      void session.cancelPrompt()
+      return
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void send(e)
@@ -511,7 +521,7 @@ export function ProjectChat({
 
       {/* Messages Transcript */}
       <div className="transcript-scroll-area">
-        {session.messages.length === 0 && (
+        {session.messages.length === 0 && session.historyLoaded && !session.error && (
           <div className="empty-chat-welcome">
             <div className="welcome-icon-box">
               <Sparkles size={32} />
@@ -638,6 +648,17 @@ export function ProjectChat({
           <div className="status-live-banner">
             <Loader2 size={14} className="spinning text-accent" />
             <span className="status-live-text">{session.statusLine}</span>
+            {session.isPrompting && (
+              <button
+                type="button"
+                className="stop-mini-btn"
+                onClick={() => void session.cancelPrompt()}
+                title="Stop generating (Escape)"
+              >
+                <Square size={11} />
+                <span>Stop</span>
+              </button>
+            )}
           </div>
         )}
 
@@ -742,19 +763,31 @@ export function ProjectChat({
           />
 
           <div className="chat-input-controls">
-            <span className="keyboard-hint">Type @ to mention · Shift + Enter for new line</span>
-            <button
-              type="submit"
-              className="send-button"
-              disabled={!prompt.trim() || session.isPrompting}
-              title="Send prompt (Enter)"
-            >
-              {session.isPrompting ? (
-                <Loader2 size={16} className="spinning" />
-              ) : (
+            <span className="keyboard-hint">
+              {session.isPrompting
+                ? 'Press Escape to stop'
+                : 'Type @ to mention · Shift + Enter for new line'}
+            </span>
+            {session.isPrompting ? (
+              <button
+                type="button"
+                className="stop-button"
+                onClick={() => void session.cancelPrompt()}
+                title="Stop generating (Escape)"
+              >
+                <Square size={14} className="stop-icon" />
+                <span>Stop</span>
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="send-button"
+                disabled={!prompt.trim()}
+                title="Send prompt (Enter)"
+              >
                 <Send size={16} />
-              )}
-            </button>
+              </button>
+            )}
           </div>
         </div>
       </form>
