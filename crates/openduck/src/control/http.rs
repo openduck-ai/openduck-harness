@@ -1542,11 +1542,19 @@ async fn remove_judge_config(
 }
 
 async fn get_providers_config(
+    State(server): State<Arc<crate::acp::server_factory::AcpServer>>,
 ) -> Result<Json<app_config::ProvidersConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
-    app_config::get_providers_config(crate::config::Config::global())
-        .await
-        .map(Json)
-        .map_err(config_error)
+    let inventory = match server.provider_inventory().await {
+        Ok(inv) => Some(Arc::clone(inv)),
+        Err(_) => None,
+    };
+    app_config::get_providers_config(
+        crate::config::Config::global(),
+        inventory.as_deref(),
+    )
+    .await
+    .map(Json)
+    .map_err(config_error)
 }
 
 async fn update_providers_config(
@@ -1556,6 +1564,81 @@ async fn update_providers_config(
         .await
         .map(Json)
         .map_err(config_error)
+}
+
+fn http_provider_factory(
+) -> crate::acp::server::AcpProviderFactory {
+    Arc::new(
+        |provider_name, extensions, working_dir, use_default_model| {
+            Box::pin(async move {
+                if use_default_model {
+                    crate::providers::create_with_default_model(&provider_name, extensions).await
+                } else {
+                    match working_dir {
+                        Some(working_dir) => {
+                            crate::providers::create_with_working_dir(
+                                &provider_name,
+                                extensions,
+                                working_dir,
+                            )
+                            .await
+                        }
+                        None => crate::providers::create(&provider_name, extensions).await,
+                    }
+                }
+            })
+        },
+    )
+}
+
+async fn refresh_provider_models(
+    State(server): State<Arc<crate::acp::server_factory::AcpServer>>,
+    AxumPath(provider_id): AxumPath<String>,
+) -> Result<(StatusCode, Json<app_config::RefreshPlanDto>), (StatusCode, Json<serde_json::Value>)> {
+    let inventory = server
+        .provider_inventory()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+        })?;
+    let plan = inventory
+        .plan_refresh(&[provider_id])
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+        })?;
+    inventory.spawn_refresh_jobs(&plan, http_provider_factory());
+    let dto = app_config::RefreshPlanDto {
+        started: plan.started,
+        skipped: plan
+            .skipped
+            .into_iter()
+            .map(|entry| app_config::RefreshSkipDto {
+                provider_id: entry.provider_id,
+                reason: match entry.reason {
+                    crate::providers::inventory::RefreshSkipReason::UnknownProvider => {
+                        "unknownProvider".to_string()
+                    }
+                    crate::providers::inventory::RefreshSkipReason::NotConfigured => {
+                        "notConfigured".to_string()
+                    }
+                    crate::providers::inventory::RefreshSkipReason::DoesNotSupportRefresh => {
+                        "doesNotSupportRefresh".to_string()
+                    }
+                    crate::providers::inventory::RefreshSkipReason::AlreadyRefreshing => {
+                        "alreadyRefreshing".to_string()
+                    }
+                },
+            })
+            .collect(),
+    };
+    Ok((StatusCode::ACCEPTED, Json(dto)))
 }
 
 async fn get_proxies_config(
@@ -1597,6 +1680,10 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
         .route(
             "/api/v1/config/providers",
             get(get_providers_config).put(update_providers_config),
+        )
+        .route(
+            "/api/v1/config/providers/{provider_id}/models/refresh",
+            post(refresh_provider_models),
         )
         .route(
             "/api/v1/config/proxies",

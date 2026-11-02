@@ -1,7 +1,7 @@
 use crate::agents::extension::PLATFORM_EXTENSIONS;
 use crate::agents::ExtensionConfig;
 use crate::config::extensions::ExtensionEntry;
-use crate::config::providers::ProviderEntry;
+use crate::config::providers::{ProviderEntry, ACTIVE_MODEL_KEY, SECONDARY_PROVIDER_MODEL_KEY};
 use serde_yaml::Mapping;
 
 const EXTENSIONS_CONFIG_KEY: &str = "extensions";
@@ -266,15 +266,9 @@ fn migrate_provider_config(config: &mut Mapping) -> bool {
         // Build the providers mapping.
         let mut providers_map = Mapping::new();
         for name in &discovered_providers {
-            let is_active = active_provider.as_deref() == Some(name.as_str());
-            let model = if is_active {
-                active_model.clone()
-            } else {
-                String::new()
-            };
             let entry = ProviderEntry {
                 enabled: true,
-                model,
+                model: String::new(),
                 configured: true,
                 ..Default::default()
             };
@@ -289,11 +283,17 @@ fn migrate_provider_config(config: &mut Mapping) -> bool {
         );
         changed = true;
 
-        // Write `active_provider` top-level key.
+        // Write `active_provider` and `active_model` top-level keys.
         if let Some(ref ap) = active_provider {
             config.insert(
                 serde_yaml::Value::String(ACTIVE_PROVIDER_KEY.to_string()),
                 serde_yaml::Value::String(ap.clone()),
+            );
+        }
+        if !active_model.is_empty() {
+            config.insert(
+                serde_yaml::Value::String(ACTIVE_MODEL_KEY.to_string()),
+                serde_yaml::Value::String(active_model),
             );
         }
 
@@ -324,7 +324,6 @@ fn migrate_provider_config(config: &mut Mapping) -> bool {
 
         let sec_key = serde_yaml::Value::String(SECONDARY_PROVIDER_KEY.to_string());
         let mut secondary_written = false;
-        let mut secondary_name_opt = None;
 
         // Step 1: If secondary_provider is absent, read non-blank legacy secondary provider.
         if !config.contains_key(&sec_key) {
@@ -341,51 +340,20 @@ fn migrate_provider_config(config: &mut Mapping) -> bool {
                 } else {
                     config.insert(sec_key, serde_yaml::Value::String(sec_val.clone()));
                     secondary_written = true;
-                    secondary_name_opt = Some(sec_val);
                 }
             }
         }
 
-        // Step 2 & 3: Ensure copied name has an entry, and migrate secondary model if entry model is empty.
         if secondary_written {
-            if let Some(sec_name) = secondary_name_opt {
-                let sec_model_opt = get_legacy_mapping_str(
-                    config,
-                    "GOOSE_SECONDARY_MODEL",
-                    "OPENDUCK_SECONDARY_MODEL",
+            if let Some(sec_model) = get_legacy_mapping_str(
+                config,
+                "GOOSE_SECONDARY_MODEL",
+                "OPENDUCK_SECONDARY_MODEL",
+            ) {
+                config.insert(
+                    serde_yaml::Value::String(SECONDARY_PROVIDER_MODEL_KEY.to_string()),
+                    serde_yaml::Value::String(sec_model),
                 );
-                if let Some(serde_yaml::Value::Mapping(ref mut p_map)) =
-                    config.get_mut(&providers_key)
-                {
-                    let entry_key = serde_yaml::Value::String(sec_name.clone());
-                    let mut entry: ProviderEntry = p_map
-                        .get(&entry_key)
-                        .and_then(|v| serde_yaml::from_value(v.clone()).ok())
-                        .unwrap_or_else(|| ProviderEntry {
-                            enabled: true,
-                            configured: true,
-                            model: String::new(),
-                            ..Default::default()
-                        });
-
-                    if let Some(sec_model) = sec_model_opt {
-                        if entry.model.trim().is_empty() {
-                            entry.model = sec_model;
-                        } else if entry.model.trim() != sec_model {
-                            tracing::warn!(
-                                provider = ?sec_name,
-                                entry_model = ?entry.model,
-                                legacy_secondary_model = ?sec_model,
-                                "Secondary provider model conflict; keeping entry model"
-                            );
-                        }
-                    }
-
-                    entry.normalize();
-                    if let Ok(val) = serde_yaml::to_value(&entry) {
-                        p_map.insert(entry_key, val);
-                    }
-                }
             }
         }
 
