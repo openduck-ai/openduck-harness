@@ -1,8 +1,10 @@
 use crate::types::{ToolCallRequest, ToolCallResponse};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
+
+pub const HARNESS_CONTEXT_PREFIX: &str = "[HARNESS CONTEXT]\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MessageRole {
@@ -12,6 +14,23 @@ pub enum MessageRole {
     Tool,
 }
 
+/// Structured execution facts extracted from a history window during compaction.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ExtractedContextFacts {
+    pub explored_files: BTreeSet<String>,
+    pub modified_files: BTreeSet<String>,
+    pub retained_notes: Vec<(String, String)>,
+    pub executed_commands: Vec<String>,
+    pub test_outcomes: Vec<String>,
+    pub recent_errors: Vec<String>,
+    pub nudges_and_notes: Vec<String>,
+    pub advisor_consultations: Vec<(String, String)>,
+    pub planned_steps: Vec<String>,
+    pub findings: Vec<String>,
+    pub observations: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HarnessMessage {
     pub role: MessageRole,
@@ -19,6 +38,8 @@ pub struct HarnessMessage {
     pub tool_calls: Option<Vec<ToolCallRequest>>,
     pub tool_results: Option<Vec<ToolCallResponse>>,
     pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacted_facts: Option<Box<ExtractedContextFacts>>,
 }
 
 impl HarnessMessage {
@@ -29,6 +50,7 @@ impl HarnessMessage {
             tool_calls: None,
             tool_results: None,
             created_at: Utc::now(),
+            compacted_facts: None,
         }
     }
 
@@ -39,6 +61,7 @@ impl HarnessMessage {
             tool_calls: None,
             tool_results: None,
             created_at: Utc::now(),
+            compacted_facts: None,
         }
     }
 
@@ -49,6 +72,7 @@ impl HarnessMessage {
             tool_calls: None,
             tool_results: None,
             created_at: Utc::now(),
+            compacted_facts: None,
         }
     }
 
@@ -62,6 +86,7 @@ impl HarnessMessage {
             tool_calls: Some(tool_calls),
             tool_results: None,
             created_at: Utc::now(),
+            compacted_facts: None,
         }
     }
 
@@ -72,6 +97,7 @@ impl HarnessMessage {
             tool_calls: None,
             tool_results: Some(results),
             created_at: Utc::now(),
+            compacted_facts: None,
         }
     }
 

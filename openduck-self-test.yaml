@@ -19,6 +19,7 @@ activities:
   - Validate recorded TUI agent status in task run Agent Logs
   - Test load tool for knowledge injection and discovery
   - Test delegate tool for task delegation (sync and async)
+  - Validate harness context memory, compaction carry-forward, and repetition warnings
   - Test multi-turn thinking preservation for providers that reject replayed reasoning_content
   - Validate ACP thinking-effort discovery, forwarding, and provider switching
   - Test error boundaries including nested delegation prevention
@@ -64,6 +65,20 @@ instructions: |
   This is meta-testing in the truest sense: not unit tests or external test harnesses, but you using your tools
   to validate your own functionality from within your active session. You can only test what you can observe and
   control from inside your running instance - your tools, your behaviors, your error handling, your consistency.
+
+  ## Harness Context Memory Validation
+  In a temporary workspace, run a deterministic harness policy through several compactions
+  and verify that the next provider request contains the retained findings, tool evidence,
+  and runtime notices. Preserve assistant tool-call/result pairs and the original prompt.
+  Verify that 100 small messages fit without compaction when a 128K token limit and the
+  default 300-message cap are configured, and that explicit smaller caps still apply.
+  Repeat the same read four times and check for a warning; use different queries or file
+  ranges to check that distinct reads are not treated as duplicates. Verify that a successful
+  write resets repetition tracking, and that disabling the repetition guard suppresses it.
+  After 15 tool turns with unchanged notes, check the reminder names the parent task's
+  notes file even while a subtask runs. An updated notes file should suppress the reminder.
+  Exhausting the turn budget must still report an incomplete run, never forced success.
+  Confirm that Continue does not replay injected harness notices as new user follow-ups.
 
   ## TUI Agent Startup Confirmation Validation
   Start a TUI agent in a fresh workspace with auto_approve enabled and an initial

@@ -3,6 +3,7 @@ use crate::advisor::{
     AdvisorKind,
 };
 use crate::eval::task::TaskSpec;
+use crate::policy::context::HARNESS_CONTEXT_PREFIX;
 use crate::policy::{
     AgentAction, AgentPolicy, HarnessContextView, HarnessMessage, MessageRole, YieldReason,
 };
@@ -29,6 +30,38 @@ pub struct TaskExecutionResult {
     pub trajectory: TrajectoryRecord,
     pub continuation: Option<crate::eval::ContinuationCheckpoint>,
     pub provider_stats: Option<TaskProviderStats>,
+}
+
+fn sanitize_task_id_for_filename(task_id: &str) -> String {
+    let sanitized: String = task_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "task".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Workspace path for the scratch notes-plan file owned by one harness task.
+pub fn task_notes_plan_path(task_id: &str) -> String {
+    format!(
+        ".agent/notes-plan-{}.md",
+        sanitize_task_id_for_filename(task_id)
+    )
+}
+
+struct SessionTaskIds<'a> {
+    active: &'a str,
+    notes: &'a str,
 }
 
 pub type StepObserver = Arc<dyn Fn(&[TrajectoryStep]) + Send + Sync>;
@@ -110,7 +143,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             advisor_proxy: AdvisorProxyConfig::default(),
             advisor_proxies,
             circuit_breaker_enabled,
-            max_context_messages: 80,
+            max_context_messages: 300,
             max_context_tokens: None,
             compaction_threshold: 0.8,
             max_tool_output_bytes: 32 * 1024,
@@ -1172,7 +1205,10 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         let (status, final_answer, new_steps, new_tool_calls, _modified) = self
             .run_session_loop(
                 session_id,
-                &task.id,
+                SessionTaskIds {
+                    active: &task.id,
+                    notes: &task.id,
+                },
                 &initial_user_prompt,
                 max_steps,
                 effective_budget,
@@ -1358,7 +1394,10 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
             ) = self
                 .run_session_loop(
                     session_id,
-                    &subtask.id,
+                    SessionTaskIds {
+                        active: &subtask.id,
+                        notes: &task.id,
+                    },
                     &subtask_prompt,
                     subtask_max_turns,
                     subtask_exploration_budget,
@@ -1547,7 +1586,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
     async fn run_session_loop(
         &mut self,
         session_id: &str,
-        step_task_id: &str,
+        task_ids: SessionTaskIds<'_>,
         user_prompt: &str,
         max_steps: usize,
         _effective_budget: usize,
@@ -1559,6 +1598,8 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         usize,
         BTreeSet<String>,
     )> {
+        let step_task_id = task_ids.active;
+        let notes_task_id = task_ids.notes;
         self.current_advisor_scope = step_task_id.to_string();
         let mut context =
             HarnessContextView::new(session_id, self.sandbox.workspace_root().to_path_buf());
@@ -1597,6 +1638,10 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
         let mut final_answer = None;
         let mut status = RunStatus::Success;
         let mut modified_files: BTreeSet<String> = BTreeSet::new();
+        let mut repetitions = RepetitiveCallDetector::new(10);
+        let mut last_repeat_warning = None;
+        let notes_path = task_notes_plan_path(notes_task_id);
+        let mut last_notes = self.sandbox.read_file(Path::new(&notes_path)).await.ok();
 
         for step_idx in 0..max_steps {
             context.step_count = step_idx + 1;
@@ -1797,9 +1842,15 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                 }
                 AgentAction::CallTools(calls) => {
                     total_tool_calls += calls.len();
-                    context
-                        .messages
-                        .push(HarnessMessage::assistant_with_tools("", calls.clone()));
+                    let assistant_text = res_payload
+                        .as_ref()
+                        .and_then(|payload| payload.get("text"))
+                        .and_then(|text| text.as_str())
+                        .unwrap_or_default();
+                    context.messages.push(HarnessMessage::assistant_with_tools(
+                        assistant_text,
+                        calls.clone(),
+                    ));
 
                     let preview_response = res_payload.clone().unwrap_or_else(|| {
                         serde_json::json!({
@@ -1823,6 +1874,7 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                     self.notify_step_observer_with_prefix(step_prefix, &preview_steps);
 
                     let mut responses = Vec::new();
+                    let mut repeated_call = false;
                     for call in calls {
                         let res = if let Some(err) = &call.error {
                             ToolCallResponse {
@@ -1858,12 +1910,43 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
                             res
                         };
 
+                        if self.circuit_breaker_enabled && call.error.is_none() {
+                            if !res.is_error && is_progress_call(call) {
+                                repetitions.clear();
+                                repeated_call = false;
+                                last_repeat_warning = None;
+                            } else if is_observation_call(call) {
+                                repeated_call |= repetitions.record_and_count(call) >= 4;
+                            }
+                        }
                         responses.push(res);
                     }
 
                     context
                         .messages
                         .push(HarnessMessage::tool_response(responses.clone()));
+
+                    if repeated_call && last_repeat_warning.is_none_or(|last| step_idx >= last + 10)
+                    {
+                        context.messages.push(HarnessMessage::system(
+                            "[REPEATED TOOL CALLS] The same observation was requested at least four times in the last ten observations without a successful write or verification command. Use the existing results, try a different approach, or return your findings and any remaining blocker in a plain-text final answer. This warning does not mean the task is complete."
+                        ));
+                        last_repeat_warning = Some(step_idx);
+                    }
+                    if (step_idx + 1) % 15 == 0 {
+                        let notes = self.sandbox.read_file(Path::new(&notes_path)).await.ok();
+                        if notes == last_notes {
+                            context.messages.push(HarnessMessage::system(format!(
+                                "[SCRATCHPAD REMINDER] No change to `{notes_path}` was observed during the last 15 steps. Save verified findings, failed approaches, remaining work, and next steps there so they survive context compaction."
+                            )));
+                        }
+                        last_notes = notes;
+                    }
+                    if max_steps.saturating_sub(step_idx + 1) == 5 {
+                        context.messages.push(HarnessMessage::system(
+                            "[TURN BUDGET] Five turns remain. Finish essential verification and return a plain-text final answer describing completed work, evidence, and any unresolved blockers. Do not restart broad exploration."
+                        ));
+                    }
 
                     compact_context_messages(
                         &mut context.messages,
@@ -1962,6 +2045,29 @@ impl<P: AgentPolicy, S: SandboxDriver> AgentHarness<P, S> {
     }
 }
 
+fn is_progress_call(call: &ToolCallRequest) -> bool {
+    matches!(
+        call.name.as_str(),
+        "write_file" | "edit_file" | "patch_file" | "apply_diff"
+    ) || is_modifying_call(call)
+}
+
+fn is_observation_call(call: &ToolCallRequest) -> bool {
+    match call.name.as_str() {
+        "read_file" | "view_file" | "read_file_content" | "search_files" | "grep_search"
+        | "list_dir" | "list_directory" => true,
+        "shell" | "bash" => call
+            .arguments
+            .get("command")
+            .and_then(|value| value.as_str())
+            .is_some_and(|command| {
+                extract_read_target_from_shell(command).is_some()
+                    && !is_modifying_shell_command(command)
+            }),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RepetitiveCallDetector {
     recent_calls: std::collections::VecDeque<String>,
@@ -1976,70 +2082,39 @@ impl RepetitiveCallDetector {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.recent_calls.clear();
+    }
+
     pub fn fingerprint(call: &ToolCallRequest) -> String {
-        match call.name.as_str() {
-            "grep_search" => {
-                let q = call
-                    .arguments
-                    .get("query")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
-                let p = call
-                    .arguments
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
-                format!("grep_search:{q}:{p}")
-            }
-            "read_file" | "view_file" | "read_file_content" => {
-                let p = extract_read_target(call).unwrap_or_default();
-                format!("read_file:{p}")
-            }
-            "list_dir" | "list_directory" => {
-                let p = call
-                    .arguments
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(".")
-                    .trim();
-                format!("list_dir:{p}")
-            }
-            "shell" | "bash" => {
-                let cmd = call
-                    .arguments
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
-                if let Some(target) = extract_read_target_from_shell(cmd) {
-                    format!("shell_read:{target}")
-                } else {
-                    format!("shell:{cmd}")
+        fn canonical(value: &serde_json::Value) -> serde_json::Value {
+            match value {
+                serde_json::Value::Object(map) => {
+                    let sorted: std::collections::BTreeMap<_, _> = map
+                        .iter()
+                        .map(|(key, value)| (key.clone(), canonical(value)))
+                        .collect();
+                    serde_json::to_value(sorted).expect("JSON object is serializable")
                 }
+                serde_json::Value::Array(values) => {
+                    serde_json::Value::Array(values.iter().map(canonical).collect())
+                }
+                value => value.clone(),
             }
-            "consult_advisor" | "consult_expert" => {
-                let p = call
-                    .arguments
-                    .get("prompt")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
-                format!("consult_advisor:{p}")
-            }
-            other => format!("{other}:{}", call.arguments),
         }
+        format!("{}:{}", call.name, canonical(&call.arguments))
     }
 
     pub fn record_and_count(&mut self, call: &ToolCallRequest) -> usize {
         let fp = Self::fingerprint(call);
-        let count = self.recent_calls.iter().filter(|&x| x == &fp).count() + 1;
-        self.recent_calls.push_back(fp);
-        if self.recent_calls.len() > self.max_history {
+        if self.max_history == 0 {
+            return 0;
+        }
+        while self.recent_calls.len() >= self.max_history {
             self.recent_calls.pop_front();
         }
-        count
+        self.recent_calls.push_back(fp.clone());
+        self.recent_calls.iter().filter(|&x| x == &fp).count()
     }
 }
 
@@ -2149,19 +2224,7 @@ pub fn estimate_context_tokens(messages: &[HarnessMessage]) -> usize {
     messages.iter().map(|m| m.estimate_tokens()).sum()
 }
 
-/// Structured execution facts extracted from a history window during compaction.
-#[derive(Debug, Default, Clone)]
-pub struct ExtractedContextFacts {
-    pub explored_files: BTreeSet<String>,
-    pub modified_files: BTreeSet<String>,
-    pub retained_notes: Vec<(String, String)>,
-    pub executed_commands: Vec<String>,
-    pub test_outcomes: Vec<String>,
-    pub recent_errors: Vec<String>,
-    pub nudges_and_notes: Vec<String>,
-    pub advisor_consultations: Vec<(String, String)>,
-    pub planned_steps: Vec<String>,
-}
+pub use crate::policy::context::ExtractedContextFacts;
 
 fn tool_call_count(steps: &[TrajectoryStep]) -> usize {
     steps
@@ -2261,6 +2324,7 @@ pub fn prior_history_messages(
                         continue;
                     };
                     if is_recorded_opening(&text, opening_user_prompt)
+                        || text.starts_with(HARNESS_CONTEXT_PREFIX)
                         || seen_user.iter().any(|seen| seen == &text)
                     {
                         continue;
@@ -2280,7 +2344,13 @@ pub fn trajectory_steps_to_messages(steps: &[TrajectoryStep]) -> Vec<HarnessMess
     for step in steps {
         match &step.action {
             AgentAction::CallTools(calls) => {
-                messages.push(HarnessMessage::assistant_with_tools("", calls.clone()));
+                let text = step
+                    .llm_response
+                    .as_ref()
+                    .and_then(|response| response.get("text"))
+                    .and_then(|text| text.as_str())
+                    .unwrap_or_default();
+                messages.push(HarnessMessage::assistant_with_tools(text, calls.clone()));
                 if let Some(results) = &step.tool_results {
                     messages.push(HarnessMessage::tool_response(results.clone()));
                 }
@@ -2389,12 +2459,89 @@ fn build_continuation_checkpoint_parts(
     }
 }
 
+fn retain_recent<T: PartialEq>(items: &mut Vec<T>, item: T, limit: usize) {
+    items.retain(|existing| existing != &item);
+    items.push(item);
+    if items.len() > limit {
+        items.drain(..items.len() - limit);
+    }
+}
+
+impl ExtractedContextFacts {
+    fn merge(&mut self, other: &Self) {
+        self.explored_files
+            .extend(other.explored_files.iter().cloned());
+        self.modified_files
+            .extend(other.modified_files.iter().cloned());
+        for (path, content) in &other.retained_notes {
+            self.retained_notes.retain(|(p, _)| p != path);
+            retain_recent(&mut self.retained_notes, (path.clone(), content.clone()), 8);
+        }
+        for (target, source, limit) in [
+            (&mut self.executed_commands, &other.executed_commands, 12),
+            (&mut self.test_outcomes, &other.test_outcomes, 4),
+            (&mut self.recent_errors, &other.recent_errors, 4),
+            (&mut self.nudges_and_notes, &other.nudges_and_notes, 3),
+            (&mut self.planned_steps, &other.planned_steps, 2),
+            (&mut self.findings, &other.findings, 8),
+            (&mut self.observations, &other.observations, 8),
+        ] {
+            for item in source {
+                retain_recent(target, item.clone(), limit);
+            }
+        }
+        for item in &other.advisor_consultations {
+            retain_recent(&mut self.advisor_consultations, item.clone(), 3);
+        }
+    }
+
+    fn bound(&mut self) {
+        // Keep the carried state bounded as well as the rendered provider summary.
+        self.explored_files = self.explored_files.iter().take(64).cloned().collect();
+        self.modified_files = self.modified_files.iter().take(64).cloned().collect();
+        let old = std::mem::take(self);
+        self.merge(&old);
+    }
+}
+
 pub fn extract_context_facts(messages: &[HarnessMessage]) -> ExtractedContextFacts {
     let mut facts = ExtractedContextFacts::default();
 
+    let calls_by_id: HashMap<_, _> = messages
+        .iter()
+        .filter_map(|message| message.tool_calls.as_ref())
+        .flatten()
+        .map(|call| (call.id.as_str(), call))
+        .collect();
+    let failed_calls: BTreeSet<_> = messages
+        .iter()
+        .filter_map(|message| message.tool_results.as_ref())
+        .flatten()
+        .filter(|result| result.is_error)
+        .map(|result| result.id.as_str())
+        .collect();
+
     for msg in messages {
+        if let Some(previous) = &msg.compacted_facts {
+            facts.merge(previous);
+            continue;
+        }
+        if msg.role == MessageRole::System {
+            if msg.content.starts_with("[COMPACTED CONTEXT SUMMARY") {
+                retain_recent(&mut facts.findings, truncate_str(&msg.content, 1500), 8);
+            } else if !msg.content.trim().is_empty() {
+                retain_recent(
+                    &mut facts.nudges_and_notes,
+                    truncate_str(msg.content.trim(), 600),
+                    3,
+                );
+            }
+        }
         if let Some(calls) = &msg.tool_calls {
             for call in calls {
+                if call.error.is_some() || failed_calls.contains(call.id.as_str()) {
+                    continue;
+                }
                 match call.name.as_str() {
                     "read_file" | "view_file" | "read_file_content" => {
                         if let Some(path) = extract_read_target(call) {
@@ -2408,13 +2555,12 @@ pub fn extract_context_facts(messages: &[HarnessMessage]) -> ExtractedContextFac
                                     call.arguments.get("content").and_then(|v| v.as_str())
                                 {
                                     let note_snippet = truncate_str(content.trim(), 1500);
-                                    if let Some(existing) =
-                                        facts.retained_notes.iter_mut().find(|(p, _)| p == path)
-                                    {
-                                        existing.1 = note_snippet;
-                                    } else {
-                                        facts.retained_notes.push((path.to_string(), note_snippet));
-                                    }
+                                    facts.retained_notes.retain(|(p, _)| p != path);
+                                    retain_recent(
+                                        &mut facts.retained_notes,
+                                        (path.to_string(), note_snippet),
+                                        8,
+                                    );
                                 }
                             } else {
                                 facts.modified_files.insert(path.to_string());
@@ -2481,6 +2627,28 @@ pub fn extract_context_facts(messages: &[HarnessMessage]) -> ExtractedContextFac
 
         if let Some(results) = &msg.tool_results {
             for res in results {
+                if !res.is_error && !res.output.trim().is_empty() {
+                    if let Some(call) = calls_by_id.get(res.id.as_str()) {
+                        if matches!(
+                            call.name.as_str(),
+                            "read_file"
+                                | "view_file"
+                                | "read_file_content"
+                                | "search_files"
+                                | "grep_search"
+                                | "shell"
+                                | "bash"
+                        ) {
+                            let args = truncate_str(&call.arguments.to_string(), 160);
+                            let (output, _) = snip_tool_output(res.output.trim(), 8, 600);
+                            retain_recent(
+                                &mut facts.observations,
+                                format!("{} {}\n{}", call.name, args, output),
+                                8,
+                            );
+                        }
+                    }
+                }
                 if res.name == "consult_advisor" && !res.output.trim().is_empty() {
                     let out_snippet = truncate_str(res.output.trim(), 400);
                     if let Some(last) = facts.advisor_consultations.last_mut() {
@@ -2521,17 +2689,21 @@ pub fn extract_context_facts(messages: &[HarnessMessage]) -> ExtractedContextFac
             }
         }
 
-        if msg.role == MessageRole::Assistant && !msg.content.is_empty() {
+        if msg.role == MessageRole::Assistant && !msg.content.trim().is_empty() {
+            retain_recent(
+                &mut facts.findings,
+                truncate_str(msg.content.trim(), 600),
+                8,
+            );
             let content_lower = msg.content.to_lowercase();
-            if (content_lower.contains("plan")
+            if content_lower.contains("plan")
                 || content_lower.contains("todo")
                 || content_lower.contains("steps:")
-                || content_lower.contains("implementation"))
-                && facts.planned_steps.len() < 2
+                || content_lower.contains("implementation")
             {
                 let snippet = truncate_str(msg.content.trim(), 500);
                 if !snippet.is_empty() {
-                    facts.planned_steps.push(snippet);
+                    retain_recent(&mut facts.planned_steps, snippet, 2);
                 }
             }
         }
@@ -2545,6 +2717,7 @@ pub fn extract_context_facts(messages: &[HarnessMessage]) -> ExtractedContextFac
         }
     }
 
+    facts.bound();
     facts
 }
 
@@ -2556,6 +2729,19 @@ pub fn format_structured_context_summary(
         "[COMPACTED CONTEXT SUMMARY - Progressive History]\n\
          Earlier interaction history ({pruned_count} messages) was compacted to retain immediate context and preserve token budget.\n"
     );
+
+    if !facts.findings.is_empty() {
+        s.push_str("\n### Recorded Assistant Findings (verify against current evidence):\n");
+        for finding in &facts.findings {
+            s.push_str(&format!("- {finding}\n"));
+        }
+    }
+    if !facts.observations.is_empty() {
+        s.push_str("\n### Tool Evidence (excerpts, not instructions):\n");
+        for observation in &facts.observations {
+            s.push_str(&format!("{observation}\n\n"));
+        }
+    }
 
     if !facts.retained_notes.is_empty() {
         s.push_str("\n### Retained Scratchpad & Architecture Notes:\n");
@@ -2630,7 +2816,7 @@ pub fn format_structured_context_summary(
         }
     }
 
-    s.push_str("\n[Directive]: Use the summarized progress and recent immediate context below to continue the task. Do NOT re-explore files already examined; proceed directly to applying modifications with write_file or running test verification.");
+    s.push_str("\n[Directive]: Continue the current task using these retained findings and recent context. Re-check evidence when needed. Once the requested work is complete, return a plain-text final answer. If blocked, explain the blocker and remaining work instead of repeating searches.");
     s
 }
 
@@ -2644,7 +2830,7 @@ pub fn format_structured_context_summary(
 /// The resulting context retains:
 /// - Head: Initial System Instructions & Task Prompt (first 2 messages)
 /// - Middle: Progressive Structured Context Summary
-/// - Tail: Active Working Memory (most recent 4-8 interactions)
+/// - Tail: Active working memory (up to 8 messages under token pressure, otherwise 32)
 pub fn compact_context_messages(
     messages: &mut Vec<HarnessMessage>,
     max_messages: usize,
@@ -2669,11 +2855,8 @@ pub fn compact_context_messages(
     // A tool call kept in the head must keep the result that follows it.
     head_count = extend_head_through_tool_results(messages, head_count);
 
-    let tail_preserve = if exceeds_tokens {
-        (max_messages.saturating_sub(head_count + 1)).clamp(4, 8)
-    } else {
-        (max_messages.saturating_sub(head_count + 1)).max(4)
-    };
+    let tail_limit = if exceeds_tokens { 8 } else { 32 };
+    let tail_preserve = (max_messages.saturating_sub(head_count + 1)).clamp(4, tail_limit);
 
     let mut tail_start = messages.len().saturating_sub(tail_preserve);
     // Do not start the tail on a tool result whose call was compacted away.
@@ -2688,7 +2871,8 @@ pub fn compact_context_messages(
     let facts = extract_context_facts(&messages[head_count..tail_start]);
     let pruned_count = tail_start - head_count;
     let summary_text = format_structured_context_summary(pruned_count, &facts);
-    let summary_msg = HarnessMessage::system(summary_text);
+    let mut summary_msg = HarnessMessage::system(summary_text);
+    summary_msg.compacted_facts = Some(Box::new(facts));
 
     let tail: Vec<HarnessMessage> = messages[tail_start..].to_vec();
     let mut compacted = head;

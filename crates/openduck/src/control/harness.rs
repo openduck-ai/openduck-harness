@@ -15,6 +15,7 @@ use openduck_harness::eval::{
     ContinuationCheckpoint, EvalMetrics, EvalRunner, EvalRunnerConfig, EvaluationReport, TaskSpec,
 };
 use openduck_harness::policy::adapters::EchoPolicy;
+use openduck_harness::policy::context::HARNESS_CONTEXT_PREFIX;
 use openduck_harness::policy::{
     AgentAction, AgentPolicy, HarnessContextView, MessageRole, PartialGeneration,
     PartialThinkingObserver, StepTelemetry, YieldReason,
@@ -39,32 +40,7 @@ use crate::providers::base::Provider;
 
 pub(crate) const GENERIC_SCRATCH_NOTES_INSTRUCTION: &str = "Maintain Scratchpad Notes: Keep your plan, task progress, and key facts in a per-task scratch notes file under `.agent/` named `.agent/notes-plan-<task-id>.md` (one file per task identity) in the workspace so they survive context compaction. For a new task run, initialize a fresh plan and never assume completion based on artifacts or git commits from prior runs.";
 
-fn sanitize_task_id_for_filename(task_id: &str) -> String {
-    let sanitized: String = task_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let trimmed = sanitized.trim_matches('_');
-    if trimmed.is_empty() {
-        "task".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-/// Workspace path for the scratch notes-plan file owned by one harness task.
-pub fn task_notes_plan_path(task_id: &str) -> String {
-    format!(
-        ".agent/notes-plan-{}.md",
-        sanitize_task_id_for_filename(task_id)
-    )
-}
+pub use openduck_harness::runtime::task_notes_plan_path;
 
 pub fn task_scratch_notes_instruction(task_id: &str) -> String {
     let path = task_notes_plan_path(task_id);
@@ -949,7 +925,14 @@ impl AgentPolicy for GooseAgentPolicy {
 
         for h_msg in &context.messages {
             match h_msg.role {
-                MessageRole::System => {}
+                MessageRole::System => {
+                    if !h_msg.content.trim().is_empty() {
+                        messages.push(
+                            Message::user()
+                                .with_text(format!("{HARNESS_CONTEXT_PREFIX}{}", h_msg.content)),
+                        );
+                    }
+                }
                 MessageRole::User => {
                     messages.push(Message::user().with_text(&h_msg.content));
                 }
@@ -4242,6 +4225,90 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn policy_step_delivers_compacted_memory_and_runtime_notices_to_provider() {
+        use openduck_harness::policy::HarnessMessage;
+        use openduck_providers::errors::ProviderError;
+
+        struct CapturingProvider {
+            seen: Arc<std::sync::Mutex<Vec<Message>>>,
+        }
+        #[async_trait]
+        impl Provider for CapturingProvider {
+            fn get_name(&self) -> &str {
+                "capturing-context"
+            }
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                system: &str,
+                messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<openduck_providers::base::MessageStream, ProviderError> {
+                assert_eq!(system, "Base instruction");
+                *self.seen.lock().unwrap() = messages.to_vec();
+                Ok(Box::pin(futures::stream::iter(vec![Ok((
+                    Some(Message::assistant().with_text("Done")),
+                    None,
+                ))])))
+            }
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut policy = GooseAgentPolicy::new(
+            "context-test",
+            Arc::new(CapturingProvider { seen: seen.clone() }),
+            ModelConfig::new("test-model"),
+        )
+        .with_system_prompt("Base instruction");
+        let mut context = HarnessContextView::new("context-test", PathBuf::from("."));
+        context.messages = vec![
+            HarnessMessage::user("Diagnose power saving"),
+            HarnessMessage::system("[COMPACTED CONTEXT SUMMARY]\nThe setting is unused."),
+            HarnessMessage::system("   "),
+            HarnessMessage::assistant_with_tools(
+                "Inspecting",
+                vec![ToolCallRequest::new(
+                    "read",
+                    "shell",
+                    serde_json::json!({"command": "cat power.c"}),
+                )],
+            ),
+            HarnessMessage::tool_response(vec![openduck_harness::types::ToolCallResponse {
+                id: "read".into(),
+                name: "shell".into(),
+                output: "int power_save;".into(),
+                is_error: false,
+            }]),
+            HarnessMessage::system("[REPEATED TOOL CALLS] Use existing results."),
+        ];
+        let (action, telemetry) = policy.step_detailed(&context, &[]).await.unwrap();
+        assert_eq!(action, AgentAction::FinalAnswer("Done".into()));
+        let captured = seen.lock().unwrap();
+        assert_eq!(captured.len(), 5);
+        assert!(captured[1]
+            .as_concat_text()
+            .contains("[COMPACTED CONTEXT SUMMARY]"));
+        assert!(captured[1]
+            .as_concat_text()
+            .contains("The setting is unused."));
+        assert!(matches!(
+            &captured[2].content[1],
+            MessageContent::ToolRequest(_)
+        ));
+        assert!(matches!(
+            &captured[3].content[0],
+            MessageContent::ToolResponse(_)
+        ));
+        assert!(captured[4]
+            .as_concat_text()
+            .contains("[REPEATED TOOL CALLS]"));
+        let request = telemetry.unwrap().llm_request.unwrap();
+        assert_eq!(request["messagesCount"], 5);
+        assert!(request["messages"]
+            .to_string()
+            .contains("The setting is unused."));
+    }
+
     #[test]
     fn action_from_provider_reply_preserves_thought_signature_metadata() {
         use openduck_providers::conversation::message::ProviderMetadata;
@@ -4291,6 +4358,7 @@ mod tests {
             tool_calls: Some(vec![call]),
             tool_results: None,
             created_at: chrono::Utc::now(),
+            compacted_facts: None,
         };
 
         let mut msg = Message::assistant();
