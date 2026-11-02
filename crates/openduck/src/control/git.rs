@@ -1,19 +1,303 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, bail, Result};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::sync::Mutex as AsyncMutex;
 
 use super::files::sanitize_relative_path;
 use crate::subprocess::{git_command, SubprocessExt};
 
-const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
-const LOG_TIMEOUT: Duration = Duration::from_secs(8);
-const DIFF_TIMEOUT: Duration = Duration::from_secs(8);
-const MUTATE_TIMEOUT: Duration = Duration::from_secs(30);
-const MESSAGE_TIMEOUT: Duration = Duration::from_secs(25);
+static REPO_WRITE_LOCKS: Lazy<std::sync::Mutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    Lazy::new(std::sync::Mutex::default);
+
+const STALE_LOCK_AGE: Duration = Duration::from_secs(10);
+const LOCK_REMOVE_RETRIES: usize = 10;
+const LOCK_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+fn repo_write_mutex(root: &Path) -> Arc<AsyncMutex<()>> {
+    let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut registry = REPO_WRITE_LOCKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    registry
+        .entry(key)
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
+
+async fn with_repo_write_lock<F, T>(root: &Path, operation: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let mutex = repo_write_mutex(root);
+    let _guard = mutex.lock().await;
+    operation.await
+}
+
+#[cfg(target_os = "linux")]
+fn has_live_git_process_in(root: &Path) -> bool {
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(pid) = file_name.to_str() else {
+            continue;
+        };
+        if !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else {
+            continue;
+        };
+        if comm.trim() != "git" {
+            continue;
+        }
+        if process_covers_root(&entry.path(), root) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn process_covers_root(proc_dir: &Path, root: &Path) -> bool {
+    let Ok(cwd) = std::fs::read_link(proc_dir.join("cwd")) else {
+        return false;
+    };
+    cwd == root || cwd.starts_with(root)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn has_live_git_process_in(_root: &Path) -> bool {
+    false
+}
+
+struct RepoLayout {
+    toplevel: PathBuf,
+    index_lock: PathBuf,
+}
+
+async fn repo_layout(path: &Path) -> Result<RepoLayout> {
+    let stdout = run_git_ok(
+        path,
+        "git rev-parse",
+        &[
+            "rev-parse",
+            "--is-inside-work-tree",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-path",
+            "index.lock",
+            "--absolute-git-dir",
+        ],
+        READ_TIMEOUT,
+    )
+    .await
+    .map_err(|_| anyhow!("Not a git repository"))?;
+    parse_repo_layout(&stdout)
+}
+
+fn parse_repo_layout(stdout: &str) -> Result<RepoLayout> {
+    // git 2.43.0 prints four lines: inside, toplevel, index.lock, git dir.
+    // `--path-format=absolute` only changes how later paths are printed.
+    let lines: Vec<&str> = stdout.lines().map(str::trim).collect();
+    if lines.len() != 4 || lines.iter().any(|line| line.is_empty()) || lines[0] != "true" {
+        bail!("Not a git repository");
+    }
+    let toplevel = PathBuf::from(lines[1]);
+    let index_lock = PathBuf::from(lines[2]);
+    let git_dir = PathBuf::from(lines[3]);
+    if !toplevel.is_absolute() || !index_lock.is_absolute() || !git_dir.is_absolute() {
+        bail!("Not a git repository");
+    }
+    let toplevel = toplevel.canonicalize().unwrap_or(toplevel);
+    Ok(RepoLayout {
+        toplevel,
+        index_lock,
+    })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct LockIdentity {
+    len: u64,
+    modified: Option<SystemTime>,
+    dev_ino: Option<(u64, u64)>,
+}
+
+fn lock_identity(path: &Path) -> Option<LockIdentity> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    Some(identity_from_metadata(&metadata))
+}
+
+fn identity_from_metadata(metadata: &std::fs::Metadata) -> LockIdentity {
+    LockIdentity {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        dev_ino: device_and_inode(metadata),
+    }
+}
+
+#[cfg(unix)]
+fn device_and_inode(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn device_and_inode(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+async fn reclaim_stale_index_lock(layout: &RepoLayout) -> Result<()> {
+    let metadata = match std::fs::symlink_metadata(&layout.index_lock) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() {
+        bail!(
+            "git index lock path is not a regular file: {}",
+            layout.index_lock.display()
+        );
+    }
+    let stale = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age >= STALE_LOCK_AGE);
+    if stale && !has_live_git_process_in(&layout.toplevel) {
+        return remove_observed_index_lock(&layout.index_lock, identity_from_metadata(&metadata))
+            .await;
+    }
+    Err(index_lock_in_progress(&layout.index_lock))
+}
+
+fn index_lock_in_progress(path: &Path) -> anyhow::Error {
+    anyhow!(
+        "Another git operation is in progress in this repository (lock: {}). If no git process is running, delete that file and retry.",
+        path.display()
+    )
+}
+
+async fn remove_observed_index_lock(path: &Path, expected: LockIdentity) -> Result<()> {
+    for attempt in 0..LOCK_REMOVE_RETRIES {
+        match lock_identity(path) {
+            None => return Ok(()),
+            Some(current) if current != expected => return Err(index_lock_in_progress(path)),
+            Some(_) => {
+                if unlink_index_lock(path, attempt).await? {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Remove a lock our own child created or replaced.
+///
+/// `expected_changed_from` is the identity from before that child was spawned
+/// (`None` when the lock was absent). A later identity change means another
+/// writer took the path, so removal stops and leaves the file.
+async fn remove_created_index_lock(
+    path: &Path,
+    expected_changed_from: Option<LockIdentity>,
+) -> Result<()> {
+    let mut claimed: Option<LockIdentity> = None;
+    for attempt in 0..LOCK_REMOVE_RETRIES {
+        let current = lock_identity(path);
+        if current.is_none() || current == expected_changed_from {
+            return Ok(());
+        }
+        if let Some(claimed_id) = claimed {
+            if current != Some(claimed_id) {
+                return Ok(());
+            }
+        } else {
+            claimed = current;
+        }
+        if unlink_index_lock(path, attempt).await? {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+async fn unlink_index_lock(path: &Path, attempt: usize) -> Result<bool> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(_) if attempt + 1 == LOCK_REMOVE_RETRIES => Err(anyhow!(
+            "failed to remove stale git lock {}",
+            path.display()
+        )),
+        Err(_) => {
+            tokio::time::sleep(LOCK_RETRY_DELAY).await;
+            Ok(false)
+        }
+    }
+}
+
+/// Best-effort reclaim when the future around a mutating git child is dropped.
+///
+/// Dropping that future is the only cancellation signal. Async cleanup would be
+/// cancelled with it, and a spawned task could re-enter `with_repo_write_lock`.
+/// The synchronous unlink below is the only cleanup that still runs.
+struct OwnedLockGuard {
+    lock_path: PathBuf,
+    before: Option<LockIdentity>,
+    armed: bool,
+}
+
+impl OwnedLockGuard {
+    fn arm(lock_path: PathBuf, before: Option<LockIdentity>) -> Self {
+        Self {
+            lock_path,
+            before,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for OwnedLockGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(current) = lock_identity(&self.lock_path) else {
+            return;
+        };
+        if Some(current) == self.before {
+            return;
+        }
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
+// Core commit subprocess subtotal = repo discovery READ_TIMEOUT(30s) + ADD_TIMEOUT(60s)
+// + COMMIT_TIMEOUT(120s) + post-commit log READ_TIMEOUT(30s) = 240s. Discovery
+// replaces the ensure-repo rev-parse and keeps that 30s phase. The Hub client
+// allows 300s for /git/commit (ui/hub-core/src/rest.ts), 60s headroom. These
+// per-subprocess budgets do not bound repo write mutex waiting or git-side lock waiting.
+const ADD_TIMEOUT: Duration = Duration::from_secs(60);
+const COMMIT_TIMEOUT: Duration = Duration::from_secs(120);
+const MUTATE_TIMEOUT: Duration = Duration::from_secs(90);
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const MESSAGE_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_LOG: usize = 500;
 const DEFAULT_LOG: usize = 150;
 const MAX_DIFF_BYTES: usize = 200 * 1024;
@@ -166,6 +450,7 @@ pub struct GitCommitMessageResponse {
     pub source: String,
 }
 
+#[derive(Debug)]
 struct GitOutput {
     stdout: Vec<u8>,
     stderr: String,
@@ -189,19 +474,108 @@ fn git_tokio() -> Command {
     command
 }
 
-async fn run_git(path: &Path, args: &[&str], timeout: Duration) -> Result<GitOutput> {
+async fn read_pipe_to_end(
+    pipe: Option<impl tokio::io::AsyncRead + Unpin>,
+) -> std::io::Result<Vec<u8>> {
+    let Some(mut pipe) = pipe else {
+        return Ok(Vec::new());
+    };
+    let mut buffer = Vec::new();
+    pipe.read_to_end(&mut buffer).await?;
+    Ok(buffer)
+}
+
+async fn reap_timed_out_git(mut child: tokio::process::Child, label: &str) -> anyhow::Error {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    anyhow!("{label} timed out")
+}
+
+enum GitChildOutcome {
+    Finished(GitOutput),
+    TimedOut(anyhow::Error),
+}
+
+fn finish_git_run(outcome: GitChildOutcome) -> Result<GitOutput> {
+    match outcome {
+        GitChildOutcome::Finished(output) => Ok(output),
+        GitChildOutcome::TimedOut(error) => Err(error),
+    }
+}
+
+async fn run_git_timed(
+    path: &Path,
+    label: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<GitChildOutcome> {
     let mut command = git_tokio();
     command.args(args).current_dir(path);
-    let output = tokio::time::timeout(timeout, command.output())
-        .await
-        .map_err(|_| anyhow!("git timed out"))?
+    let mut child = command
+        .spawn()
         .map_err(|error| anyhow!("git is not available: {error}"))?;
-    Ok(GitOutput {
-        stdout: output.stdout,
-        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        success: output.status.success(),
-        code: output.status.code(),
-    })
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let drain = async {
+        let (stdout, stderr, status) = tokio::join!(
+            async { read_pipe_to_end(stdout_pipe).await.unwrap_or_default() },
+            async { read_pipe_to_end(stderr_pipe).await.unwrap_or_default() },
+            child.wait(),
+        );
+        let status = status?;
+        Ok::<GitOutput, std::io::Error>(GitOutput {
+            stdout,
+            stderr: String::from_utf8_lossy(&stderr).trim().to_string(),
+            success: status.success(),
+            code: status.code(),
+        })
+    };
+    match tokio::time::timeout(timeout, drain).await {
+        Ok(output) => {
+            Ok(GitChildOutcome::Finished(output.map_err(|error| {
+                anyhow!("git is not available: {error}")
+            })?))
+        }
+        Err(_) => Ok(GitChildOutcome::TimedOut(
+            reap_timed_out_git(child, label).await,
+        )),
+    }
+}
+
+async fn run_git(path: &Path, label: &str, args: &[&str], timeout: Duration) -> Result<GitOutput> {
+    finish_git_run(run_git_timed(path, label, args, timeout).await?)
+}
+
+async fn run_git_mutating(
+    path: &Path,
+    lock_path: &Path,
+    label: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<GitOutput> {
+    let before = lock_identity(lock_path);
+    let mut guard = OwnedLockGuard::arm(lock_path.to_path_buf(), before);
+    let outcome = run_git_timed(path, label, args, timeout).await;
+    guard.disarm();
+    let _ = remove_created_index_lock(lock_path, before).await;
+    finish_git_run(outcome?)
+}
+
+async fn run_git_mutating_ok(
+    path: &Path,
+    lock_path: &Path,
+    label: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String> {
+    let output = run_git_mutating(path, lock_path, label, args, timeout).await?;
+    if !output.success {
+        if output.stderr.is_empty() {
+            bail!("git {} failed", args.first().unwrap_or(&"command"));
+        }
+        bail!("{}", output.stderr);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn git_error(output: &GitOutput, fallback: &str) -> anyhow::Error {
@@ -212,8 +586,8 @@ fn git_error(output: &GitOutput, fallback: &str) -> anyhow::Error {
     }
 }
 
-async fn run_git_ok(path: &Path, args: &[&str], timeout: Duration) -> Result<String> {
-    let output = run_git(path, args, timeout).await?;
+async fn run_git_ok(path: &Path, label: &str, args: &[&str], timeout: Duration) -> Result<String> {
+    let output = run_git(path, label, args, timeout).await?;
     if !output.success {
         if output.stderr.is_empty() {
             bail!("git {} failed", args.first().unwrap_or(&"command"));
@@ -279,8 +653,9 @@ fn validate_commit_message(message: &str) -> Result<String> {
 async fn ensure_repo(path: &Path) -> Result<()> {
     let inside = run_git_ok(
         path,
+        "git rev-parse",
         &["rev-parse", "--is-inside-work-tree"],
-        STATUS_TIMEOUT,
+        READ_TIMEOUT,
     )
     .await;
     match inside {
@@ -478,8 +853,9 @@ pub async fn status(path: &Path) -> Result<GitStatusResponse> {
     ensure_repo(path).await?;
     let output = run_git(
         path,
+        "git status",
         &["status", "--porcelain=v1", "-z", "-b"],
-        STATUS_TIMEOUT,
+        READ_TIMEOUT,
     )
     .await?;
     if !output.success {
@@ -507,15 +883,20 @@ pub async fn status(path: &Path) -> Result<GitStatusResponse> {
 pub async fn log(path: &Path, limit: Option<usize>) -> Result<GitLogResponse> {
     ensure_repo(path).await?;
     let limit = limit.unwrap_or(DEFAULT_LOG).clamp(1, MAX_LOG);
-    let head = run_git_ok(path, &["rev-parse", "HEAD"], STATUS_TIMEOUT)
+    let head = run_git_ok(path, "git rev-parse", &["rev-parse", "HEAD"], READ_TIMEOUT)
         .await
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_hexdigit()));
-    let branch_name = run_git_ok(path, &["rev-parse", "--abbrev-ref", "HEAD"], STATUS_TIMEOUT)
-        .await
-        .ok()
-        .map(|value| value.trim().to_string());
+    let branch_name = run_git_ok(
+        path,
+        "git rev-parse",
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+        READ_TIMEOUT,
+    )
+    .await
+    .ok()
+    .map(|value| value.trim().to_string());
     let detached = branch_name.as_deref() == Some("HEAD");
     let branch = branch_name.filter(|name| name != "HEAD");
     if head.is_none() {
@@ -533,6 +914,7 @@ pub async fn log(path: &Path, limit: Option<usize>) -> Result<GitLogResponse> {
     let pretty = format!("--pretty=format:{format}");
     let stdout = run_git_ok(
         path,
+        "git log",
         &[
             "log",
             "--all",
@@ -541,7 +923,7 @@ pub async fn log(path: &Path, limit: Option<usize>) -> Result<GitLogResponse> {
             &max_count,
             &pretty,
         ],
-        LOG_TIMEOUT,
+        READ_TIMEOUT,
     )
     .await?;
     let commits = parse_log_output(&stdout);
@@ -596,7 +978,7 @@ pub async fn diff(path: &Path, rel_path: &str, staged: bool) -> Result<GitDiffRe
     }
     args.push("--");
     args.push(&rel_path);
-    let output = run_git(path, &args, DIFF_TIMEOUT).await?;
+    let output = run_git(path, "git diff", &args, READ_TIMEOUT).await?;
     if !output.success && output.code != Some(1) {
         return Err(git_error(&output, "git diff failed"));
     }
@@ -616,6 +998,7 @@ pub async fn show(path: &Path, sha: &str) -> Result<GitShowResponse> {
     let format = "%H%x1f%P%x1f%an%x1f%ae%x1f%cI%x1f%d%x1f%s%x1f%b";
     let stdout = run_git_ok(
         path,
+        "git log",
         &[
             "log",
             "-1",
@@ -623,7 +1006,7 @@ pub async fn show(path: &Path, sha: &str) -> Result<GitShowResponse> {
             &format!("--pretty=format:{format}"),
             sha,
         ],
-        LOG_TIMEOUT,
+        READ_TIMEOUT,
     )
     .await?;
     let mut parts = stdout.splitn(8, '\u{1f}');
@@ -641,8 +1024,9 @@ pub async fn show(path: &Path, sha: &str) -> Result<GitShowResponse> {
     let body = parts.next().unwrap_or_default().trim().to_string();
     let diff_output = run_git(
         path,
+        "git show",
         &["show", "--no-color", "--no-ext-diff", "--format=", sha],
-        DIFF_TIMEOUT,
+        READ_TIMEOUT,
     )
     .await?;
     if !diff_output.success && diff_output.code != Some(1) {
@@ -659,17 +1043,34 @@ pub async fn show(path: &Path, sha: &str) -> Result<GitShowResponse> {
 }
 
 pub async fn stage(path: &Path, paths: &[String]) -> Result<GitStatusResponse> {
-    ensure_repo(path).await?;
+    with_repo_write_lock(path, async { stage_locked(path, paths).await }).await
+}
+
+async fn stage_locked(path: &Path, paths: &[String]) -> Result<GitStatusResponse> {
+    let layout = repo_layout(path).await?;
+    reclaim_stale_index_lock(&layout).await?;
     let paths = validate_paths(paths)?;
     let mut args = vec!["add".to_string(), "--".to_string()];
     args.extend(paths);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    run_git_ok(path, &arg_refs, MUTATE_TIMEOUT).await?;
+    run_git_mutating_ok(
+        path,
+        &layout.index_lock,
+        "git add",
+        &arg_refs,
+        MUTATE_TIMEOUT,
+    )
+    .await?;
     status(path).await
 }
 
 pub async fn unstage(path: &Path, paths: &[String]) -> Result<GitStatusResponse> {
-    ensure_repo(path).await?;
+    with_repo_write_lock(path, async { unstage_locked(path, paths).await }).await
+}
+
+async fn unstage_locked(path: &Path, paths: &[String]) -> Result<GitStatusResponse> {
+    let layout = repo_layout(path).await?;
+    reclaim_stale_index_lock(&layout).await?;
     let paths = validate_paths(paths)?;
     let current = status(path).await?;
     let staged: Vec<String> = paths
@@ -691,22 +1092,39 @@ pub async fn unstage(path: &Path, paths: &[String]) -> Result<GitStatusResponse>
     ];
     args.extend(staged);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    run_git_ok(path, &arg_refs, MUTATE_TIMEOUT).await?;
+    run_git_mutating_ok(
+        path,
+        &layout.index_lock,
+        "git restore",
+        &arg_refs,
+        MUTATE_TIMEOUT,
+    )
+    .await?;
     status(path).await
 }
 
 pub async fn discard(path: &Path, paths: &[String]) -> Result<GitStatusResponse> {
-    ensure_repo(path).await?;
+    with_repo_write_lock(path, async { discard_locked(path, paths).await }).await
+}
+
+async fn discard_locked(path: &Path, paths: &[String]) -> Result<GitStatusResponse> {
+    let layout = repo_layout(path).await?;
+    reclaim_stale_index_lock(&layout).await?;
     let paths = validate_paths(paths)?;
     let current = status(path).await?;
     for rel in &paths {
         let change = current.files.iter().find(|file| file.path == *rel);
-        discard_one(path, rel, change).await?;
+        discard_one(path, &layout, rel, change).await?;
     }
     status(path).await
 }
 
-async fn discard_one(root: &Path, rel: &str, change: Option<&GitFileChange>) -> Result<()> {
+async fn discard_one(
+    root: &Path,
+    layout: &RepoLayout,
+    rel: &str,
+    change: Option<&GitFileChange>,
+) -> Result<()> {
     let untracked = change.map(|file| file.untracked).unwrap_or(false);
     let added = change.is_some_and(|file| file.index_status == "A");
     if untracked {
@@ -718,13 +1136,34 @@ async fn discard_one(root: &Path, rel: &str, change: Option<&GitFileChange>) -> 
         args.push("--".to_string());
         args.push(rel.to_string());
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_git_ok(root, &arg_refs, MUTATE_TIMEOUT).await?;
+        run_git_mutating_ok(
+            root,
+            &layout.index_lock,
+            "git clean",
+            &arg_refs,
+            MUTATE_TIMEOUT,
+        )
+        .await?;
         return Ok(());
     }
     if added {
-        run_git_ok(root, &["restore", "--staged", "--", rel], MUTATE_TIMEOUT).await?;
+        run_git_mutating_ok(
+            root,
+            &layout.index_lock,
+            "git restore",
+            &["restore", "--staged", "--", rel],
+            MUTATE_TIMEOUT,
+        )
+        .await?;
         if root.join(rel).exists() {
-            run_git_ok(root, &["clean", "-f", "--", rel], MUTATE_TIMEOUT).await?;
+            run_git_mutating_ok(
+                root,
+                &layout.index_lock,
+                "git clean",
+                &["clean", "-f", "--", rel],
+                MUTATE_TIMEOUT,
+            )
+            .await?;
         }
         return Ok(());
     }
@@ -740,12 +1179,24 @@ async fn discard_one(root: &Path, rel: &str, change: Option<&GitFileChange>) -> 
         args.push(original.to_string());
     }
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    run_git_ok(root, &arg_refs, MUTATE_TIMEOUT).await?;
+    run_git_mutating_ok(
+        root,
+        &layout.index_lock,
+        "git restore",
+        &arg_refs,
+        MUTATE_TIMEOUT,
+    )
+    .await?;
     Ok(())
 }
 
 pub async fn commit(path: &Path, message: &str, paths: &[String]) -> Result<GitCommitResponse> {
-    ensure_repo(path).await?;
+    with_repo_write_lock(path, async { commit_locked(path, message, paths).await }).await
+}
+
+async fn commit_locked(path: &Path, message: &str, paths: &[String]) -> Result<GitCommitResponse> {
+    let layout = repo_layout(path).await?;
+    reclaim_stale_index_lock(&layout).await?;
     let message = validate_commit_message(message)?;
     let commit_paths = if paths.is_empty() {
         Vec::new()
@@ -756,7 +1207,7 @@ pub async fn commit(path: &Path, message: &str, paths: &[String]) -> Result<GitC
         let mut args = vec!["add".to_string(), "--".to_string()];
         args.extend(commit_paths.iter().cloned());
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_git_ok(path, &arg_refs, MUTATE_TIMEOUT).await?;
+        run_git_mutating_ok(path, &layout.index_lock, "git add", &arg_refs, ADD_TIMEOUT).await?;
     }
     let file = tempfile::NamedTempFile::new()?;
     std::fs::write(file.path(), message.as_bytes())?;
@@ -772,7 +1223,14 @@ pub async fn commit(path: &Path, message: &str, paths: &[String]) -> Result<GitC
         args.extend(commit_paths);
     }
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = run_git(path, &arg_refs, MUTATE_TIMEOUT).await?;
+    let output = run_git_mutating(
+        path,
+        &layout.index_lock,
+        "git commit",
+        &arg_refs,
+        COMMIT_TIMEOUT,
+    )
+    .await?;
     drop(file);
     if !output.success {
         if output.stderr.is_empty() {
@@ -780,14 +1238,31 @@ pub async fn commit(path: &Path, message: &str, paths: &[String]) -> Result<GitC
         }
         bail!("{}", output.stderr);
     }
-    let line = run_git_ok(path, &["log", "-1", "--format=%H%x1f%s"], STATUS_TIMEOUT).await?;
-    let mut parts = line.trim().splitn(2, '\u{1f}');
-    let sha = parts.next().unwrap_or_default().to_string();
-    let subject = parts.next().unwrap_or_default().to_string();
-    if sha.is_empty() {
-        bail!("Commit succeeded but the new revision could not be read");
+    let line = run_git_ok(
+        path,
+        "git log",
+        &["log", "-1", "--format=%H%x1f%s"],
+        READ_TIMEOUT,
+    )
+    .await;
+    Ok(commit_response_from_log(line, &message))
+}
+
+fn commit_response_from_log(line: Result<String>, message: &str) -> GitCommitResponse {
+    if let Ok(line) = line {
+        if let Some((sha, subject)) = line.trim().split_once('\u{1f}') {
+            if !sha.is_empty() && !subject.is_empty() {
+                return GitCommitResponse {
+                    sha: sha.to_string(),
+                    subject: subject.to_string(),
+                };
+            }
+        }
     }
-    Ok(GitCommitResponse { sha, subject })
+    GitCommitResponse {
+        sha: String::new(),
+        subject: message.lines().next().unwrap_or_default().to_string(),
+    }
 }
 
 pub fn heuristic_commit_message(files: &[GitFileChange]) -> String {
@@ -846,7 +1321,7 @@ fn clean_generated_message(text: &str) -> String {
 }
 
 async fn git_diff_text(path: &Path, args: &[&str]) -> Result<String> {
-    let output = run_git(path, args, DIFF_TIMEOUT).await?;
+    let output = run_git(path, "git diff", args, READ_TIMEOUT).await?;
     if !output.success && output.code != Some(1) {
         return Err(git_error(&output, "git diff failed"));
     }
@@ -996,6 +1471,7 @@ impl TaskAutoCommit {
     async fn changes(root: &Path) -> Result<Vec<GitFileChange>> {
         let output = run_git_ok(
             root,
+            "git status",
             &[
                 "status",
                 "--porcelain=v1",
@@ -1003,7 +1479,7 @@ impl TaskAutoCommit {
                 "-b",
                 "--untracked-files=all",
             ],
-            STATUS_TIMEOUT,
+            READ_TIMEOUT,
         )
         .await?;
         Ok(parse_porcelain_z(output.as_bytes()).1)
@@ -1016,7 +1492,13 @@ impl TaskAutoCommit {
         if ensure_repo(workspace).await.is_err() {
             return Ok(None);
         }
-        let root = run_git_ok(workspace, &["rev-parse", "--show-toplevel"], STATUS_TIMEOUT).await?;
+        let root = run_git_ok(
+            workspace,
+            "git rev-parse",
+            &["rev-parse", "--show-toplevel"],
+            READ_TIMEOUT,
+        )
+        .await?;
         let root = std::path::PathBuf::from(root.trim());
         let current = Self::changes(&root).await?;
         let initially_dirty = current
@@ -1163,7 +1645,13 @@ pub fn parse_worktree_porcelain(raw: &str) -> Vec<GitWorktreeEntry> {
 
 pub async fn worktree_list(path: &Path) -> Result<GitWorktreeListResponse> {
     ensure_repo(path).await?;
-    let raw = run_git_ok(path, &["worktree", "list", "--porcelain"], STATUS_TIMEOUT).await?;
+    let raw = run_git_ok(
+        path,
+        "git worktree",
+        &["worktree", "list", "--porcelain"],
+        READ_TIMEOUT,
+    )
+    .await?;
     let worktrees = parse_worktree_porcelain(&raw);
     Ok(GitWorktreeListResponse {
         is_repo: true,
@@ -1187,11 +1675,11 @@ pub async fn worktree_add(
         args.push(base);
     }
 
-    let output = run_git(path, &args, MUTATE_TIMEOUT).await?;
+    let output = run_git(path, "git worktree add", &args, MUTATE_TIMEOUT).await?;
     if !output.success {
         // Fallback: branch might already exist
         let fallback_args = vec!["worktree", "add", dir_str, branch];
-        let fallback = run_git(path, &fallback_args, MUTATE_TIMEOUT).await?;
+        let fallback = run_git(path, "git worktree add", &fallback_args, MUTATE_TIMEOUT).await?;
         if !fallback.success {
             bail!("{}", git_error(&output, "Failed to create worktree"));
         }
@@ -1211,7 +1699,7 @@ pub async fn worktree_remove(path: &Path, worktree_dir: &Path, force: bool) -> R
     }
     args.push(dir_str);
 
-    let output = run_git(path, &args, MUTATE_TIMEOUT).await?;
+    let output = run_git(path, "git worktree remove", &args, MUTATE_TIMEOUT).await?;
     if !output.success {
         bail!("{}", git_error(&output, "Failed to remove worktree"));
     }
@@ -1222,8 +1710,9 @@ pub async fn list_untracked_files(path: &Path) -> Result<Vec<String>> {
     ensure_repo(path).await?;
     let output = run_git_ok(
         path,
+        "git ls-files",
         &["ls-files", "--others", "--exclude-standard"],
-        STATUS_TIMEOUT,
+        READ_TIMEOUT,
     )
     .await?;
     Ok(output
@@ -1237,6 +1726,7 @@ pub async fn list_untracked_files(path: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
     use std::fs;
     use std::process::Command;
     use tempfile::tempdir;
@@ -1498,5 +1988,236 @@ detached
             .worktrees
             .iter()
             .any(|w| w.branch.as_deref() == Some("feature-wt")));
+    }
+    #[tokio::test]
+    async fn run_git_timeout_error_names_the_phase() {
+        let dir = tempdir().unwrap();
+        init_repo(dir.path());
+        let error = run_git(dir.path(), "git add", &["add", "."], Duration::ZERO)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("git add timed out"));
+    }
+
+    #[tokio::test]
+    async fn commit_reports_git_rejection_from_stderr() {
+        let dir = tempdir().unwrap();
+        init_repo(dir.path());
+        run_plain_git(dir.path(), &["commit", "--allow-empty", "-m", "base"]);
+        let error = commit(dir.path(), "test: empty", &[]).await.unwrap_err();
+        assert_eq!(error.to_string(), "git commit failed");
+    }
+
+    fn seed_repo_with_change(dir: &Path) -> PathBuf {
+        init_repo(dir);
+        fs::write(dir.join("tracked.txt"), "initial\n").unwrap();
+        run_plain_git(dir, &["add", "tracked.txt"]);
+        run_plain_git(dir, &["commit", "-m", "initial"]);
+        fs::write(dir.join("tracked.txt"), "changed\n").unwrap();
+        run_plain_git(dir, &["add", "tracked.txt"]);
+        dir.to_path_buf()
+    }
+
+    fn create_index_lock_with_age(repo: &Path, age: Duration) {
+        let lock = repo.join(".git").join("index.lock");
+        fs::write(&lock, b"").unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&lock).unwrap();
+        let modified = std::time::SystemTime::now()
+            .checked_sub(age)
+            .expect("system clock");
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_index_lock_is_recovered_before_commit() {
+        let dir = tempdir().unwrap();
+        let repo = seed_repo_with_change(dir.path());
+        create_index_lock_with_age(&repo, Duration::from_secs(60));
+
+        let result = commit(&repo, "test: stale lock recovery", &[]).await;
+
+        assert!(result.is_ok(), "commit failed: {:?}", result.err());
+        assert!(!repo.join(".git").join("index.lock").exists());
+    }
+
+    #[tokio::test]
+    async fn fresh_index_lock_blocks_commit_without_removal() {
+        let dir = tempdir().unwrap();
+        let repo = seed_repo_with_change(dir.path());
+        create_index_lock_with_age(&repo, Duration::ZERO);
+
+        let error = commit(&repo, "test: blocked by fresh lock", &[])
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Another git operation is in progress"));
+        assert!(repo.join(".git").join("index.lock").exists());
+        fs::remove_file(repo.join(".git").join("index.lock")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn commit_stage_and_commit_roundtrip() {
+        let dir = tempdir().unwrap();
+        init_repo(dir.path());
+        run_plain_git(dir.path(), &["commit", "--allow-empty", "-m", "base"]);
+        fs::write(dir.path().join("tracked.txt"), "hello\n").unwrap();
+        let result = commit(
+            dir.path(),
+            "test: add tracked file\n\nDetails",
+            &["tracked.txt".to_string()],
+        )
+        .await
+        .unwrap();
+        assert!(!result.sha.is_empty());
+        assert_eq!(result.subject, "test: add tracked file");
+        assert_eq!(
+            run_git_ok(
+                dir.path(),
+                "git rev-parse",
+                &["rev-parse", "HEAD"],
+                READ_TIMEOUT,
+            )
+            .await
+            .unwrap()
+            .trim(),
+            result.sha,
+        );
+
+        fs::write(dir.path().join("tracked.txt"), "changed\n").unwrap();
+        stage(dir.path(), &["tracked.txt".to_string()])
+            .await
+            .unwrap();
+        let staged = commit(dir.path(), "test: commit staged file", &[])
+            .await
+            .unwrap();
+        assert!(!staged.sha.is_empty());
+        assert_eq!(staged.subject, "test: commit staged file");
+        assert_eq!(
+            run_git_ok(
+                dir.path(),
+                "git rev-parse",
+                &["rev-parse", "HEAD"],
+                READ_TIMEOUT,
+            )
+            .await
+            .unwrap()
+            .trim(),
+            staged.sha,
+        );
+    }
+
+    #[test]
+    fn commit_metadata_success_preserves_git_values() {
+        let response = commit_response_from_log(
+            Ok("abc1234def\u{1f}actual git subject\n".to_string()),
+            "requested subject",
+        );
+        assert_eq!(response.sha, "abc1234def");
+        assert_eq!(response.subject, "actual git subject");
+    }
+
+    #[test]
+    fn commit_metadata_errors_preserve_success_response() {
+        for error in [
+            anyhow!("git log timed out"),
+            anyhow!("git is not available: spawn failed"),
+            anyhow!("fatal: cannot read revision"),
+        ] {
+            let response = commit_response_from_log(Err(error), "feat: save work\n\nDetails");
+            assert_eq!(response.sha, "");
+            assert_eq!(response.subject, "feat: save work");
+            assert_eq!(
+                serde_json::to_value(&response).unwrap(),
+                serde_json::json!({"sha": "", "subject": "feat: save work"}),
+            );
+        }
+    }
+
+    #[test]
+    fn commit_metadata_missing_or_malformed_uses_fallback() {
+        for line in ["", "\n", "abc1234", "\u{1f}subject", "abc1234\u{1f}"] {
+            let response =
+                commit_response_from_log(Ok(line.to_string()), "feat: save work\n\nDetails");
+            assert_eq!(response.sha, "", "input: {line:?}");
+            assert_eq!(response.subject, "feat: save work", "input: {line:?}");
+        }
+    }
+
+    #[test]
+    fn commit_core_phase_budget_is_240_seconds() {
+        assert_eq!(
+            READ_TIMEOUT + ADD_TIMEOUT + COMMIT_TIMEOUT + READ_TIMEOUT,
+            Duration::from_secs(240),
+        );
+    }
+
+    #[test]
+    fn parse_repo_layout_accepts_git_output() {
+        let layout = parse_repo_layout(
+            "true\n/no/such/openduck/repo\n/no/such/openduck/repo/.git/index.lock\n/no/such/openduck/repo/.git\n",
+        )
+        .unwrap();
+        assert_eq!(layout.toplevel, PathBuf::from("/no/such/openduck/repo"));
+        assert_eq!(
+            layout.index_lock,
+            PathBuf::from("/no/such/openduck/repo/.git/index.lock")
+        );
+    }
+
+    #[test]
+    fn parse_repo_layout_rejects_bad_output() {
+        for stdout in [
+            "",
+            "true\n/no/such/openduck/repo\n/no/such/openduck/repo/.git/index.lock\n",
+            "true\n/a\n/b\n/c\n/d\n",
+            "false\n/no/such/openduck/repo\n/no/such/openduck/repo/.git/index.lock\n/no/such/openduck/repo/.git\n",
+            "true\nrelative\n/no/such/openduck/repo/.git/index.lock\n/no/such/openduck/repo/.git\n",
+            "true\n/no/such/openduck/repo\nrelative.lock\n/no/such/openduck/repo/.git\n",
+            "true\n/no/such/openduck/repo\n/no/such/openduck/repo/.git/index.lock\nrelative-git\n",
+        ] {
+            let Err(error) = parse_repo_layout(stdout) else {
+                panic!("expected reject for {stdout:?}");
+            };
+            assert!(
+                error.to_string().contains("Not a git repository"),
+                "stdout {stdout:?} produced {error}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_git_child_lock_is_reclaimed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let root = seed_repo_with_change(dir.path());
+        let hook = root.join(".git/hooks/pre-commit");
+        fs::write(
+            &hook,
+            "#!/bin/sh\ntouch \"$(git rev-parse --git-path index.lock)\"\nsleep 2\n",
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let layout = repo_layout(&root).await.unwrap();
+        let error = run_git_mutating(
+            &root,
+            &layout.index_lock,
+            "git commit",
+            &["commit", "-m", "hooked"],
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("timed out"),
+            "error string mentions timeout: {error}"
+        );
+        assert!(!layout.index_lock.exists());
     }
 }
