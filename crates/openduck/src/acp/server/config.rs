@@ -114,20 +114,23 @@ impl GooseAcpAgent {
 
         if req.key == "GOOSE_PROVIDER" {
             if let Some(name) = req.value.as_str() {
-                let model = crate::config::get_provider_entry(config, name)
-                    .map(|e| e.model)
-                    .or_else(|| config.get_goose_model().ok())
-                    .unwrap_or_default();
-                crate::config::set_active_provider(config, name, &model).internal_err()?;
+                crate::config::providers::validate_selection(config, Some(name), None)
+                    .internal_err()?;
+                crate::config::providers::save_role_selection(
+                    config,
+                    crate::config::providers::Role::Major,
+                    name,
+                    None,
+                )
+                .internal_err()?;
                 return Ok(EmptyResponse {});
             }
         }
         if req.key == "GOOSE_MODEL" {
             if let Some(model) = req.value.as_str() {
-                if let Ok(provider) = config.get_goose_provider() {
-                    crate::config::set_active_provider(config, &provider, model).internal_err()?;
-                    return Ok(EmptyResponse {});
-                }
+                crate::config::providers::set_active_provider_model(config, model)
+                    .internal_err()?;
+                return Ok(EmptyResponse {});
             }
         }
 
@@ -234,17 +237,22 @@ impl GooseAcpAgent {
         }
 
         let config = self.config()?;
-        let model = model_id.clone().unwrap_or_else(|| {
-            crate::config::get_provider_entry(config, &provider_id)
-                .map(|e| e.model)
-                .unwrap_or_default()
-        });
-        crate::config::set_active_provider(config, &provider_id, &model)
-            .internal_err_ctx("Failed to save default provider")?;
+        crate::config::providers::save_role_selection(
+            config,
+            crate::config::providers::Role::Major,
+            &provider_id,
+            model_id.as_deref(),
+        )
+        .internal_err_ctx("Failed to save default provider")?;
 
+        let resolved = crate::config::providers::resolve_role_model(
+            config,
+            crate::config::providers::Role::Major,
+        )
+            .internal_err_ctx("Failed to resolve default model")?;
         Ok(DefaultsReadResponse {
             provider_id: Some(provider_id),
-            model_id,
+            model_id: Some(resolved.model),
         })
     }
 

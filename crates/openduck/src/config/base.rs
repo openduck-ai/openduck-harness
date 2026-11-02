@@ -882,6 +882,24 @@ impl Config {
         secondary: Option<&str>,
         providers: &indexmap::IndexMap<String, crate::config::providers::ProviderEntry>,
     ) -> Result<(), ConfigError> {
+        self.save_provider_configuration_with_models(
+            major,
+            secondary,
+            providers,
+            crate::config::providers::RoleSelectionUpdate {
+                active_model: crate::config::providers::RoleModelUpdate::Unchanged,
+                secondary_provider_model: crate::config::providers::RoleModelUpdate::Unchanged,
+            },
+        )
+    }
+
+    pub fn save_provider_configuration_with_models(
+        &self,
+        major: Option<&str>,
+        secondary: Option<&str>,
+        providers: &indexmap::IndexMap<String, crate::config::providers::ProviderEntry>,
+        role_models: crate::config::providers::RoleSelectionUpdate,
+    ) -> Result<(), ConfigError> {
         let _guard = self.guard.lock().unwrap();
         let mut values = self.load_write_config()?;
         if let Some(m) = major {
@@ -900,10 +918,37 @@ impl Config {
         } else {
             values.shift_remove(crate::config::providers::SECONDARY_PROVIDER_KEY);
         }
+        apply_role_model_update(
+            &mut values,
+            crate::config::providers::ACTIVE_MODEL_KEY,
+            role_models.active_model,
+        );
+        apply_role_model_update(
+            &mut values,
+            crate::config::providers::SECONDARY_PROVIDER_MODEL_KEY,
+            role_models.secondary_provider_model,
+        );
         values.insert(
             serde_yaml::to_value(crate::config::providers::PROVIDERS_CONFIG_KEY)?,
             serde_yaml::to_value(providers)?,
         );
+        self.save_values(&values)
+    }
+
+    /// Write role selection keys plus provider entries in one config write.
+    pub fn update_role_selection(
+        &self,
+        updates: &[(String, serde_yaml::Value)],
+    ) -> Result<(), ConfigError> {
+        let _guard = self.guard.lock().unwrap();
+        let mut values = self.load_write_config()?;
+        for (key, value) in updates {
+            if value.is_null() {
+                values.shift_remove(key);
+            } else {
+                values.insert(serde_yaml::to_value(key)?, value.clone());
+            }
+        }
         self.save_values(&values)
     }
 
@@ -1289,6 +1334,25 @@ impl Config {
         }
     }
 }
+
+fn apply_role_model_update(
+    values: &mut serde_yaml::Mapping,
+    key: &str,
+    update: crate::config::providers::RoleModelUpdate,
+) {
+    match update {
+        crate::config::providers::RoleModelUpdate::Unchanged => {}
+        crate::config::providers::RoleModelUpdate::Set(model) => {
+            if let Ok(value) = serde_yaml::to_value(model) {
+                values.insert(serde_yaml::to_value(key).expect("key serializes"), value);
+            }
+        }
+        crate::config::providers::RoleModelUpdate::Clear => {
+            values.shift_remove(key);
+        }
+    }
+}
+
 // GOOSE_PROVIDER and GOOSE_MODEL are handled by crate::config::providers
 // which checks the structured `providers:` block first and falls back to
 // the legacy flat keys. The accessors below delegate to that module.
@@ -1299,19 +1363,13 @@ impl Config {
     }
     pub fn set_goose_provider(&self, v: impl Into<String>) -> Result<(), ConfigError> {
         let name = v.into();
-        let model = crate::config::providers::get_provider_entry(self, &name)
-            .map(|e| e.model)
-            .unwrap_or_default();
-        if !model.trim().is_empty() {
-            crate::config::providers::set_active_provider(self, &name, &model)
-        } else {
-            self.set_param("active_provider", &name)?;
-            let mut entry =
-                crate::config::providers::get_provider_entry(self, &name).unwrap_or_default();
-            entry.enabled = true;
-            entry.configured = true;
-            crate::config::providers::set_provider_entry(self, &name, &entry)
-        }
+        crate::config::providers::validate_selection(self, Some(&name), None)?;
+        crate::config::providers::save_role_selection(
+            self,
+            crate::config::providers::Role::Major,
+            &name,
+            None,
+        )
     }
     pub fn get_goose_model(&self) -> Result<String, ConfigError> {
         crate::config::providers::get_active_model(self)
@@ -1319,10 +1377,7 @@ impl Config {
     }
     pub fn set_goose_model(&self, v: impl Into<String>) -> Result<(), ConfigError> {
         let model = v.into();
-        if let Some(provider) = crate::config::providers::get_active_provider(self) {
-            crate::config::providers::set_active_provider(self, &provider, &model)?;
-        }
-        Ok(())
+        crate::config::providers::set_active_provider_model(self, &model)
     }
     pub fn get_goose_secondary_provider(&self) -> Result<String, ConfigError> {
         crate::config::providers::get_secondary_provider(self)

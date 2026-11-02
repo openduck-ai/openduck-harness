@@ -125,6 +125,55 @@ pub struct ProviderSelectorField {
     pub from_env: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelSource {
+    Environment,
+    Role,
+    ProviderDefault,
+    Legacy,
+    Unset,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSelectorField {
+    pub value: Option<String>,
+    pub file_value: Option<String>,
+    pub from_env: bool,
+    pub source: ModelSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModelDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum InventoryStatus {
+    Ready,
+    Stale,
+    NeverFetched,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshSkipDto {
+    pub provider_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshPlanDto {
+    pub started: Vec<String>,
+    pub skipped: Vec<RefreshSkipDto>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderDetail {
@@ -142,6 +191,18 @@ pub struct ProviderDetail {
     pub suggested_fast_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<ProviderModelDto>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_status: Option<InventoryStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_refresh: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refreshing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_refresh_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,8 +230,14 @@ pub struct ProxiesConfigPutBody {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvidersConfigResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_version: Option<u8>,
     pub major_provider: ProviderSelectorField,
     pub secondary_provider: ProviderSelectorField,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub major_model: Option<ModelSelectorField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_provider_model: Option<ModelSelectorField>,
     pub model_from_env: bool,
     pub fast_model_from_env: bool,
     pub secondary_model_from_env: bool,
@@ -219,7 +286,9 @@ const STRUCTURAL_KEYS: &[&str] = &[
     "notifications",
     "secrets",
     "active_provider",
+    "active_model",
     "secondary_provider",
+    "secondary_provider_model",
     "provider_roles_migrated",
 ];
 
@@ -534,8 +603,102 @@ fn check_no_secret_keys(val: &Value) -> Result<(), AppConfigError> {
     Ok(())
 }
 
+fn inventory_status_for(entry: &crate::providers::inventory::ProviderInventoryEntry) -> InventoryStatus {
+    if !entry.supports_refresh {
+        return InventoryStatus::Unsupported;
+    }
+    if entry.last_updated_at.is_none() {
+        return InventoryStatus::NeverFetched;
+    }
+    if crate::providers::inventory::ProviderInventoryService::is_stale(entry) {
+        return InventoryStatus::Stale;
+    }
+    InventoryStatus::Ready
+}
+
+fn role_model_field(
+    config: &Config,
+    role: crate::config::providers::Role,
+    file_role_value: Option<String>,
+) -> ModelSelectorField {
+    use crate::config::providers::{provider_roles_migrated, resolve_role_model, Role};
+
+    let from_env = match role {
+        Role::Major => crate::config::get_var("MODEL"),
+        Role::Secondary => crate::config::get_var("SECONDARY_MODEL"),
+    }
+    .map(|s| !s.trim().is_empty())
+    .unwrap_or(false);
+
+    let file_value = file_role_value.filter(|s| !s.trim().is_empty());
+    let source = if from_env {
+        ModelSource::Environment
+    } else if file_value.is_some() {
+        ModelSource::Role
+    } else {
+        match role {
+            Role::Major => {
+                if !provider_roles_migrated(config)
+                    && config
+                        .file_string("GOOSE_MODEL")
+                        .or_else(|| config.file_string("OPENDUCK_MODEL"))
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false)
+                {
+                    ModelSource::Legacy
+                } else {
+                    resolve_role_model(config, role)
+                        .ok()
+                        .filter(|resolved| !resolved.model.trim().is_empty())
+                        .map(|_| ModelSource::ProviderDefault)
+                        .unwrap_or(ModelSource::Unset)
+                }
+            }
+            Role::Secondary => {
+                if !provider_roles_migrated(config)
+                    && config
+                        .file_string("GOOSE_SECONDARY_MODEL")
+                        .or_else(|| config.file_string("OPENDUCK_SECONDARY_MODEL"))
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false)
+                {
+                    ModelSource::Legacy
+                } else {
+                    resolve_role_model(config, role)
+                        .ok()
+                        .filter(|resolved| !resolved.model.trim().is_empty())
+                        .map(|_| ModelSource::ProviderDefault)
+                        .unwrap_or(ModelSource::Unset)
+                }
+            }
+        }
+    };
+
+    let value = if from_env {
+        match role {
+            Role::Major => crate::config::get_var("MODEL"),
+            Role::Secondary => crate::config::get_var("SECONDARY_MODEL"),
+        }
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    } else {
+        resolve_role_model(config, role)
+            .ok()
+            .map(|resolved| resolved.model)
+            .filter(|m| !m.trim().is_empty())
+    };
+
+    ModelSelectorField {
+        value,
+        file_value,
+        from_env,
+        source,
+    }
+}
+
 pub async fn get_providers_config(
     config: &Config,
+    inventory: Option<&crate::providers::inventory::ProviderInventoryService>,
 ) -> Result<ProvidersConfigResponse, AppConfigError> {
     let major_file_value = config
         .file_string("active_provider")
@@ -603,10 +766,27 @@ pub async fn get_providers_config(
     available_providers.sort();
     available_providers.dedup();
 
+    let inventory_by_id: std::collections::HashMap<String, crate::providers::inventory::ProviderInventoryEntry> =
+        match inventory {
+            Some(service) => service
+                .entries(&[])
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|entry| (entry.provider_id.clone(), entry))
+                .collect(),
+            None => std::collections::HashMap::new(),
+        };
+
     let mut provider_details = Vec::new();
     for (name, entry) in map.into_iter() {
         let is_effective_major = major_provider.value.as_deref() == Some(&name);
         let is_effective_secondary = secondary_provider.value.as_deref() == Some(&name);
+        let inventory_entry = inventory_by_id.get(&name).or_else(|| {
+            inventory_by_id
+                .values()
+                .find(|inv| inv.provider_name == name)
+        });
 
         let model_env_value = if model_from_env && is_effective_major {
             crate::config::get_var("MODEL").filter(|s| !s.trim().is_empty())
@@ -644,6 +824,27 @@ pub async fn get_providers_config(
         let fast_model_uses_main = resolved_fast_model == entry.model;
         let suggested_fast_model = crate::model_config::suggested_fast_model_name(&name).await;
 
+        let (models, inventory_status, supports_refresh, refreshing, last_updated_at, last_refresh_error) =
+            match inventory_entry {
+                Some(inv) => (
+                    Some(
+                        inv.models
+                            .iter()
+                            .map(|m| ProviderModelDto {
+                                id: m.id.clone(),
+                                name: m.name.clone(),
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    Some(inventory_status_for(inv)),
+                    Some(inv.supports_refresh),
+                    Some(inv.refreshing),
+                    inv.last_updated_at,
+                    inv.last_refresh_error.clone(),
+                ),
+                None => (None, None, None, None, None, None),
+            };
+
         provider_details.push(ProviderDetail {
             name,
             enabled: entry.enabled,
@@ -658,6 +859,12 @@ pub async fn get_providers_config(
             fast_model_uses_main,
             suggested_fast_model,
             proxy: entry.proxy,
+            models,
+            inventory_status,
+            supports_refresh,
+            refreshing,
+            last_updated_at,
+            last_refresh_error,
         });
     }
 
@@ -671,9 +878,13 @@ pub async fn get_providers_config(
         })
         .collect();
 
+    use crate::config::providers::Role;
     Ok(ProvidersConfigResponse {
+        selection_version: Some(2),
         major_provider,
         secondary_provider,
+        major_model: Some(role_model_field(config, Role::Major, config.file_string(crate::config::providers::ACTIVE_MODEL_KEY))),
+        secondary_provider_model: Some(role_model_field(config, Role::Secondary, config.file_string(crate::config::providers::SECONDARY_PROVIDER_MODEL_KEY))),
         model_from_env,
         fast_model_from_env,
         secondary_model_from_env,
@@ -692,6 +903,17 @@ pub async fn update_providers_config(
     let raw_obj = raw_body
         .as_object()
         .ok_or_else(|| AppConfigError::invalid("request body must be a JSON object"))?;
+    if let Some(version) = raw_obj.get("selectionVersion") {
+        let version = version
+            .as_u64()
+            .ok_or_else(|| AppConfigError::invalid("selectionVersion must be an integer"))?;
+        if version != 2 {
+            return Err(AppConfigError::invalid(format!(
+                "Unsupported selectionVersion: {version}"
+            )));
+        }
+        return update_providers_config_v2(config, raw_obj).await;
+    }
     if !raw_obj.contains_key("majorProvider") {
         return Err(AppConfigError::invalid("majorProvider field is required"));
     }
@@ -757,14 +979,6 @@ pub async fn update_providers_config(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-
-    if let (Some(m), Some(s)) = (&req_major, &req_secondary) {
-        if m == s {
-            return Err(AppConfigError::invalid(
-                "Secondary provider cannot equal major provider",
-            ));
-        }
-    }
 
     // 1. PROVIDER env lock
     if crate::config::get_var("PROVIDER")
@@ -953,7 +1167,7 @@ pub async fn update_providers_config(
             .get(&name)
             .map(|e| e.configured)
             .unwrap_or(false);
-        let configured = !model.is_empty() && (is_live || previously_configured);
+        let configured = is_live || previously_configured;
 
         let proxy = item
             .proxy
@@ -1023,7 +1237,343 @@ pub async fn update_providers_config(
 
     config.save_provider_configuration(req_major.as_deref(), req_secondary.as_deref(), &new_map)?;
 
-    get_providers_config(config).await
+    get_providers_config(config, None).await
+}
+
+
+/// v2 role-level provider+model selection. All role fields must be present;
+/// validation completes before a single atomic save.
+async fn update_providers_config_v2(
+    config: &Config,
+    raw_obj: &serde_json::Map<String, Value>,
+) -> Result<ProvidersConfigResponse, AppConfigError> {
+    for key in ["majorProvider", "majorModel", "secondaryProvider", "secondaryProviderModel"] {
+        if !raw_obj.contains_key(key) {
+            return Err(AppConfigError::invalid(format!("{key} field is required")));
+        }
+    }
+    let raw_providers = raw_obj
+        .get("providers")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            AppConfigError::invalid("providers field is required and must be an array")
+        })?;
+
+    let parse_role_field = |key: &str| -> Result<(Option<String>, Option<String>), AppConfigError> {
+        let value = &raw_obj[key];
+        let provider = match value {
+            Value::Null => None,
+            Value::String(s) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    return Err(AppConfigError::invalid(format!(
+                        "{key} cannot be blank"
+                    )));
+                }
+                Some(trimmed.to_string())
+            }
+            _ => return Err(AppConfigError::invalid(format!("{key} must be a string or null"))),
+        };
+        let model_key = match key {
+            "majorProvider" => "majorModel",
+            _ => "secondaryProviderModel",
+        };
+        let model = match &raw_obj[model_key] {
+            Value::Null => None,
+            Value::String(s) => {
+                if s.trim().is_empty() {
+                    return Err(AppConfigError::invalid(format!(
+                        "{model_key} cannot be blank"
+                    )));
+                }
+                Some(s.clone())
+            }
+            _ => {
+                return Err(AppConfigError::invalid(format!(
+                    "{model_key} must be a string or null"
+                )))
+            }
+        };
+        if provider.is_none() && model.is_some() {
+            return Err(AppConfigError::invalid(format!(
+                "{model_key} must be null when {key} is null"
+            )));
+        }
+        Ok((provider, model))
+    };
+
+    let (req_major, major_model) = parse_role_field("majorProvider")?;
+    let (req_secondary, secondary_model) = parse_role_field("secondaryProvider")?;
+
+    #[derive(Debug)]
+    struct EntryUpdate {
+        enabled: bool,
+        model: Option<String>,
+        fast_model: Option<String>,
+        secondary_model: Option<String>,
+        proxy: Option<String>,
+    }
+
+    let existing_map = crate::config::providers::get_providers_map(config);
+
+    let _ = crate::providers::refresh_custom_providers().await;
+    let registry_list = crate::providers::providers().await;
+    let registry_names: std::collections::HashSet<String> =
+        registry_list.into_iter().map(|(m, _)| m.name).collect();
+
+    let mut seen = std::collections::HashSet::new();
+    let mut entries: Vec<(String, EntryUpdate)> = Vec::with_capacity(raw_providers.len());
+    for (idx, item) in raw_providers.iter().enumerate() {
+        let item_obj = item.as_object().ok_or_else(|| {
+            AppConfigError::invalid(format!("providers[{idx}] must be an object"))
+        })?;
+        let name = item_obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppConfigError::invalid(format!("providers[{idx}].name is required")))?;
+        let name = require_token(name, "Provider name")?;
+        if !seen.insert(name.to_string()) {
+            return Err(AppConfigError::invalid(format!(
+                "Duplicate provider: {name}"
+            )));
+        }
+        let enabled = item_obj.get("enabled").and_then(|v| v.as_bool()).ok_or_else(|| {
+            AppConfigError::invalid(format!("providers[{idx}].enabled is required"))
+        })?;
+        if !existing_map.contains_key(&*name) && !registry_names.contains(&*name) {
+            return Err(AppConfigError::invalid(format!(
+                "Provider '{name}' is not in available providers"
+            )));
+        }
+        let existing = existing_map.get(&*name);
+
+        let model = match item_obj.get("model") {
+            None => existing.map(|e| e.model.clone()).unwrap_or_default(),
+            Some(Value::String(s)) => {
+                if s.trim().is_empty() {
+                    String::new()
+                } else if s.chars().any(|c| c.is_whitespace())
+                    && s.trim() != s
+                {
+                    return Err(AppConfigError::invalid(format!(
+                        "providers[{idx}].model cannot be blank or padded"
+                    )));
+                } else {
+                    s.clone()
+                }
+            }
+            Some(Value::Null) => {
+                return Err(AppConfigError::invalid(format!(
+                    "providers[{idx}].model cannot be null; omit it to keep the default or use an empty string to clear"
+                )))
+            }
+            Some(_) => {
+                return Err(AppConfigError::invalid(format!(
+                    "providers[{idx}].model must be a string, null, or omitted"
+                )))
+            }
+        };
+
+        let fast_model = match item_obj.get("fastModel") {
+            None => existing.and_then(|e| e.fast_model.clone()),
+            Some(Value::Null) => None,
+            Some(Value::String(s)) if !s.trim().is_empty() && s.trim() != model.trim() => {
+                Some(s.trim().to_string())
+            }
+            Some(_) => None,
+        };
+        let secondary_model_entry = match item_obj.get("secondaryModel") {
+            None => existing.and_then(|e| e.secondary_model.clone()),
+            Some(Value::Null) => None,
+            Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            Some(_) => None,
+        };
+        let proxy = match item_obj.get("proxy") {
+            None => existing.and_then(|e| e.proxy.clone()),
+            Some(Value::Null) => None,
+            Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            Some(_) => None,
+        };
+
+        entries.push((
+            name.to_string(),
+            EntryUpdate {
+                enabled,
+                model: Some(model),
+                fast_model,
+                secondary_model: secondary_model_entry,
+                proxy,
+            },
+        ));
+    }
+
+    // Environment locks compare file values; writing the env-effective value back is forbidden.
+    if crate::config::get_var("PROVIDER")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        let file_major = config
+            .file_string(crate::config::providers::ACTIVE_PROVIDER_KEY)
+            .or_else(|| config.file_string("GOOSE_PROVIDER"));
+        if req_major != file_major {
+            return Err(AppConfigError::invalid(
+                "Major provider is locked by environment",
+            ));
+        }
+    }
+    if crate::config::get_var("SECONDARY_PROVIDER")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        let file_secondary = config
+            .file_string(crate::config::providers::SECONDARY_PROVIDER_KEY)
+            .or_else(|| config.file_string("GOOSE_SECONDARY_PROVIDER"))
+            .or_else(|| config.file_string("OPENDUCK_SECONDARY_PROVIDER"));
+        if req_secondary != file_secondary {
+            return Err(AppConfigError::invalid(
+                "Secondary provider is locked by environment",
+            ));
+        }
+    }
+    if crate::config::get_var("MODEL")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        let file_model = config.file_string(crate::config::providers::ACTIVE_MODEL_KEY);
+        if major_model.as_deref() != file_model.as_deref() {
+            return Err(AppConfigError::invalid(
+                "Major model is locked by environment",
+            ));
+        }
+    }
+    if crate::config::get_var("SECONDARY_MODEL")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        let file_model = config.file_string(crate::config::providers::SECONDARY_PROVIDER_MODEL_KEY);
+        if secondary_model.as_deref() != file_model.as_deref() {
+            return Err(AppConfigError::invalid(
+                "Secondary model is locked by environment",
+            ));
+        }
+    }
+
+    let mut new_map = indexmap::IndexMap::new();
+    for (name, update) in &entries {
+        let is_live = registry_names.contains(name);
+        let previously_configured = existing_map.get(name).map(|e| e.configured).unwrap_or(false);
+        let configured = is_live || previously_configured;
+        new_map.insert(
+            name.clone(),
+            crate::config::providers::ProviderEntry {
+                enabled: update.enabled,
+                configured,
+                model: update.model.clone().unwrap_or_default(),
+                fast_model: update.fast_model.clone(),
+                secondary_model: update.secondary_model.clone(),
+                proxy: update.proxy.clone(),
+            },
+        );
+    }
+
+    for (role, provider, _model) in [
+        ("major", &req_major, &major_model),
+        ("secondary", &req_secondary, &secondary_model),
+    ] {
+        let Some(provider) = provider else {
+            continue;
+        };
+        let entry = new_map.get(provider).ok_or_else(|| {
+            AppConfigError::invalid(format!(
+                "Selected {role} provider '{provider}' not found in providers"
+            ))
+        })?;
+        if !entry.enabled {
+            return Err(AppConfigError::invalid(format!(
+                "Selected {role} provider '{provider}' is disabled"
+            )));
+        }
+        if !entry.configured {
+            return Err(AppConfigError::invalid(format!(
+                "Selected {role} provider '{provider}' is not configured"
+            )));
+        }
+    }
+
+    let major_update = match (&req_major, &major_model) {
+        (Some(provider), Some(model)) => {
+            let resolved = crate::config::providers::resolve_role_model_for_provider(
+                config,
+                crate::config::providers::Role::Major,
+                provider,
+                Some(model),
+            )?;
+            if resolved.model.trim().is_empty() {
+                return Err(AppConfigError::invalid(
+                    "Major role must resolve to a non-empty model",
+                ));
+            }
+            crate::config::providers::RoleModelUpdate::Set(model.clone())
+        }
+        (Some(provider), None) => {
+            let resolved = crate::config::providers::resolve_role_model_for_provider(
+                config,
+                crate::config::providers::Role::Major,
+                provider,
+                None,
+            )?;
+            if resolved.model.trim().is_empty() {
+                return Err(AppConfigError::invalid(
+                    "Major role must resolve to a non-empty model",
+                ));
+            }
+            crate::config::providers::RoleModelUpdate::Clear
+        }
+        (None, _) => crate::config::providers::RoleModelUpdate::Clear,
+    };
+    let secondary_update = match (&req_secondary, &secondary_model) {
+        (Some(provider), Some(model)) => {
+            let resolved = crate::config::providers::resolve_role_model_for_provider(
+                config,
+                crate::config::providers::Role::Secondary,
+                provider,
+                Some(model),
+            )?;
+            if resolved.model.trim().is_empty() {
+                return Err(AppConfigError::invalid(
+                    "Secondary role must resolve to a non-empty model",
+                ));
+            }
+            crate::config::providers::RoleModelUpdate::Set(model.clone())
+        }
+        (Some(provider), None) => {
+            let resolved = crate::config::providers::resolve_role_model_for_provider(
+                config,
+                crate::config::providers::Role::Secondary,
+                provider,
+                None,
+            )?;
+            if resolved.model.trim().is_empty() {
+                return Err(AppConfigError::invalid(
+                    "Secondary role must resolve to a non-empty model",
+                ));
+            }
+            crate::config::providers::RoleModelUpdate::Clear
+        }
+        (None, _) => crate::config::providers::RoleModelUpdate::Clear,
+    };
+
+    config.save_provider_configuration_with_models(
+        req_major.as_deref(),
+        req_secondary.as_deref(),
+        &new_map,
+        crate::config::providers::RoleSelectionUpdate {
+            active_model: major_update,
+            secondary_provider_model: secondary_update,
+        },
+    )?;
+
+    get_providers_config(config, None).await
 }
 
 pub fn get_proxies_config(config: &Config) -> Result<ProxiesConfigResponse, AppConfigError> {

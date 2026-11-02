@@ -22,6 +22,7 @@ pub struct AcpServerFactoryConfig {
 pub struct AcpServer {
     config: AcpServerFactoryConfig,
     scheduler: OnceCell<Arc<dyn SchedulerTrait>>,
+    provider_inventory: OnceCell<Arc<crate::providers::inventory::ProviderInventoryService>>,
 }
 
 impl AcpServer {
@@ -29,7 +30,29 @@ impl AcpServer {
         Self {
             config,
             scheduler: OnceCell::new(),
+            provider_inventory: OnceCell::new(),
         }
+    }
+
+    /// Shared provider inventory service backed by the session storage, used by
+    /// both the ACP agent and the HTTP config routes so refresh state is common.
+    pub async fn provider_inventory(
+        &self,
+    ) -> Result<&Arc<crate::providers::inventory::ProviderInventoryService>> {
+        self.provider_inventory
+            .get_or_try_init(|| async {
+                let session_manager = SessionManager::new(self.config.data_dir.clone());
+                let storage = Arc::clone(session_manager.storage());
+                let warm = Arc::clone(&storage);
+                let _ = tokio::spawn(async move {
+                    let _ = warm.pool().await;
+                })
+                .await;
+                Ok(Arc::new(
+                    crate::providers::inventory::ProviderInventoryService::new(storage),
+                ))
+            })
+            .await
     }
 
     pub fn data_dir(&self) -> &std::path::Path {

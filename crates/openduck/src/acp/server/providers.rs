@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::declarative_providers;
-use crate::providers::inventory::ensure_refresh_identity_current;
+use crate::providers::inventory::ProviderInventoryEntry;
 use crate::providers::provider_secrets;
 use std::str::FromStr;
 
@@ -810,74 +810,9 @@ impl GooseAcpAgent {
         statuses
     }
 
-    pub(super) fn spawn_provider_inventory_refresh_jobs(&self, refresh_plan: &RefreshJobPlan) {
-        for refresh_job in refresh_plan.started.iter().cloned() {
-            let provider_inventory = self.provider_inventory.clone();
-            let provider_factory = Arc::clone(&self.provider_factory);
-            let provider_id = refresh_job.provider_id.clone();
-            let identity = refresh_job.identity.clone();
-            tokio::spawn(async move {
-                let mut refresh_guard = provider_inventory.refresh_guard(&identity);
-                let provider_result = AssertUnwindSafe(async {
-                    provider_factory(provider_id.clone(), Vec::new(), None, true).await
-                })
-                .catch_unwind()
-                .await;
-
-                let fetch_result: Result<Vec<String>> =
-                    match provider_result {
-                        Ok(Ok(provider)) => {
-                            match ensure_refresh_identity_current(&provider_id, &identity).await {
-                                Ok(()) => match AssertUnwindSafe(provider.fetch_recommended_models(
-                                    crate::model_config::global_toolshim(),
-                                ))
-                                .catch_unwind()
-                                .await
-                                {
-                                    Ok(Ok(models)) => Ok(models),
-                                    Ok(Err(error)) => Err(anyhow::anyhow!(error.to_string())),
-                                    Err(_) => Err(anyhow::anyhow!(
-                                        "provider inventory refresh task panicked"
-                                    )),
-                                },
-                                Err(error) => Err(error),
-                            }
-                        }
-                        Ok(Err(error)) => Err(error),
-                        Err(_) => Err(anyhow::anyhow!("provider inventory refresh task panicked")),
-                    };
-
-                match fetch_result {
-                    Ok(models) => match provider_inventory
-                        .store_refreshed_models_for_identity(&identity, &models)
-                        .await
-                    {
-                        Ok(()) => refresh_guard.complete(),
-                        Err(error) => warn!(
-                            provider = %provider_id,
-                            error = %error,
-                            "failed to store refreshed provider inventory"
-                        ),
-                    },
-                    Err(error) => {
-                        let error_message = error.to_string();
-                        match provider_inventory
-                            .store_refresh_error_for_identity(&identity, error_message.clone())
-                            .await
-                        {
-                            Ok(()) => refresh_guard.complete(),
-                            Err(store_error) => warn!(
-                                provider = %provider_id,
-                                error = %store_error,
-                                refresh_error = %error_message,
-                                "failed to store provider inventory refresh error"
-                            ),
-                        }
-                        warn!(provider = %provider_id, error = %error_message, "provider inventory refresh failed");
-                    }
-                }
-            });
-        }
+    pub(super) fn spawn_provider_inventory_refresh_jobs(&self, plan: &RefreshPlan) {
+        self.provider_inventory
+            .spawn_refresh_jobs(plan, Arc::clone(&self.provider_factory));
     }
 
     pub(super) async fn start_provider_inventory_refresh(
@@ -889,10 +824,9 @@ impl GooseAcpAgent {
             .plan_refresh_jobs(provider_ids)
             .await
             .internal_err()?;
-        self.spawn_provider_inventory_refresh_jobs(&refresh_job_plan);
-        Ok(refresh_plan_to_response(
-            refresh_job_plan.into_public_plan(),
-        ))
+        let public_plan = refresh_job_plan.into_public_plan();
+        self.spawn_provider_inventory_refresh_jobs(&public_plan);
+        Ok(refresh_plan_to_response(public_plan))
     }
 
     pub(super) async fn on_refresh_provider_inventory(

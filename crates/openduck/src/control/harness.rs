@@ -31,7 +31,6 @@ use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, Tool};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex};
 
-use crate::config::env as openduck_env;
 use crate::config::Config;
 use crate::control::circuit_breaker::{CircuitState, ProviderCircuitBreaker};
 use crate::conversation::message::{Message, MessageContent};
@@ -1395,59 +1394,17 @@ pub fn resolve_secondary_target(
         },
     };
 
-    if sec_provider_name == primary_provider {
-        return Err(anyhow!(
-            "Secondary provider '{sec_provider_name}' cannot be the same as primary provider '{primary_provider}'"
-        ));
-    }
+    crate::config::providers::validate_selection(config, None, Some(&sec_provider_name))
+        .map_err(|e| anyhow!("{e}"))?;
 
-    let entry = crate::config::providers::get_provider_entry(config, &sec_provider_name);
-    let roles_migrated = crate::config::providers::provider_roles_migrated(config);
-
-    if roles_migrated || entry.is_some() {
-        let entry_ref = entry.as_ref().ok_or_else(|| {
-            anyhow!("Provider '{sec_provider_name}' not found in providers configuration")
-        })?;
-        if !entry_ref.enabled {
-            return Err(anyhow!(
-                "Secondary provider '{sec_provider_name}' is not enabled"
-            ));
-        }
-        if !entry_ref.configured {
-            return Err(anyhow!(
-                "Secondary provider '{sec_provider_name}' is not configured"
-            ));
-        }
-    }
-
-    let sec_model_name = if let Some(m) = sec_model_opt.map(|s| s.trim()).filter(|s| !s.is_empty())
-    {
-        m.to_string()
-    } else if let Some(val) = openduck_env::get_var("SECONDARY_MODEL")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        val
-    } else if let Some(entry) = entry.as_ref().filter(|e| !e.model.trim().is_empty()) {
-        entry.model.trim().to_string()
-    } else if !roles_migrated {
-        config
-            .file_string("GOOSE_SECONDARY_MODEL")
-            .or_else(|| config.file_string("OPENDUCK_SECONDARY_MODEL"))
-            .ok_or_else(|| {
-                anyhow!("No model configured for secondary provider '{sec_provider_name}'")
-            })?
-    } else {
-        return Err(anyhow!(
-            "No model configured for secondary provider '{sec_provider_name}'"
-        ));
-    };
-
-    if sec_model_name.trim().is_empty() {
-        return Err(anyhow!(
-            "No model configured for secondary provider '{sec_provider_name}'"
-        ));
-    }
+    let resolved = crate::config::providers::resolve_role_model_for_provider(
+        config,
+        crate::config::providers::Role::Secondary,
+        &sec_provider_name,
+        sec_model_opt,
+    )
+    .map_err(|e| anyhow!("{e}"))?;
+    let sec_model_name = resolved.model;
 
     Ok(Some((sec_provider_name, sec_model_name)))
 }
@@ -1472,33 +1429,18 @@ pub async fn resolve_harness_policy_with_secondary(
         )?,
     };
 
-    let model_name = match model_opt.map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        Some(m) => m.to_string(),
-        None => {
-            if let Some(entry) = crate::config::get_provider_entry(config, &provider_name) {
-                let m = entry.model.trim().to_string();
-                if !m.is_empty() {
-                    m
-                } else if provider_opt.is_some() {
-                    return Err(anyhow!(
-                        "No model configured for provider '{provider_name}'"
-                    ));
-                } else {
-                    config
-                        .get_goose_model()
-                        .context("No model configured for active provider")?
-                }
-            } else if provider_opt.is_some() {
-                return Err(anyhow!(
-                    "Provider '{provider_name}' not found in providers configuration"
-                ));
-            } else {
-                config
-                    .get_goose_model()
-                    .context("No model configured for active provider")?
-            }
-        }
-    };
+    if provider_opt.is_some() {
+        crate::config::providers::validate_selection(config, Some(&provider_name), None)
+            .map_err(|e| anyhow!("{e}"))?;
+    }
+    let resolved_major = crate::config::providers::resolve_role_model_for_provider(
+        config,
+        crate::config::providers::Role::Major,
+        &provider_name,
+        model_opt,
+    )
+    .map_err(|e| anyhow!("{e}"))?;
+    let model_name = resolved_major.model;
 
     let model_config = model_config_from_user_config(&provider_name, &model_name)?;
     let provider = crate::providers::create(&provider_name, vec![]).await?;
@@ -5325,7 +5267,7 @@ mod tests {
     }
 
     #[test]
-    fn test_secondary_equal_primary_rejected_at_resolve() {
+    fn test_secondary_equal_primary_resolves_same_provider() {
         use crate::config::providers::{set_provider_entry, set_secondary_provider, ProviderEntry};
 
         let config = new_test_config();
@@ -5342,15 +5284,19 @@ mod tests {
         )
         .unwrap();
 
-        let err1 = resolve_secondary_target(&config, "openai", None, None).unwrap_err();
-        assert!(err1.to_string().contains(
-            "Secondary provider 'openai' cannot be the same as primary provider 'openai'"
-        ));
+        let resolved1 = resolve_secondary_target(&config, "openai", None, None).unwrap();
+        assert_eq!(
+            resolved1,
+            Some(("openai".to_string(), "gpt-4o".to_string()))
+        );
 
-        let err2 = resolve_secondary_target(&config, "openai", Some("openai"), None).unwrap_err();
-        assert!(err2.to_string().contains(
-            "Secondary provider 'openai' cannot be the same as primary provider 'openai'"
-        ));
+        let resolved2 =
+            resolve_secondary_target(&config, "openai", Some("openai"), Some("gpt-4o-mini"))
+                .unwrap();
+        assert_eq!(
+            resolved2,
+            Some(("openai".to_string(), "gpt-4o-mini".to_string()))
+        );
     }
 
     #[test]

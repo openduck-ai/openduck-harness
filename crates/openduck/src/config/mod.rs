@@ -33,9 +33,13 @@ pub use extensions::DEFAULT_EXTENSION;
 pub use extensions::DEFAULT_EXTENSION_DESCRIPTION;
 pub use extensions::DEFAULT_EXTENSION_TIMEOUT;
 pub use providers::{
-    clear_active_provider, clear_provider_model, get_active_model, get_active_provider,
-    get_provider_entry, get_provider_fast_model_name, get_provider_secondary_model,
-    get_secondary_provider, merge_acp_provider_entry, provider_roles_migrated,
-    resolve_provider_fast_model, set_active_provider, set_provider_entry, set_secondary_provider,
-    upsert_provider_models, validate_selection, ProviderEntry, ProviderModels,
+    clear_active_provider, clear_active_provider_model, clear_provider_model,
+    clear_secondary_provider_model, file_active_model, file_secondary_provider_model,
+    get_active_model, get_active_provider, get_provider_entry, get_provider_fast_model_name,
+    get_provider_secondary_model, get_secondary_provider, merge_acp_provider_entry,
+    provider_roles_migrated, resolve_provider_fast_model, resolve_role_model,
+    resolve_role_model_for_provider, save_role_selection, set_active_provider,
+    set_active_provider_model, set_provider_entry, set_secondary_provider,
+    set_secondary_provider_model, upsert_provider_models, validate_selection, ProviderEntry,
+    ProviderModels, ResolvedProviderModel, Role, RoleModelUpdate, RoleSelectionUpdate,
 };

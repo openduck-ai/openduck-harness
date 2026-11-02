@@ -29,10 +29,7 @@ use crate::execution::manager::{AgentManager, AgentManagerGetResult, RuntimeCont
 use crate::permission::permission_confirmation::PrincipalType;
 use crate::permission::{Permission, PermissionConfirmation};
 use crate::providers::base::Provider;
-use crate::providers::inventory::{
-    ProviderInventoryEntry, ProviderInventoryService, RefreshJobPlan, RefreshPlan,
-    RefreshSkipReason,
-};
+use crate::providers::inventory::{ProviderInventoryService, RefreshPlan, RefreshSkipReason};
 use crate::scheduler_trait::SchedulerTrait;
 use crate::session::session_manager::SessionUsageTotals;
 use crate::session::{

@@ -596,6 +596,113 @@ impl ProviderInventoryService {
         }
     }
 
+    /// Spawn background refresh jobs for the given providers. The factory is
+    /// used to construct provider instances for fetching; both the ACP server
+    /// and HTTP routes share this entry point so refresh state stays in sync.
+    pub fn spawn_refresh_jobs(
+        &self,
+        plan: &RefreshPlan,
+        factory: crate::acp::server::AcpProviderFactory,
+    ) {
+        for provider_id in plan.started.iter().cloned() {
+            let provider_inventory = self.clone();
+            let factory = Arc::clone(&factory);
+            tokio::spawn(async move {
+                provider_inventory
+                    .run_refresh_job(&provider_id, factory)
+                    .await;
+            });
+        }
+    }
+
+    async fn run_refresh_job(
+        &self,
+        provider_id: &str,
+        factory: crate::acp::server::AcpProviderFactory,
+    ) {
+        use futures::FutureExt;
+
+        let descriptor = match self.describe_provider(provider_id).await {
+            Ok(Some(descriptor)) => descriptor,
+            Ok(None) => return,
+            Err(error) => {
+                warn!(
+                    provider = %provider_id,
+                    error = %error,
+                    "failed to describe provider for inventory refresh"
+                );
+                return;
+            }
+        };
+        let identity = descriptor.identity;
+        let provider_id = provider_id.to_string();
+        {
+            let mut refresh_guard = self.refresh_guard(&identity);
+                let provider_result = AssertUnwindSafe(async {
+                    factory(provider_id.clone(), Vec::new(), None, true).await
+                })
+                .catch_unwind()
+                .await;
+
+                let fetch_result: Result<Vec<String>> = match provider_result {
+                    Ok(Ok(provider)) => {
+                        match ensure_refresh_identity_current(&provider_id, &identity).await {
+                            Ok(()) => {
+                                match AssertUnwindSafe(provider.fetch_recommended_models(
+                                    crate::model_config::global_toolshim(),
+                                ))
+                                .catch_unwind()
+                                .await
+                                {
+                                    Ok(Ok(models)) => Ok(models),
+                                    Ok(Err(error)) => Err(anyhow::anyhow!(error.to_string())),
+                                    Err(_) => Err(anyhow::anyhow!(
+                                        "provider inventory refresh task panicked"
+                                    )),
+                                }
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Err(anyhow::anyhow!("provider inventory refresh task panicked")),
+                };
+
+                match fetch_result {
+                    Ok(models) => {
+                        if let Err(error) = self
+                            .store_refreshed_models_for_identity(&identity, &models)
+                            .await
+                        {
+                            warn!(
+                                provider = %provider_id,
+                                error = %error,
+                                "failed to store refreshed provider inventory"
+                            );
+                        } else {
+                            refresh_guard.complete();
+                        }
+                    }
+                    Err(error) => {
+                        let error_message = error.to_string();
+                        match self
+                            .store_refresh_error_for_identity(&identity, error_message.clone())
+                            .await
+                        {
+                            Ok(()) => refresh_guard.complete(),
+                            Err(store_error) => warn!(
+                                provider = %provider_id,
+                                error = %store_error,
+                                refresh_error = %error_message,
+                                "failed to store provider inventory refresh error"
+                            ),
+                        }
+                        warn!(provider = %provider_id, error = %error_message, "provider inventory refresh failed");
+                    }
+                }
+        }
+    }
+
     pub(crate) fn refresh_guard(&self, identity: &InventoryIdentity) -> RefreshGuard {
         RefreshGuard {
             inventory_key: identity.inventory_key.clone(),

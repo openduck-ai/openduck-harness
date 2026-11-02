@@ -7,7 +7,9 @@ use tracing::warn;
 
 pub const PROVIDERS_CONFIG_KEY: &str = "providers";
 pub const ACTIVE_PROVIDER_KEY: &str = "active_provider";
+pub const ACTIVE_MODEL_KEY: &str = "active_model";
 pub const SECONDARY_PROVIDER_KEY: &str = "secondary_provider";
+pub const SECONDARY_PROVIDER_MODEL_KEY: &str = "secondary_provider_model";
 pub const PROVIDER_ROLES_MIGRATED_KEY: &str = "provider_roles_migrated";
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
@@ -30,7 +32,7 @@ impl ProviderEntry {
     pub fn normalize(&mut self) {
         if let Some(fm) = &self.fast_model {
             let trimmed = fm.trim();
-            if trimmed.is_empty() || trimmed == self.model.trim() {
+            if trimmed.is_empty() {
                 self.fast_model = None;
             } else if trimmed != fm {
                 self.fast_model = Some(trimmed.to_string());
@@ -118,46 +120,276 @@ pub fn get_active_provider(config: &Config) -> Option<String> {
 }
 
 pub fn get_active_model(config: &Config) -> Option<String> {
-    if let Some(val) = openduck_env::get_var("MODEL") {
-        return Some(val);
+    resolve_role_model(config, Role::Major)
+        .ok()
+        .map(|resolved| resolved.model)
+}
+
+pub fn file_active_model(config: &Config) -> Option<String> {
+    config
+        .file_string(ACTIVE_MODEL_KEY)
+        .or_else(|| config.file_string("GOOSE_MODEL"))
+}
+
+pub fn file_secondary_provider_model(config: &Config) -> Option<String> {
+    config
+        .file_string(SECONDARY_PROVIDER_MODEL_KEY)
+        .or_else(|| config.file_string("GOOSE_SECONDARY_MODEL"))
+        .or_else(|| config.file_string("OPENDUCK_SECONDARY_MODEL"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Major,
+    Secondary,
+}
+
+/// A provider+model pair resolved for a role, saved atomically.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedProviderModel {
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoleModelUpdate {
+    Unchanged,
+    Set(String),
+    Clear,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleSelectionUpdate {
+    pub active_model: RoleModelUpdate,
+    pub secondary_provider_model: RoleModelUpdate,
+}
+
+impl RoleSelectionUpdate {
+    pub fn unchanged() -> Self {
+        Self {
+            active_model: RoleModelUpdate::Unchanged,
+            secondary_provider_model: RoleModelUpdate::Unchanged,
+        }
     }
-    if let Some(provider_name) = get_active_provider(config) {
-        if let Some(entry) = get_provider_entry(config, &provider_name) {
-            if !entry.model.is_empty() {
-                return Some(entry.model);
+}
+
+fn env_role_model(role: Role) -> Option<String> {
+    let key = match role {
+        Role::Major => "MODEL",
+        Role::Secondary => "SECONDARY_MODEL",
+    };
+    openduck_env::get_var(key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn file_role_model(config: &Config, role: Role) -> Option<String> {
+    match role {
+        Role::Major => file_active_model(config),
+        Role::Secondary => file_secondary_provider_model(config),
+    }
+}
+
+fn legacy_role_model(config: &Config, role: Role) -> Option<String> {
+    if provider_roles_migrated(config) {
+        return None;
+    }
+    match role {
+        Role::Major => config
+            .file_string("GOOSE_MODEL")
+            .or_else(|| config.file_string("OPENDUCK_MODEL")),
+        Role::Secondary => config
+            .file_string("GOOSE_SECONDARY_MODEL")
+            .or_else(|| config.file_string("OPENDUCK_SECONDARY_MODEL")),
+    }
+}
+
+fn role_error(config: &Config, role: Role, provider: &str) -> ConfigError {
+    let role_label = match role {
+        Role::Major => "major",
+        Role::Secondary => "secondary",
+    };
+    let hint = match role {
+        Role::Major => {
+            if get_active_provider(config).is_none() {
+                "; set an active provider or configure a default model".to_string()
+            } else {
+                String::new()
+            }
+        }
+        Role::Secondary => String::new(),
+    };
+    ConfigError::NotFound(format!(
+        "No model available for {role_label} provider '{provider}'{hint}"
+    ))
+}
+
+/// Resolve the model for a role from an explicit request, the role environment
+/// override, the role file key, the provider default, or the legacy flat key.
+/// A provider switch (explicit or via environment) never inherits a role model
+/// saved for a different provider.
+pub fn resolve_role_model(
+    config: &Config,
+    role: Role,
+) -> Result<ResolvedProviderModel, ConfigError> {
+    let role_provider = match role {
+        Role::Major => get_active_provider(config),
+        Role::Secondary => get_secondary_provider(config),
+    }
+    .ok_or_else(|| ConfigError::NotFound(format!("{role:?} provider not selected")))?;
+
+    resolve_role_model_for_provider(config, role, &role_provider, None)
+}
+
+/// Same as [`resolve_role_model`] but against a specific target provider,
+/// as used when a request or environment switch changes the provider.
+pub fn resolve_role_model_for_provider(
+    config: &Config,
+    role: Role,
+    provider: &str,
+    explicit_model: Option<&str>,
+) -> Result<ResolvedProviderModel, ConfigError> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Err(ConfigError::DeserializeError(format!(
+            "{role:?} provider name cannot be empty"
+        )));
+    }
+
+    let explicit_role_model = explicit_model
+        .map(str::trim)
+        .filter(|m| !m.is_empty());
+
+    if let Some(model) = explicit_role_model {
+        return Ok(ResolvedProviderModel {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        });
+    }
+
+    let provider_switched = match role {
+        Role::Major => get_active_provider(config).as_deref() != Some(provider),
+        Role::Secondary => get_secondary_provider(config).as_deref() != Some(provider),
+    };
+
+    if let Some(model) = env_role_model(role) {
+        return Ok(ResolvedProviderModel {
+            provider: provider.to_string(),
+            model,
+        });
+    }
+
+    if !provider_switched {
+        if let Some(model) = file_role_model(config, role) {
+            return Ok(ResolvedProviderModel {
+                provider: provider.to_string(),
+                model,
+            });
+        }
+    }
+
+    if let Some(entry) = get_provider_entry(config, provider) {
+        let model = entry.model.trim();
+        if !model.is_empty() {
+            return Ok(ResolvedProviderModel {
+                provider: provider.to_string(),
+                model: model.to_string(),
+            });
+        }
+    }
+
+    if !provider_switched {
+        if let Some(model) = legacy_role_model(config, role) {
+            if !model.trim().is_empty() {
+                return Ok(ResolvedProviderModel {
+                    provider: provider.to_string(),
+                    model: model.trim().to_string(),
+                });
             }
         }
     }
-    config.get_param::<String>("GOOSE_MODEL").ok()
+
+    Err(role_error(config, role, provider))
+}
+
+/// Save a role selection (provider and model) in one atomic config write.
+/// The provider entry model is left untouched; validation failures produce no
+/// partial changes.
+pub fn save_role_selection(
+    config: &Config,
+    role: Role,
+    provider: &str,
+    model: Option<&str>,
+) -> Result<(), ConfigError> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Err(ConfigError::DeserializeError(format!(
+            "{role:?} provider name cannot be empty"
+        )));
+    }
+    if let Some(m) = model {
+        if m.trim().is_empty() {
+            return Err(ConfigError::DeserializeError(format!(
+                "{role:?} model cannot be blank"
+            )));
+        }
+    }
+
+    let (provider_key, model_key) = match role {
+        Role::Major => (ACTIVE_PROVIDER_KEY, ACTIVE_MODEL_KEY),
+        Role::Secondary => (SECONDARY_PROVIDER_KEY, SECONDARY_PROVIDER_MODEL_KEY),
+    };
+
+    let mut updates: Vec<(String, serde_yaml::Value)> =
+        vec![(provider_key.to_string(), serde_yaml::to_value(provider)?)];
+    match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => updates.push((model_key.to_string(), serde_yaml::to_value(m)?)),
+        None => updates.push((model_key.to_string(), serde_yaml::Value::Null)),
+    }
+
+    let mut entry = get_provider_entry(config, provider).unwrap_or_default();
+    entry.enabled = true;
+    entry.configured = true;
+    let providers = serde_yaml::to_value(indexmap::IndexMap::from([(provider.to_string(), entry)]))?;
+    updates.push((PROVIDERS_CONFIG_KEY.to_string(), providers));
+
+    config.update_role_selection(&updates)
 }
 
 pub fn set_active_provider(config: &Config, name: &str, model: &str) -> Result<(), ConfigError> {
-    let name_trimmed = name.trim();
-    if name_trimmed.is_empty() {
-        return Err(ConfigError::DeserializeError(
-            "Provider name cannot be empty".to_string(),
-        ));
-    }
-    let model_trimmed = model.trim();
-    if model_trimmed.is_empty() {
-        return Err(ConfigError::DeserializeError(
-            "Active provider model cannot be empty".to_string(),
-        ));
-    }
+    save_role_selection(config, Role::Major, name, Some(model))
+}
 
-    config.set_param(ACTIVE_PROVIDER_KEY, name_trimmed)?;
+pub fn set_active_provider_model(config: &Config, model: &str) -> Result<(), ConfigError> {
+    let provider = get_active_provider(config)
+        .ok_or_else(|| ConfigError::NotFound("No active provider selected".to_string()))?;
+    save_role_selection(config, Role::Major, &provider, Some(model))
+}
 
-    let mut entry = get_provider_entry(config, name_trimmed).unwrap_or_default();
-    entry.enabled = true;
-    entry.configured = true;
-    entry.model = model_trimmed.to_string();
-    entry.normalize();
+pub fn set_secondary_provider_model(config: &Config, model: &str) -> Result<(), ConfigError> {
+    let provider = get_secondary_provider(config)
+        .ok_or_else(|| ConfigError::NotFound("No secondary provider selected".to_string()))?;
+    save_role_selection(config, Role::Secondary, &provider, Some(model))
+}
 
-    set_provider_entry(config, name_trimmed, &entry)
+pub fn clear_active_provider_model(config: &Config) -> Result<(), ConfigError> {
+    let provider = get_active_provider(config)
+        .ok_or_else(|| ConfigError::NotFound("No active provider selected".to_string()))?;
+    save_role_selection(config, Role::Major, &provider, None)
+}
+
+pub fn clear_secondary_provider_model(config: &Config) -> Result<(), ConfigError> {
+    let provider = get_secondary_provider(config)
+        .ok_or_else(|| ConfigError::NotFound("No secondary provider selected".to_string()))?;
+    save_role_selection(config, Role::Secondary, &provider, None)
 }
 
 pub fn clear_active_provider(config: &Config) -> Result<(), ConfigError> {
-    for key in [ACTIVE_PROVIDER_KEY, "GOOSE_PROVIDER", "GOOSE_MODEL"] {
+    for key in [
+        ACTIVE_PROVIDER_KEY,
+        ACTIVE_MODEL_KEY,
+        "GOOSE_PROVIDER",
+        "GOOSE_MODEL",
+        "OPENDUCK_MODEL",
+    ] {
         match config.delete(key) {
             Ok(()) | Err(ConfigError::NotFound(_)) => {}
             Err(e) => return Err(e),
@@ -229,10 +461,22 @@ pub fn get_secondary_provider(config: &Config) -> Option<String> {
 pub fn set_secondary_provider(config: &Config, name: Option<&str>) -> Result<(), ConfigError> {
     match name.map(|s| s.trim()).filter(|s| !s.is_empty()) {
         Some(sec) => config.set_param(SECONDARY_PROVIDER_KEY, sec),
-        None => match config.delete(SECONDARY_PROVIDER_KEY) {
-            Ok(()) | Err(ConfigError::NotFound(_)) => Ok(()),
-            Err(e) => Err(e),
-        },
+        None => {
+            for key in [
+                SECONDARY_PROVIDER_MODEL_KEY,
+                "GOOSE_SECONDARY_MODEL",
+                "OPENDUCK_SECONDARY_MODEL",
+            ] {
+                match config.delete(key) {
+                    Ok(()) | Err(ConfigError::NotFound(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            match config.delete(SECONDARY_PROVIDER_KEY) {
+                Ok(()) | Err(ConfigError::NotFound(_)) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
@@ -295,7 +539,7 @@ pub fn upsert_provider_models(
     }
     if let Some(fm) = models.fast_model {
         let trimmed = fm.trim();
-        if trimmed.is_empty() || trimmed == entry.model {
+        if trimmed.is_empty() {
             entry.fast_model = None;
         } else {
             entry.fast_model = Some(trimmed.to_string());
@@ -383,62 +627,26 @@ pub fn validate_selection(
     let major_clean = major.map(|s| s.trim()).filter(|s| !s.is_empty());
     let sec_clean = secondary.map(|s| s.trim()).filter(|s| !s.is_empty());
 
-    if let (Some(m), Some(s)) = (major_clean, sec_clean) {
-        if m == s {
-            return Err(ConfigError::DeserializeError(
-                "Secondary provider cannot be the same as major provider".to_string(),
-            ));
-        }
-    }
-
-    if let Some(m) = major_clean {
-        let entry = get_provider_entry(config, m).ok_or_else(|| {
+    let selections = [
+        ("Major", major_clean),
+        ("Secondary", sec_clean),
+    ];
+    for (role, name) in selections.into_iter().filter_map(|(r, n)| n.map(|n| (r, n))) {
+        let entry = get_provider_entry(config, name).ok_or_else(|| {
             ConfigError::NotFound(format!(
-                "Provider '{m}' not found in providers configuration"
+                "Provider '{name}' not found in providers configuration"
             ))
         })?;
         if !entry.enabled {
             return Err(ConfigError::DeserializeError(format!(
-                "Major provider '{m}' is not enabled"
-            )));
-        }
-        if !entry.configured {
-            return Err(ConfigError::DeserializeError(format!(
-                "Major provider '{m}' is not configured"
-            )));
-        }
-        if entry.model.trim().is_empty() {
-            return Err(ConfigError::DeserializeError(format!(
-                "Major provider '{m}' has an empty model"
-            )));
-        }
-    }
-
-    if let Some(s) = sec_clean {
-        let entry = get_provider_entry(config, s).ok_or_else(|| {
-            ConfigError::NotFound(format!(
-                "Provider '{s}' not found in providers configuration"
-            ))
-        })?;
-        if !entry.enabled {
-            return Err(ConfigError::DeserializeError(format!(
-                "Secondary provider '{s}' is not enabled"
-            )));
-        }
-        if !entry.configured {
-            return Err(ConfigError::DeserializeError(format!(
-                "Secondary provider '{s}' is not configured"
-            )));
-        }
-        if entry.model.trim().is_empty() {
-            return Err(ConfigError::DeserializeError(format!(
-                "Secondary provider '{s}' has an empty model"
+                "{role} provider '{name}' is not enabled"
             )));
         }
     }
 
     Ok(())
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -778,7 +986,7 @@ providers:
     }
 
     #[test]
-    fn test_secondary_equal_to_major_is_rejected() {
+    fn test_same_provider_for_both_roles_is_allowed() {
         let config = new_test_config();
         let entry = ProviderEntry {
             enabled: true,
@@ -788,12 +996,11 @@ providers:
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
 
-        let err = validate_selection(&config, Some("openai"), Some("openai"));
-        assert!(err.is_err());
+        validate_selection(&config, Some("openai"), Some("openai")).unwrap();
     }
 
     #[test]
-    fn test_unconfigured_provider_cannot_be_selected() {
+    fn test_unconfigured_provider_can_be_selected_when_enabled() {
         let config = new_test_config();
         let entry = ProviderEntry {
             enabled: true,
@@ -803,8 +1010,8 @@ providers:
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
 
-        assert!(validate_selection(&config, Some("openai"), None).is_err());
-        assert!(validate_selection(&config, None, Some("openai")).is_err());
+        validate_selection(&config, Some("openai"), None).unwrap();
+        validate_selection(&config, None, Some("openai")).unwrap();
     }
 
     #[test]
@@ -830,7 +1037,7 @@ providers:
     }
 
     #[test]
-    fn test_selected_provider_empty_model_is_error() {
+    fn test_selected_provider_empty_model_is_accepted() {
         let config = new_test_config();
         let entry = ProviderEntry {
             enabled: true,
@@ -840,8 +1047,8 @@ providers:
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
 
-        assert!(validate_selection(&config, Some("openai"), None).is_err());
-        assert!(validate_selection(&config, None, Some("openai")).is_err());
+        validate_selection(&config, Some("openai"), None).unwrap();
+        validate_selection(&config, None, Some("openai")).unwrap();
     }
 
     #[test]
