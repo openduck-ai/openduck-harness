@@ -47,6 +47,16 @@ import {
 } from '@aaif/goose-hub-core'
 import { inspectProjectHarnessJob } from '../api.ts'
 import { escapeClosesTaskEditor } from '../taskEditorDismiss.ts'
+import { defaultTaskCreateDraftData, type TaskCreateSection } from '../taskCreateDraft.ts'
+import { createTaskDraftAutosave, prepareTaskCreator } from '../taskCreateDraftFlow.ts'
+import {
+  describeDraftRestored,
+  shouldPersistTaskCreatorDraft,
+  taskCreatorDataToDraft,
+  taskCreatorDefaults,
+  toggleTaskCreatorSection,
+  type TaskCreatorState,
+} from '../taskCreator.ts'
 import { SubtaskEditor, TaskDraftChat } from './TaskDraftPanel.tsx'
 import {
   applyTaskDraft,
@@ -242,6 +252,11 @@ export function ProjectHarnessTab({
     MentionDisplayItem[]
   >([])
   const [savingTask, setSavingTask] = useState(false)
+  const [taskCreatorSection, setTaskCreatorSection] = useState<TaskCreateSection>('basics')
+  const [taskCreatorExpanded, setTaskCreatorExpanded] = useState<
+    Record<TaskCreateSection, boolean>
+  >(() => defaultTaskCreateDraftData().ui.expanded)
+  const [taskCreatorRestoredFrom, setTaskCreatorRestoredFrom] = useState<Date | null>(null)
   const taskAttachInputRef = useRef<HTMLInputElement | null>(null)
 
   // Task mention autocomplete state
@@ -943,27 +958,47 @@ export function ProjectHarnessTab({
     }
   }, [selectedProjectSlug, inspectingJobId, inspectingTaskId, api])
 
-  const handleOpenCreateTask = () => {
-    setEditingTaskId(null)
-    setTaskForm({
-      id: `task-${Date.now().toString().slice(-6)}`,
-      name: '',
-      category: '',
-      tags: [],
-      prompt: '',
-      maxTurns: config?.execution.maxTurns || 25,
-      timeoutSeconds: config?.execution.timeoutSeconds || 300,
-      cron: '',
-      schedulePaused: false,
-    })
-    setSchedule({ ...defaultSchedule })
-    setTaskTagsInput('')
-    setVerifierType('none')
-    setVerifierCommand('')
-    setVerifierExpectedStdout('')
-    setVerifierExpectedExitCode(0)
-    setVerifierFilePath('')
-    setVerifierExpectedContent('')
+  const newTaskFormBase = (): ProjectTaskDefinition => ({
+    id: `task-${Date.now().toString().slice(-6)}`,
+    name: '',
+    category: '',
+    tags: [],
+    prompt: '',
+    maxTurns: config?.execution.maxTurns || 25,
+    timeoutSeconds: config?.execution.timeoutSeconds || 300,
+    cron: '',
+    schedulePaused: false,
+  })
+
+  const collectTaskCreatorState = (): TaskCreatorState => ({
+    taskForm,
+    taskTagsInput,
+    schedule,
+    verifierType,
+    verifierCommand,
+    verifierExpectedStdout,
+    verifierExpectedExitCode,
+    verifierFilePath,
+    verifierExpectedContent,
+    section: taskCreatorSection,
+    expanded: taskCreatorExpanded,
+  })
+
+  const applyTaskCreatorState = (state: TaskCreatorState) => {
+    setTaskForm(state.taskForm)
+    setTaskTagsInput(state.taskTagsInput)
+    setSchedule({ ...state.schedule })
+    setVerifierType(state.verifierType)
+    setVerifierCommand(state.verifierCommand)
+    setVerifierExpectedStdout(state.verifierExpectedStdout)
+    setVerifierExpectedExitCode(state.verifierExpectedExitCode)
+    setVerifierFilePath(state.verifierFilePath)
+    setVerifierExpectedContent(state.verifierExpectedContent)
+    setTaskCreatorSection(state.section)
+    setTaskCreatorExpanded({ ...state.expanded })
+  }
+
+  const resetTaskCreatorTransient = () => {
     setEstimateInfo(null)
     setEstimateFeedback('')
     setDraftMessages([])
@@ -972,6 +1007,18 @@ export function ProjectHarnessTab({
     setTaskAttachments([])
     setExistingAttachmentMentions([])
     setTaskMentionPopover(closedTaskMentionPopover)
+  }
+
+  const handleOpenCreateTask = () => {
+    const { state, restoredAt } = prepareTaskCreator({
+      projectId: selectedProjectSlug,
+      base: newTaskFormBase(),
+      schedule: { ...defaultSchedule },
+    })
+    setEditingTaskId(null)
+    applyTaskCreatorState(state)
+    setTaskCreatorRestoredFrom(restoredAt)
+    resetTaskCreatorTransient()
     setIsEditingTask(true)
   }
 
@@ -1259,6 +1306,95 @@ export function ProjectHarnessTab({
     handleMentionMenuKeyDown(e, 'prompt')
   }
 
+  const isCreatingTask = isEditingTask && !editingTaskId
+
+  const taskCreatorDraftInput = useMemo(
+    () => taskCreatorDataToDraft(collectTaskCreatorState()),
+    [
+      taskForm,
+      taskTagsInput,
+      schedule,
+      verifierType,
+      verifierCommand,
+      verifierExpectedStdout,
+      verifierExpectedExitCode,
+      verifierFilePath,
+      verifierExpectedContent,
+      taskCreatorSection,
+      taskCreatorExpanded,
+    ],
+  )
+
+  const taskDraftAutosave = useMemo(
+    () => createTaskDraftAutosave({ projectId: selectedProjectSlug }),
+    [selectedProjectSlug],
+  )
+
+  /* The ESC handler runs from a window listener registered in an effect, so it closes over a stale
+     render. Reading the newest snapshot from a ref keeps a collapse from persisting old keystrokes. */
+  const taskCreatorDraftInputRef = useRef(taskCreatorDraftInput)
+  taskCreatorDraftInputRef.current = taskCreatorDraftInput
+
+  const flushTaskCreatorDraftImmediately = () => {
+    taskDraftAutosave.update(taskCreatorDraftInputRef.current)
+    taskDraftAutosave.flush()
+  }
+
+  const clearTaskCreatorDraftImmediately = () => {
+    taskDraftAutosave.clear()
+  }
+
+  const taskDraftCreatingRef = useRef(isCreatingTask)
+  taskDraftCreatingRef.current = isCreatingTask
+
+  /* Keyed on the autosave instance: when the project changes, the cleanup flushes the queued write to
+     the project the keystrokes belong to instead of dropping it. The instance already holds the newest
+     snapshot, so this never writes across projects. */
+  useEffect(() => {
+    const autosave = taskDraftAutosave
+    return () => {
+      autosave.dispose({ flush: taskDraftCreatingRef.current })
+    }
+  }, [taskDraftAutosave])
+
+  useEffect(() => {
+    if (!shouldPersistTaskCreatorDraft({ isCreatingTask, saving: savingTask })) return
+    /* persistTaskDraft clears the entry for a blank form, so erasing every field drops the draft
+       instead of leaving stale content to restore on the next visit. */
+    taskDraftAutosave.update(taskCreatorDraftInput)
+  }, [isCreatingTask, savingTask, taskCreatorDraftInput, taskDraftAutosave])
+
+  const closeTaskCreator = (options: { discardDraft: boolean }) => {
+    if (savingTask) return
+    const isCreating = isEditingTask && !editingTaskId
+    if (isCreating) {
+      /* Flush the pending debounce so collapsing the panel keeps the latest keystrokes; an empty
+         form clears the draft instead of leaving a blank one behind. */
+      if (options.discardDraft) {
+        clearTaskCreatorDraftImmediately()
+      } else {
+        flushTaskCreatorDraftImmediately()
+      }
+    }
+    resetTaskCreatorTransient()
+    setTaskCreatorRestoredFrom(null)
+    setIsEditingTask(false)
+  }
+
+  const handleToggleTaskCreatorSection = (section: TaskCreateSection) => {
+    setTaskCreatorSection(section)
+    setTaskCreatorExpanded(prev => toggleTaskCreatorSection(prev, section))
+  }
+
+  const handleDiscardTaskCreatorDraft = () => {
+    if (savingTask) return
+    clearTaskCreatorDraftImmediately()
+    const state = taskCreatorDefaults(newTaskFormBase(), { ...defaultSchedule })
+    applyTaskCreatorState(state)
+    resetTaskCreatorTransient()
+    setTaskCreatorRestoredFrom(null)
+  }
+
   const handleOpenEditTask = async (taskId: string) => {
     if (!selectedProjectSlug) return
     setError('')
@@ -1290,6 +1426,11 @@ export function ProjectHarnessTab({
       setTaskAttachments([])
       setExistingAttachmentMentions([])
       setTaskMentionPopover(closedTaskMentionPopover)
+      setTaskCreatorRestoredFrom(null)
+      /* Editing an existing task starts from a clean layout rather than the collapsed sections the
+         user left the creator in. */
+      setTaskCreatorSection('basics')
+      setTaskCreatorExpanded(defaultTaskCreateDraftData().ui.expanded)
       setIsEditingTask(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch task detail')
@@ -1482,7 +1623,12 @@ export function ProjectHarnessTab({
         await api.createProjectTask(selectedProjectSlug, payload)
         setSuccessMsg(`Task ${taskForm.id} created successfully`)
       }
+      /* A collapsed create draft survives editing an existing task, so only a successful create
+         clears it. */
+      if (isCreatingTask) clearTaskCreatorDraftImmediately()
+      setTaskCreatorRestoredFrom(null)
       setTaskAttachments([])
+      setExistingAttachmentMentions([])
       setIsEditingTask(false)
       void loadTasksAndJobs(selectedProjectSlug, true)
     } catch (err) {
@@ -1759,9 +1905,7 @@ export function ProjectHarnessTab({
       ) {
         return
       }
-      setTaskAttachments([])
-      setExistingAttachmentMentions([])
-      setIsEditingTask(false)
+      closeTaskCreator({ discardDraft: false })
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -1976,13 +2120,11 @@ export function ProjectHarnessTab({
             </div>
 
             <div className="tasks-actions-row">
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={handleOpenCreateTask}
-              >
-                New Task
-              </button>
+              {!isEditingTask && (
+                <button type="button" className="btn-primary" onClick={handleOpenCreateTask}>
+                  New Task
+                </button>
+              )}
               <button
                 type="button"
                 className="btn-secondary"
@@ -2000,53 +2142,67 @@ export function ProjectHarnessTab({
             </div>
           </div>
 
-          {/* Task Editor Drawer */}
+          {/* Inline task creator */}
           {isEditingTask && (
-            <div
-              className="modal-backdrop task-editor-backdrop"
-              onClick={() => {
-                if (!savingTask) {
-                  setTaskAttachments([])
-                  setExistingAttachmentMentions([])
-                  setIsEditingTask(false)
-                }
+            <section
+              ref={taskEditorRef}
+              className="inline-task-creator"
+              aria-label={editingTaskId ? 'Task editor' : 'New task creator'}
+              onCompositionStart={() => {
+                imeEscapeUntilRef.current = Number.POSITIVE_INFINITY
+              }}
+              onCompositionEnd={() => {
+                imeEscapeUntilRef.current = Date.now() + 150
               }}
             >
-              <div
-                ref={taskEditorRef}
-                className="harness-card task-editor-drawer"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="task-editor-title"
-                onClick={e => e.stopPropagation()}
-                onCompositionStart={() => {
-                  imeEscapeUntilRef.current = Number.POSITIVE_INFINITY
-                }}
-                onCompositionEnd={() => {
-                  imeEscapeUntilRef.current = Date.now() + 150
-                }}
-              >
-                <div className="task-editor-drawer-header">
-                  <h3 id="task-editor-title" className="section-title" style={{ margin: 0 }}>
-                    {editingTaskId ? (taskForm.name || editingTaskId) : 'Create New Project Task'}
-                  </h3>
+              <div className="inline-task-creator-header">
+                <h3 className="section-title inline-task-creator-title">
+                  {editingTaskId ? (taskForm.name || editingTaskId) : 'New Project Task'}
+                </h3>
+                <div className="inline-task-creator-actions">
+                  {isCreatingTask && (
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm"
+                      onClick={handleDiscardTaskCreatorDraft}
+                      disabled={savingTask}
+                    >
+                      Discard draft
+                    </button>
+                  )}
                   <button
                     type="button"
-                    className="modal-close-btn"
-                    onClick={() => {
-                      if (!savingTask) {
-                        setTaskAttachments([])
-                        setExistingAttachmentMentions([])
-                        setIsEditingTask(false)
-                      }
-                    }}
+                    className="btn-secondary btn-sm"
+                    onClick={() => closeTaskCreator({ discardDraft: false })}
                     disabled={savingTask}
-                    aria-label="Close editor"
                   >
-                    ✕
+                    Collapse
                   </button>
                 </div>
-                <div className="form-grid">
+              </div>
+              {isCreatingTask && taskCreatorRestoredFrom && (
+                <div className="inline-task-creator-banner" role="status">
+                  <span>{describeDraftRestored(taskCreatorRestoredFrom)}</span>
+                  <div className="inline-task-creator-banner-actions">
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm"
+                      onClick={() => setTaskCreatorRestoredFrom(null)}
+                    >
+                      Keep editing
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm"
+                      onClick={handleDiscardTaskCreatorDraft}
+                      disabled={savingTask}
+                    >
+                      Start over
+                    </button>
+                  </div>
+                </div>
+              )}
+              <div className="form-grid">
                 <TaskDraftChat
                   messages={draftMessages}
                   input={draftInput}
@@ -2077,567 +2233,652 @@ export function ProjectHarnessTab({
                     />
                   }
                 />
-                <div className="form-row-2">
-                  <div className="form-group">
-                    <label className="form-label">Task ID (Filename Slug)</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={taskForm.id}
-                      onChange={e => setTaskForm({ ...taskForm, id: e.target.value })}
-                      placeholder="e.g. fetch-polymarket-data"
-                      disabled={!!editingTaskId}
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Task Display Name</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={taskForm.name || ''}
-                      onChange={e => setTaskForm({ ...taskForm, name: e.target.value })}
-                      placeholder="e.g. Fetch Polymarket Live Markets"
-                    />
-                  </div>
-                </div>
-
-                <div className="form-row-2">
-                  <div className="form-group">
-                    <label className="form-label">Category / Suite</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={taskForm.category || ''}
-                      onChange={e => setTaskForm({ ...taskForm, category: e.target.value })}
-                      placeholder="e.g. live-data-api or web3"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Tags (Comma Separated)</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={taskTagsInput}
-                      onChange={e => setTaskTagsInput(e.target.value)}
-                      placeholder="e.g. python, api, regression"
-                    />
-                  </div>
-                </div>
-
-                <div className="form-group mention-input-group" style={{ position: 'relative' }}>
-                  <label className="form-label">Task Instructions / Prompt</label>
-                  <MentionPopover
-                    ref={taskMentionPopoverRef}
-                    isOpen={taskMentionPopover.isOpen && taskMentionPopover.field === 'prompt'}
-                    onClose={handleTaskMentionClose}
-                    onSelect={handleTaskMentionSelect}
-                    position={{ x: 0, y: 0 }}
-                    query={taskMentionPopover.query}
-                    selectedIndex={taskMentionPopover.selectedIndex}
-                    onSelectedIndexChange={index =>
-                      setTaskMentionPopover(prev => ({ ...prev, selectedIndex: index }))
-                    }
-                    items={combinedTaskMentionItems}
-                    loading={loadingTaskMentions || isSearchingTaskServer}
-                  />
-                  <textarea
-                    ref={taskPromptTextareaRef}
-                    className="form-textarea"
-                    rows={4}
-                    value={taskForm.prompt}
-                    onChange={handleTaskPromptChange}
-                    onKeyUp={e => {
-                      if (
-                        e.key === 'Escape' ||
-                        e.key === 'ArrowUp' ||
-                        e.key === 'ArrowDown' ||
-                        e.key === 'Enter' ||
-                        e.key === 'Tab' ||
-                        e.key === 'Shift' ||
-                        e.key === 'Control' ||
-                        e.key === 'Alt' ||
-                        e.key === 'Meta'
-                      ) {
-                        return
-                      }
-                      const cursorPos = e.currentTarget.selectionStart ?? e.currentTarget.value.length
-                      debouncedTaskCursorMentionUpdate(e.currentTarget.value, cursorPos, 'prompt')
-                    }}
-                    onClick={e => {
-                      const cursorPos = e.currentTarget.selectionStart ?? e.currentTarget.value.length
-                      debouncedTaskCursorMentionUpdate(e.currentTarget.value, cursorPos, 'prompt')
-                    }}
-                    onKeyDown={handleTaskPromptKeyDown}
-                    placeholder="Instructions for the agent to execute in the project repository workspace (type @ to mention attached files, repo files, rules, or agents)..."
-                  />
+                <div className="inline-task-section">
                   <button
                     type="button"
-                    className="btn-secondary btn-sm task-draft-split"
-                    onClick={() =>
-                      void handleSendDraft(
-                        `Break this into subtasks if it is a long-running task:\n\n${taskForm.prompt}`,
-                      )
-                    }
-                    disabled={drafting || !taskForm.prompt.trim()}
+                    className="inline-task-section-header"
+                    onClick={() => handleToggleTaskCreatorSection('basics')}
+                    aria-expanded={taskCreatorExpanded.basics}
                   >
-                    {drafting ? 'Drafting…' : 'Split long task'}
+                    <ChevronDown
+                      size={14}
+                      className={taskCreatorExpanded.basics ? 'section-chevron expanded' : 'section-chevron'}
+                    />
+                    <span>Basics</span>
                   </button>
+                  {taskCreatorExpanded.basics && (
+                    <div className="inline-task-section-body">
+                      <div className="form-row-2">
+                        <div className="form-group">
+                          <label className="form-label">Task ID (Filename Slug)</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={taskForm.id}
+                            onChange={e => setTaskForm({ ...taskForm, id: e.target.value })}
+                            placeholder="e.g. fetch-polymarket-data"
+                            disabled={!!editingTaskId}
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">Task Display Name</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={taskForm.name || ''}
+                            onChange={e => setTaskForm({ ...taskForm, name: e.target.value })}
+                            placeholder="e.g. Fetch Polymarket Live Markets"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="form-row-2">
+                        <div className="form-group">
+                          <label className="form-label">Category / Suite</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={taskForm.category || ''}
+                            onChange={e => setTaskForm({ ...taskForm, category: e.target.value })}
+                            placeholder="e.g. live-data-api or web3"
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">Tags (Comma Separated)</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={taskTagsInput}
+                            onChange={e => setTaskTagsInput(e.target.value)}
+                            placeholder="e.g. python, api, regression"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                <div className="form-group task-attach-row">
-                  <label className="form-label">Attach files (Excel, PDF, images)</label>
-                  <input
-                    ref={taskAttachInputRef}
-                    type="file"
-                    className="task-attach-input"
-                    accept={TASK_ATTACHMENT_ACCEPT}
-                    multiple
-                    onChange={handleAttachFiles}
-                  />
-                  <div className="task-attach-controls">
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      onClick={() => taskAttachInputRef.current?.click()}
-                      disabled={savingTask}
-                    >
-                      <Paperclip size={16} /> Attach files
-                    </button>
-                    <span className="form-hint">
-                      Files are saved into the project workspace. Type @ or click a file name to mention it in the prompt.
-                    </span>
-                  </div>
-                  {(existingAttachmentMentions.length > 0 || taskAttachments.length > 0) && (
-                    <ul className="task-attach-list">
-                      {existingAttachmentMentions.map(item => (
-                        <li
-                          key={`existing-${item.relativePath}`}
-                          className="task-attach-chip existing"
+                <div className="inline-task-section">
+                  <button
+                    type="button"
+                    className="inline-task-section-header"
+                    onClick={() => handleToggleTaskCreatorSection('prompt')}
+                    aria-expanded={taskCreatorExpanded.prompt}
+                  >
+                    <ChevronDown
+                      size={14}
+                      className={taskCreatorExpanded.prompt ? 'section-chevron expanded' : 'section-chevron'}
+                    />
+                    <span>Instructions</span>
+                  </button>
+                  {taskCreatorExpanded.prompt && (
+                    <div className="inline-task-section-body">
+                      <div className="form-group mention-input-group" style={{ position: 'relative' }}>
+                        <label className="form-label">Task Instructions / Prompt</label>
+                        <MentionPopover
+                          ref={taskMentionPopoverRef}
+                          isOpen={taskMentionPopover.isOpen && taskMentionPopover.field === 'prompt'}
+                          onClose={handleTaskMentionClose}
+                          onSelect={handleTaskMentionSelect}
+                          position={{ x: 0, y: 0 }}
+                          query={taskMentionPopover.query}
+                          selectedIndex={taskMentionPopover.selectedIndex}
+                          onSelectedIndexChange={index =>
+                            setTaskMentionPopover(prev => ({ ...prev, selectedIndex: index }))
+                          }
+                          items={combinedTaskMentionItems}
+                          loading={loadingTaskMentions || isSearchingTaskServer}
+                        />
+                        <textarea
+                          ref={taskPromptTextareaRef}
+                          className="form-textarea"
+                          rows={4}
+                          value={taskForm.prompt}
+                          onChange={handleTaskPromptChange}
+                          onKeyUp={e => {
+                            if (
+                              e.key === 'Escape' ||
+                              e.key === 'ArrowUp' ||
+                              e.key === 'ArrowDown' ||
+                              e.key === 'Enter' ||
+                              e.key === 'Tab' ||
+                              e.key === 'Shift' ||
+                              e.key === 'Control' ||
+                              e.key === 'Alt' ||
+                              e.key === 'Meta'
+                            ) {
+                              return
+                            }
+                            const cursorPos = e.currentTarget.selectionStart ?? e.currentTarget.value.length
+                            debouncedTaskCursorMentionUpdate(e.currentTarget.value, cursorPos, 'prompt')
+                          }}
+                          onClick={e => {
+                            const cursorPos = e.currentTarget.selectionStart ?? e.currentTarget.value.length
+                            debouncedTaskCursorMentionUpdate(e.currentTarget.value, cursorPos, 'prompt')
+                          }}
+                          onKeyDown={handleTaskPromptKeyDown}
+                          placeholder="Instructions for the agent to execute in the project repository workspace (type @ to mention attached files, repo files, rules, or agents)..."
+                        />
+                        <button
+                          type="button"
+                          className="btn-secondary btn-sm task-draft-split"
+                          onClick={() =>
+                            void handleSendDraft(
+                              `Break this into subtasks if it is a long-running task:\n\n${taskForm.prompt}`,
+                            )
+                          }
+                          disabled={drafting || !taskForm.prompt.trim()}
                         >
+                          {drafting ? 'Drafting…' : 'Split long task'}
+                        </button>
+                      </div>
+
+                      <div className="form-group task-attach-row">
+                        <label className="form-label">Attach files (Excel, PDF, images)</label>
+                        <input
+                          ref={taskAttachInputRef}
+                          type="file"
+                          className="task-attach-input"
+                          accept={TASK_ATTACHMENT_ACCEPT}
+                          multiple
+                          onChange={handleAttachFiles}
+                        />
+                        <div className="task-attach-controls">
                           <button
                             type="button"
-                            className="task-attach-mention"
-                            title={`Mention @${item.relativePath} in the prompt`}
-                            onClick={() => handleInsertAttachmentMention(item.relativePath)}
-                          >
-                            {item.name}
-                          </button>
-                        </li>
-                      ))}
-                      {pendingAttachmentMentions.map((item, index) => (
-                        <li key={`pending-${item.relativePath}`} className="task-attach-chip">
-                          <button
-                            type="button"
-                            className="task-attach-mention"
-                            title={`Mention @${item.relativePath} in the prompt`}
-                            onClick={() => handleInsertAttachmentMention(item.relativePath)}
-                          >
-                            {item.name}
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Remove ${item.name}`}
-                            onClick={() => handleRemoveAttachment(index)}
+                            className="btn-secondary"
+                            onClick={() => taskAttachInputRef.current?.click()}
                             disabled={savingTask}
                           >
-                            <X size={14} />
+                            <Paperclip size={16} /> Attach files
                           </button>
-                        </li>
-                      ))}
-                    </ul>
+                          <span className="form-hint">
+                            Files are saved into the project workspace. Type @ or click a file name to mention it in the prompt.
+                          </span>
+                        </div>
+                        {(existingAttachmentMentions.length > 0 || taskAttachments.length > 0) && (
+                          <ul className="task-attach-list">
+                            {existingAttachmentMentions.map(item => (
+                              <li
+                                key={`existing-${item.relativePath}`}
+                                className="task-attach-chip existing"
+                              >
+                                <button
+                                  type="button"
+                                  className="task-attach-mention"
+                                  title={`Mention @${item.relativePath} in the prompt`}
+                                  onClick={() => handleInsertAttachmentMention(item.relativePath)}
+                                >
+                                  {item.name}
+                                </button>
+                              </li>
+                            ))}
+                            {pendingAttachmentMentions.map((item, index) => (
+                              <li key={`pending-${item.relativePath}`} className="task-attach-chip">
+                                <button
+                                  type="button"
+                                  className="task-attach-mention"
+                                  title={`Mention @${item.relativePath} in the prompt`}
+                                  onClick={() => handleInsertAttachmentMention(item.relativePath)}
+                                >
+                                  {item.name}
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label={`Remove ${item.name}`}
+                                  onClick={() => handleRemoveAttachment(index)}
+                                  disabled={savingTask}
+                                >
+                                  <X size={14} />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
                   )}
                 </div>
 
                 {/* Verifier Settings */}
-                <div className="verifier-section">
-                  <label className="form-label">Automated Evaluation Verifier</label>
-                  <div className="verifier-type-toggle">
-                    <label>
-                      <input
-                        type="radio"
-                        name="verifierType"
-                        checked={verifierType === 'none'}
-                        onChange={() => setVerifierType('none')}
-                      />{' '}
-                      None (Manual)
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="verifierType"
-                        checked={verifierType === 'command'}
-                        onChange={() => setVerifierType('command')}
-                      />{' '}
-                      Command Assertion (Shell)
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="verifierType"
-                        checked={verifierType === 'diff'}
-                        onChange={() => setVerifierType('diff')}
-                      />{' '}
-                      File Content Diff (Patch)
-                    </label>
-                  </div>
+                <div className="inline-task-section">
+                  <button
+                    type="button"
+                    className="inline-task-section-header"
+                    onClick={() => handleToggleTaskCreatorSection('verifier')}
+                    aria-expanded={taskCreatorExpanded.verifier}
+                  >
+                    <ChevronDown
+                      size={14}
+                      className={taskCreatorExpanded.verifier ? 'section-chevron expanded' : 'section-chevron'}
+                    />
+                    <span>Automated verifier</span>
+                  </button>
+                  {taskCreatorExpanded.verifier && (
+                    <div className="inline-task-section-body">
+                      <div className="verifier-section">
+                        <label className="form-label">Automated Evaluation Verifier</label>
+                        <div className="verifier-type-toggle">
+                          <label>
+                            <input
+                              type="radio"
+                              name="verifierType"
+                              checked={verifierType === 'none'}
+                              onChange={() => setVerifierType('none')}
+                            />{' '}
+                            None (Manual)
+                          </label>
+                          <label>
+                            <input
+                              type="radio"
+                              name="verifierType"
+                              checked={verifierType === 'command'}
+                              onChange={() => setVerifierType('command')}
+                            />{' '}
+                            Command Assertion (Shell)
+                          </label>
+                          <label>
+                            <input
+                              type="radio"
+                              name="verifierType"
+                              checked={verifierType === 'diff'}
+                              onChange={() => setVerifierType('diff')}
+                            />{' '}
+                            File Content Diff (Patch)
+                          </label>
+                        </div>
 
-                  {verifierType === 'command' && (
-                    <div className="verifier-subform">
-                      <div className="form-group">
-                        <label className="form-label">Test Command</label>
-                        <input
-                          type="text"
-                          className="form-input"
-                          value={verifierCommand}
-                          onChange={e => setVerifierCommand(e.target.value)}
-                          placeholder={"e.g. python3 -c 'import json; assert len(json.load(open(\"markets.json\"))) >= 5; print(\"PASS\")'"}
-                        />
-                      </div>
-                      <div className="form-row-2">
-                        <div className="form-group">
-                          <label className="form-label">Expected Stdout Substring</label>
-                          <input
-                            type="text"
-                            className="form-input"
-                            value={verifierExpectedStdout}
-                            onChange={e => setVerifierExpectedStdout(e.target.value)}
-                            placeholder="e.g. PASS"
-                          />
-                        </div>
-                        <div className="form-group">
-                          <label className="form-label">Expected Exit Code</label>
-                          <input
-                            type="number"
-                            className="form-input"
-                            value={verifierExpectedExitCode}
-                            onChange={e => setVerifierExpectedExitCode(Number(e.target.value) || 0)}
-                          />
-                        </div>
+                        {verifierType === 'command' && (
+                          <div className="verifier-subform">
+                            <div className="form-group">
+                              <label className="form-label">Test Command</label>
+                              <input
+                                type="text"
+                                className="form-input"
+                                value={verifierCommand}
+                                onChange={e => setVerifierCommand(e.target.value)}
+                                placeholder={"e.g. python3 -c 'import json; assert len(json.load(open(\"markets.json\"))) >= 5; print(\"PASS\")'"}
+                              />
+                            </div>
+                            <div className="form-row-2">
+                              <div className="form-group">
+                                <label className="form-label">Expected Stdout Substring</label>
+                                <input
+                                  type="text"
+                                  className="form-input"
+                                  value={verifierExpectedStdout}
+                                  onChange={e => setVerifierExpectedStdout(e.target.value)}
+                                  placeholder="e.g. PASS"
+                                />
+                              </div>
+                              <div className="form-group">
+                                <label className="form-label">Expected Exit Code</label>
+                                <input
+                                  type="number"
+                                  className="form-input"
+                                  value={verifierExpectedExitCode}
+                                  onChange={e => setVerifierExpectedExitCode(Number(e.target.value) || 0)}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {verifierType === 'diff' && (
+                          <div className="verifier-subform">
+                            <div className="form-group">
+                              <label className="form-label">Target File Path</label>
+                              <input
+                                type="text"
+                                className="form-input"
+                                value={verifierFilePath}
+                                onChange={e => setVerifierFilePath(e.target.value)}
+                                placeholder="e.g. src/index.ts or markets.json"
+                              />
+                            </div>
+                            <div className="form-group">
+                              <label className="form-label">Expected Content Contains</label>
+                              <textarea
+                                className="form-textarea"
+                                rows={3}
+                                value={verifierExpectedContent}
+                                onChange={e => setVerifierExpectedContent(e.target.value)}
+                                placeholder="Expected snippet or text in the file"
+                              />
+                            </div>
+                          </div>
+                  )}
                       </div>
                     </div>
-                  )}
-
-                  {verifierType === 'diff' && (
-                    <div className="verifier-subform">
-                      <div className="form-group">
-                        <label className="form-label">Target File Path</label>
-                        <input
-                          type="text"
-                          className="form-input"
-                          value={verifierFilePath}
-                          onChange={e => setVerifierFilePath(e.target.value)}
-                          placeholder="e.g. src/index.ts or markets.json"
-                        />
-                      </div>
-                      <div className="form-group">
-                        <label className="form-label">Expected Content Contains</label>
-                        <textarea
-                          className="form-textarea"
-                          rows={3}
-                          value={verifierExpectedContent}
-                          onChange={e => setVerifierExpectedContent(e.target.value)}
-                          placeholder="Expected snippet or text in the file"
-                        />
-                      </div>
-                    </div>
-                  )}
+                )}
                 </div>
 
-                <div className="budget-section">
-                  <div className="budget-header-flex">
-                    <label className="form-label" style={{ marginBottom: 0 }}>
-                      Execution Budget
-                    </label>
-                    <div className="budget-header-actions">
-                      <button
-                        type="button"
-                        className="btn btn-xs btn-outline budget-estimate-btn"
-                        onClick={() => handleEstimateBudget()}
-                        disabled={estimatingBudget || !taskForm.prompt.trim()}
-                        title="Analyze prompt using AI to estimate max turns and timeout"
-                      >
-                        {estimatingBudget
-                          ? '⏳ Estimating...'
-                          : estimateInfo
-                          ? '🔄 Re-estimate'
-                          : '🪄 AI Estimate Budget'}
-                      </button>
-                    </div>
-                  </div>
-                  {estimateInfo && (
-                    <div className={`budget-estimate-badge complexity-${estimateInfo.complexity.toLowerCase()}`}>
-                      <div className="budget-badge-top">
-                        <span className="complexity-tag">{estimateInfo.complexity.toUpperCase()}</span>
-                        <span className="budget-source-tag">
-                          {estimateInfo.source.includes('model') ? '⚡ AI Model' : '📋 Heuristic'}
-                        </span>
-                        <span className="budget-turns-tag">
-                          ~{estimateInfo.suggestedMaxTurns} turns ({estimateInfo.suggestedTimeoutSeconds}s)
-                        </span>
-                      </div>
-                      <div className="budget-reasoning">{estimateInfo.reasoning}</div>
-
-                      <div className="budget-correction-card">
-                        <div className="budget-correction-header">
-                          <span className="budget-correction-title">
-                            💬 Comment & Correct Estimation
-                          </span>
-                          <div className="budget-quick-adjust-group">
-                            <span className="quick-adjust-label">Quick adjust:</span>
+                <div className="inline-task-section">
+                  <button
+                    type="button"
+                    className="inline-task-section-header"
+                    onClick={() => handleToggleTaskCreatorSection('subtasks')}
+                    aria-expanded={taskCreatorExpanded.subtasks}
+                  >
+                    <ChevronDown
+                      size={14}
+                      className={taskCreatorExpanded.subtasks ? 'section-chevron expanded' : 'section-chevron'}
+                    />
+                    <span>Budget & subtasks</span>
+                  </button>
+                  {taskCreatorExpanded.subtasks && (
+                    <div className="inline-task-section-body">
+                      <div className="budget-section">
+                        <div className="budget-header-flex">
+                          <label className="form-label" style={{ marginBottom: 0 }}>
+                            Execution Budget
+                          </label>
+                          <div className="budget-header-actions">
                             <button
                               type="button"
-                              className="quick-adjust-btn"
-                              onClick={() => handleAdjustBudgetMultiplier(0.75)}
-                              title="Decrease max turns by 25%"
+                              className="btn btn-xs btn-outline budget-estimate-btn"
+                              onClick={() => handleEstimateBudget()}
+                              disabled={estimatingBudget || !taskForm.prompt.trim()}
+                              title="Analyze prompt using AI to estimate max turns and timeout"
                             >
-                              −25%
-                            </button>
-                            <button
-                              type="button"
-                              className="quick-adjust-btn"
-                              onClick={() => handleAdjustBudgetMultiplier(1.25)}
-                              title="Increase max turns by 25%"
-                            >
-                              +25%
-                            </button>
-                            <button
-                              type="button"
-                              className="quick-adjust-btn"
-                              onClick={() => handleAdjustBudgetMultiplier(1.5)}
-                              title="Increase max turns by 50%"
-                            >
-                              +50%
-                            </button>
-                            <button
-                              type="button"
-                              className="quick-adjust-btn"
-                              onClick={() => handleAdjustBudgetMultiplier(2.0)}
-                              title="Double max turns (2x)"
-                            >
-                              2x
+                              {estimatingBudget
+                                ? '⏳ Estimating...'
+                                : estimateInfo
+                                ? '🔄 Re-estimate'
+                                : '🪄 AI Estimate Budget'}
                             </button>
                           </div>
                         </div>
-                        <div className="budget-feedback-row">
-                          <input
-                            type="text"
-                            className="form-input budget-feedback-input"
-                            value={estimateFeedback}
-                            onChange={e => setEstimateFeedback(e.target.value)}
-                            placeholder="Comment or correction (e.g. 'Single file change, reduce turns', 'Slow tests, need 100 turns')..."
-                            onKeyDown={e => {
-                              if (e.key === 'Enter' && !estimatingBudget && estimateFeedback.trim()) {
-                                e.preventDefault()
-                                handleEstimateBudget()
-                              }
-                            }}
-                          />
-                          <button
-                            type="button"
-                            className="btn btn-xs btn-primary budget-refine-btn"
-                            onClick={() => handleEstimateBudget()}
-                            disabled={estimatingBudget || !estimateFeedback.trim()}
-                            title="Recalibrate budget with your comments/feedback"
-                          >
-                            {estimatingBudget ? '⏳ Calibrating...' : '✨ Apply Feedback'}
-                          </button>
+                        {estimateInfo && (
+                          <div className={`budget-estimate-badge complexity-${estimateInfo.complexity.toLowerCase()}`}>
+                            <div className="budget-badge-top">
+                              <span className="complexity-tag">{estimateInfo.complexity.toUpperCase()}</span>
+                              <span className="budget-source-tag">
+                                {estimateInfo.source.includes('model') ? '⚡ AI Model' : '📋 Heuristic'}
+                              </span>
+                              <span className="budget-turns-tag">
+                                ~{estimateInfo.suggestedMaxTurns} turns ({estimateInfo.suggestedTimeoutSeconds}s)
+                              </span>
+                            </div>
+                            <div className="budget-reasoning">{estimateInfo.reasoning}</div>
+
+                            <div className="budget-correction-card">
+                              <div className="budget-correction-header">
+                                <span className="budget-correction-title">
+                                  💬 Comment & Correct Estimation
+                                </span>
+                                <div className="budget-quick-adjust-group">
+                                  <span className="quick-adjust-label">Quick adjust:</span>
+                                  <button
+                                    type="button"
+                                    className="quick-adjust-btn"
+                                    onClick={() => handleAdjustBudgetMultiplier(0.75)}
+                                    title="Decrease max turns by 25%"
+                                  >
+                                    −25%
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="quick-adjust-btn"
+                                    onClick={() => handleAdjustBudgetMultiplier(1.25)}
+                                    title="Increase max turns by 25%"
+                                  >
+                                    +25%
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="quick-adjust-btn"
+                                    onClick={() => handleAdjustBudgetMultiplier(1.5)}
+                                    title="Increase max turns by 50%"
+                                  >
+                                    +50%
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="quick-adjust-btn"
+                                    onClick={() => handleAdjustBudgetMultiplier(2.0)}
+                                    title="Double max turns (2x)"
+                                  >
+                                    2x
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="budget-feedback-row">
+                                <input
+                                  type="text"
+                                  className="form-input budget-feedback-input"
+                                  value={estimateFeedback}
+                                  onChange={e => setEstimateFeedback(e.target.value)}
+                                  placeholder="Comment or correction (e.g. 'Single file change, reduce turns', 'Slow tests, need 100 turns')..."
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter' && !estimatingBudget && estimateFeedback.trim()) {
+                                      e.preventDefault()
+                                      handleEstimateBudget()
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  className="btn btn-xs btn-primary budget-refine-btn"
+                                  onClick={() => handleEstimateBudget()}
+                                  disabled={estimatingBudget || !estimateFeedback.trim()}
+                                  title="Recalibrate budget with your comments/feedback"
+                                >
+                                  {estimatingBudget ? '⏳ Calibrating...' : '✨ Apply Feedback'}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                  )}
+                      </div>
+
+                  <div className="form-row-2">
+                    <div className="form-group">
+                      <label className="form-label">Max Turns</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={maxTurnsLimit}
+                        className="form-input"
+                        value={taskForm.maxTurns || 25}
+                        onChange={e => {
+                          const maxTurns = Math.max(1, Math.min(maxTurnsLimit, Number(e.target.value) || 25))
+                          setTaskForm(prev => ({
+                            ...prev,
+                            maxTurns,
+                            subtasks: recalculateSubtasksTurns(prev.subtasks, maxTurns, maxTurnsLimit),
+                          }))
+                        }}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Timeout (Seconds)</label>
+                      <input
+                        type="number"
+                        min={10}
+                        max={7200}
+                        className="form-input"
+                        value={taskForm.timeoutSeconds || 300}
+                        onChange={e =>
+                          setTaskForm({
+                            ...taskForm,
+                            timeoutSeconds: Number(e.target.value) || 300,
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-group" style={{ marginTop: '0.25rem', marginBottom: '1rem' }}>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.65rem', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        style={{ marginTop: '0.25rem' }}
+                        checked={Boolean(taskForm.dynamicPrompt)}
+                        onChange={e =>
+                          setTaskForm({
+                            ...taskForm,
+                            dynamicPrompt: e.target.checked,
+                          })
+                        }
+                      />
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>
+                          Accept a dynamic prompt before each run
+                        </div>
+                        <div style={{ fontSize: '0.75rem', opacity: 0.75, marginTop: '0.15rem', lineHeight: '1.35' }}>
+                          Run and Record open a dialog with this prompt plus an extra-instructions field.
+                          Those instructions apply to that run only. In file review, a selected passage can
+                          be sent as the extra prompt from a context menu.
                         </div>
                       </div>
-                    </div>
-                  )}
-                </div>
+                    </label>
+                  </div>
 
-                <div className="form-row-2">
-                  <div className="form-group">
-                    <label className="form-label">Max Turns</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={maxTurnsLimit}
-                      className="form-input"
-                      value={taskForm.maxTurns || 25}
-                      onChange={e => {
-                        const maxTurns = Math.max(1, Math.min(maxTurnsLimit, Number(e.target.value) || 25))
+                  <SubtaskEditor
+                    subtasks={taskForm.subtasks ?? []}
+                    maxTurnsLimit={maxTurnsLimit}
+                    onChange={next => {
+                      const newMaxTurns = calculateTaskMaxTurnsFromSubtasks(next, taskForm.maxTurns, maxTurnsLimit)
+                      setTaskForm(prev => ({
+                        ...prev,
+                        subtasks: next.length ? next : undefined,
+                        maxTurns: next.length ? newMaxTurns : prev.maxTurns,
+                      }))
+                    }}
+                    onAdd={() => {
+                      const currentSubtasks = taskForm.subtasks ?? []
+                      if (currentSubtasks.length === 0) {
+                        const firstSubtask = blankSubtask(0, taskForm.maxTurns || 25)
                         setTaskForm(prev => ({
                           ...prev,
-                          maxTurns,
-                          subtasks: recalculateSubtasksTurns(prev.subtasks, maxTurns, maxTurnsLimit),
+                          subtasks: [firstSubtask],
                         }))
-                      }}
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Timeout (Seconds)</label>
-                    <input
-                      type="number"
-                      min={10}
-                      max={7200}
-                      className="form-input"
-                      value={taskForm.timeoutSeconds || 300}
-                      onChange={e =>
-                        setTaskForm({
-                          ...taskForm,
-                          timeoutSeconds: Number(e.target.value) || 300,
-                        })
+                      } else if (currentSubtasks.length === 1) {
+                        const totalTurns = taskForm.maxTurns || 25
+                        const subtask2 = blankSubtask(1, 1)
+                        const recalculated = recalculateSubtasksTurns([currentSubtasks[0], subtask2], totalTurns, maxTurnsLimit)
+                        setTaskForm(prev => ({
+                          ...prev,
+                          subtasks: recalculated,
+                        }))
+                      } else {
+                        const avgTurns = Math.max(1, Math.round((taskForm.maxTurns || 25) / (currentSubtasks.length + 1)))
+                        const newSubtask = blankSubtask(currentSubtasks.length, avgTurns)
+                        const nextSubtasks = [...currentSubtasks, newSubtask]
+                        const newMaxTurns = calculateTaskMaxTurnsFromSubtasks(nextSubtasks, taskForm.maxTurns, maxTurnsLimit)
+                        setTaskForm(prev => ({
+                          ...prev,
+                          subtasks: nextSubtasks,
+                          maxTurns: newMaxTurns,
+                        }))
                       }
-                    />
-                  </div>
-                </div>
-
-                <div className="form-group" style={{ marginTop: '0.25rem', marginBottom: '1rem' }}>
-                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.65rem', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      style={{ marginTop: '0.25rem' }}
-                      checked={Boolean(taskForm.dynamicPrompt)}
-                      onChange={e =>
-                        setTaskForm({
-                          ...taskForm,
-                          dynamicPrompt: e.target.checked,
-                        })
-                      }
-                    />
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>
-                        Accept a dynamic prompt before each run
-                      </div>
-                      <div style={{ fontSize: '0.75rem', opacity: 0.75, marginTop: '0.15rem', lineHeight: '1.35' }}>
-                        Run and Record open a dialog with this prompt plus an extra-instructions field.
-                        Those instructions apply to that run only. In file review, a selected passage can
-                        be sent as the extra prompt from a context menu.
-                      </div>
+                    }}
+                  />
                     </div>
-                  </label>
+                )}
                 </div>
 
-                <SubtaskEditor
-                  subtasks={taskForm.subtasks ?? []}
-                  maxTurnsLimit={maxTurnsLimit}
-                  onChange={next => {
-                    const newMaxTurns = calculateTaskMaxTurnsFromSubtasks(next, taskForm.maxTurns, maxTurnsLimit)
-                    setTaskForm(prev => ({
-                      ...prev,
-                      subtasks: next.length ? next : undefined,
-                      maxTurns: next.length ? newMaxTurns : prev.maxTurns,
-                    }))
-                  }}
-                  onAdd={() => {
-                    const currentSubtasks = taskForm.subtasks ?? []
-                    if (currentSubtasks.length === 0) {
-                      const firstSubtask = blankSubtask(0, taskForm.maxTurns || 25)
-                      setTaskForm(prev => ({
-                        ...prev,
-                        subtasks: [firstSubtask],
-                      }))
-                    } else if (currentSubtasks.length === 1) {
-                      const totalTurns = taskForm.maxTurns || 25
-                      const subtask2 = blankSubtask(1, 1)
-                      const recalculated = recalculateSubtasksTurns([currentSubtasks[0], subtask2], totalTurns, maxTurnsLimit)
-                      setTaskForm(prev => ({
-                        ...prev,
-                        subtasks: recalculated,
-                      }))
-                    } else {
-                      const avgTurns = Math.max(1, Math.round((taskForm.maxTurns || 25) / (currentSubtasks.length + 1)))
-                      const newSubtask = blankSubtask(currentSubtasks.length, avgTurns)
-                      const nextSubtasks = [...currentSubtasks, newSubtask]
-                      const newMaxTurns = calculateTaskMaxTurnsFromSubtasks(nextSubtasks, taskForm.maxTurns, maxTurnsLimit)
-                      setTaskForm(prev => ({
-                        ...prev,
-                        subtasks: nextSubtasks,
-                        maxTurns: newMaxTurns,
-                      }))
-                    }
-                  }}
-                />
-
-                <div className="form-group">
-                  <label className="form-label">Run automatically</label>
-                  <select
-                    className="form-input"
-                    value={schedule.kind}
-                    onChange={e =>
-                      setSchedule({
-                        ...schedule,
-                        kind: e.target.value as ScheduleKind,
-                      })
-                    }
+                <div className="inline-task-section">
+                  <button
+                    type="button"
+                    className="inline-task-section-header"
+                    onClick={() => handleToggleTaskCreatorSection('schedule')}
+                    aria-expanded={taskCreatorExpanded.schedule}
                   >
-                    <option value="none">No, only when I click Run</option>
-                    <option value="hourly">Every hour</option>
-                    <option value="daily">Every day</option>
-                    <option value="weekdays">Weekdays (Monday–Friday)</option>
-                    <option value="weekly">Once a week</option>
-                  </select>
-                  {schedule.kind !== 'none' && schedule.kind !== 'hourly' && (
-                    <div className="schedule-fields">
-                      {schedule.kind === 'weekly' && (
-                        <label className="form-group">
-                          <span className="form-label">On</span>
-                          <select
-                            className="form-input"
-                            value={schedule.weekday}
-                            onChange={e =>
-                              setSchedule({
-                                ...schedule,
-                                weekday: Number(e.target.value),
-                              })
-                            }
-                          >
-                            {WEEKDAYS.map((day, index) => (
-                              <option key={day} value={index}>
-                                {day}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      )}
-                      <label className="form-group">
-                        <span className="form-label">At</span>
-                        <input
-                          type="time"
+                    <ChevronDown
+                      size={14}
+                      className={taskCreatorExpanded.schedule ? 'section-chevron expanded' : 'section-chevron'}
+                    />
+                    <span>Schedule</span>
+                  </button>
+                  {taskCreatorExpanded.schedule && (
+                    <div className="inline-task-section-body">
+                      <div className="form-group">
+                        <label className="form-label">Run automatically</label>
+                        <select
                           className="form-input"
-                          value={timeInputValue(schedule.hour, schedule.minute)}
+                          value={schedule.kind}
                           onChange={e =>
                             setSchedule({
                               ...schedule,
-                              ...parseTimeInput(e.target.value),
+                              kind: e.target.value as ScheduleKind,
                             })
                           }
-                        />
-                      </label>
-                    </div>
+                        >
+                          <option value="none">No, only when I click Run</option>
+                          <option value="hourly">Every hour</option>
+                          <option value="daily">Every day</option>
+                          <option value="weekdays">Weekdays (Monday–Friday)</option>
+                          <option value="weekly">Once a week</option>
+                        </select>
+                        {schedule.kind !== 'none' && schedule.kind !== 'hourly' && (
+                          <div className="schedule-fields">
+                            {schedule.kind === 'weekly' && (
+                              <label className="form-group">
+                                <span className="form-label">On</span>
+                                <select
+                                  className="form-input"
+                                  value={schedule.weekday}
+                                  onChange={e =>
+                                    setSchedule({
+                                      ...schedule,
+                                      weekday: Number(e.target.value),
+                                    })
+                                  }
+                                >
+                                  {WEEKDAYS.map((day, index) => (
+                                    <option key={day} value={index}>
+                                      {day}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            )}
+                            <label className="form-group">
+                              <span className="form-label">At</span>
+                              <input
+                                type="time"
+                                className="form-input"
+                                value={timeInputValue(schedule.hour, schedule.minute)}
+                                onChange={e =>
+                                  setSchedule({
+                                    ...schedule,
+                                    ...parseTimeInput(e.target.value),
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
                   )}
+                      </div>
+                    </div>
+                )}
                 </div>
 
-                <div className="editor-button-row">
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={handleSaveTask}
-                    disabled={savingTask}
-                  >
-                    {savingTask
-                      ? 'Saving…'
-                      : `Save Task (.goose/tasks/${taskForm.id}.yaml)`}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => {
-                      setTaskAttachments([])
-                      setExistingAttachmentMentions([])
-                      setIsEditingTask(false)
-                    }}
-                    disabled={savingTask}
-                  >
-                    Cancel
-                  </button>
-                </div>
+              <div className="editor-button-row">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleSaveTask}
+                  disabled={savingTask}
+                >
+                  {savingTask
+                    ? 'Saving…'
+                    : `Save Task (.goose/tasks/${taskForm.id}.yaml)`}
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => closeTaskCreator({ discardDraft: true })}
+                  disabled={savingTask}
+                >
+                  Cancel
+                </button>
               </div>
-            </div>
-          </div>
-        )}
+              </div>
+            </section>
+          )}
 
           {/* Tasks List */}
           {(() => {
@@ -2646,6 +2887,8 @@ export function ProjectHarnessTab({
               matchCount: filteredTasks.length,
             })
             if (emptyState === 'no-tasks') {
+              /* The creator is inline above this slot, so an empty-state CTA would duplicate it. */
+              if (isEditingTask) return null
               return (
                 <div className="empty-tasks-card">
                   <p className="empty-text">No tasks found in this project.</p>

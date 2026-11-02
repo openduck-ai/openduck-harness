@@ -8958,6 +8958,111 @@ textarea {
   font-size: 0.95rem;
 }
 
+/* Inlining the task creator removed the dialog shell, so this panel is plain page content: no backdrop,
+   no dialog semantics, and its sections are collapsible so the restored draft state is visible. */
+.inline-task-creator {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.inline-task-creator-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.inline-task-creator-title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.inline-task-creator-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inline-task-creator-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.65rem 0.85rem;
+  font-size: 0.85rem;
+  border-radius: var(--radius-sm);
+  background: var(--accent-lime-tint);
+  border: 1px solid var(--accent-lime-border);
+  color: var(--accent-lime-text);
+}
+
+.inline-task-creator-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inline-task-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.inline-task-section:last-of-type {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.inline-task-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.35rem 0;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.15s;
+}
+
+.inline-task-section-header:hover {
+  color: var(--text-primary);
+}
+
+.section-chevron {
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.section-chevron.expanded {
+  transform: rotate(180deg);
+}
+
+.inline-task-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
 .task-editor-backdrop {
   display: flex;
   align-items: stretch;
