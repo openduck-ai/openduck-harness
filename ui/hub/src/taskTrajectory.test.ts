@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   buildAgentLog,
   calculateTrajectoryMetrics,
+  describeTranscriptConclusion,
   extractFinalAnswer,
   extractFailureReason,
   extractLlmTelemetry,
@@ -184,6 +185,34 @@ test('parseAgentAction handles YieldControl and RequestInput', () => {
   assert.equal(parsedReq.prompt, 'Do you want to apply this change?')
 })
 
+test('describeTranscriptConclusion maps statuses across casing and reason presence', () => {
+  const cases = [
+    ['Success', '✅ Task Completed', 'success'],
+    ['Failure', '❌ Task Failed', 'failure'],
+    ['Timeout', '⚠️ Task Incomplete / Timed Out', 'warning'],
+    ['Cancelled', '⚠️ Task Incomplete / Cancelled', 'warning'],
+    ['Skipped', 'Task Skipped', 'neutral'],
+    ['Running', 'Task In Progress', 'neutral'],
+    ['', 'Task Conclusion', 'neutral'],
+    ['Unrecognized', 'Task Conclusion', 'neutral'],
+  ] as const
+
+  for (const [rustStatus, title, tone] of cases) {
+    for (const status of new Set([rustStatus, rustStatus.toLowerCase(), rustStatus.toUpperCase()])) {
+      for (const hasFailureReason of [false, true]) {
+        const expected = status.toLowerCase() === 'success' && hasFailureReason
+          ? { title: '❌ Task Failed', tone: 'failure' }
+          : { title, tone }
+        assert.deepEqual(
+          describeTranscriptConclusion({ status, hasFailureReason }),
+          expected,
+          `status=${JSON.stringify(status)}, hasFailureReason=${hasFailureReason}`,
+        )
+      }
+    }
+  }
+})
+
 test('extractFinalAnswer prioritizes top-level finalAnswer', () => {
   const run: HarnessRunResponse = {
     taskId: 'task-1',
@@ -291,10 +320,91 @@ test('extractFinalAnswer and extractFailureReason include failure notice for can
   assert.match(reason || '', /150/)
 
   const finalAns = extractFinalAnswer(cancelledRun)
-  assert.match(finalAns || '', /## ❌ Task Incomplete \/ Failed \(Cancelled\)/)
+  assert.match(finalAns || '', /^## ⚠️ Task Incomplete \/ Cancelled \(Cancelled\)/)
   assert.match(finalAns || '', /Failure Reason/)
   assert.match(finalAns || '', /修复声音播放与录音功能/)
   assert.match(finalAns || '', /### Subtask 1: explore/)
+})
+
+test('extractFinalAnswer prefixes timeout, skipped, and failure top-level answers', () => {
+  for (const [status, title] of [
+    ['Timeout', '⚠️ Task Incomplete / Timed Out'],
+    ['Skipped', 'Task Skipped'],
+    ['Failure', '❌ Task Failed'],
+  ] as const) {
+    const run: HarnessRunResponse = {
+      taskId: 'conclusion-answer', status, stepCount: 3, toolCallsCount: 1, durationMs: 100,
+      error: 'Execution stopped early.',
+      finalAnswer: '  Original answer body\nwith another line.\n',
+    }
+    assert.equal(
+      extractFinalAnswer(run),
+      `## ${title} (${status})\n\n**Failure Reason**: Execution stopped early.\n\n---\n\n${run.finalAnswer}`,
+    )
+  }
+})
+
+test('extractFinalAnswer returns reason-only conclusions for cancelled, timeout, skipped, and failure', () => {
+  for (const [status, title, reason] of [
+    ['Cancelled', '⚠️ Task Incomplete / Cancelled', 'Execution cancelled after 3 steps.'],
+    ['Timeout', '⚠️ Task Incomplete / Timed Out', 'Execution ended with status Timeout after 3 steps.'],
+    ['Skipped', 'Task Skipped', 'Execution ended with status Skipped after 3 steps.'],
+    ['Failure', '❌ Task Failed', 'Execution ended with status Failure after 3 steps.'],
+  ] as const) {
+    const run: HarnessRunResponse = {
+      taskId: 'conclusion-reason', status, stepCount: 3, toolCallsCount: 1, durationMs: 100,
+    }
+    assert.equal(extractFinalAnswer(run), `## ${title} (${status})\n\n**Failure Reason**: ${reason}`)
+  }
+})
+
+test('extractFinalAnswer returns running answers verbatim and null without an answer', () => {
+  for (const status of ['Running', 'running', 'RUNNING']) {
+    const run: HarnessRunResponse = {
+      taskId: 'conclusion-running', status, stepCount: 3, toolCallsCount: 1, durationMs: 100,
+      error: 'An error while still running.',
+      finalAnswer: '  Work in progress\n\nOriginal answer.\n',
+    }
+    assert.equal(extractFinalAnswer(run), run.finalAnswer)
+    assert.equal(extractFinalAnswer({ ...run, finalAnswer: undefined }), null)
+  }
+})
+
+test('extractFinalAnswer re-extraction adds no second heading', () => {
+  for (const status of ['Cancelled', 'Timeout', 'Skipped', 'Failure']) {
+    const run: HarnessRunResponse = {
+      taskId: 'conclusion-repeat', status, stepCount: 3, toolCallsCount: 1, durationMs: 100,
+      finalAnswer: 'Original answer.',
+    }
+    const answer = extractFinalAnswer(run)
+    assert.ok(answer)
+    const repeated = extractFinalAnswer({ ...run, finalAnswer: answer })
+    assert.equal(repeated, answer)
+    assert.equal(repeated?.split('## ').length, 2)
+  }
+})
+
+test('extractFinalAnswer preserves matching headings without a reason line', () => {
+  const finalAnswer = '## Task Skipped (Skipped)\n\nOriginal answer.'
+  const run: HarnessRunResponse = {
+    taskId: 'conclusion-heading', status: 'Skipped', stepCount: 3, toolCallsCount: 1, durationMs: 100,
+    finalAnswer,
+  }
+  assert.equal(extractFinalAnswer(run), finalAnswer)
+})
+
+test('extractFinalAnswer preserves legacy duplicate-prefix guards', () => {
+  for (const finalAnswer of [
+    '**Failure Reason**: Already described.',
+    '## Task Failed\n\nOriginal answer.',
+    '## ❌ Task Incomplete / Failed (Cancelled)\n\nOriginal answer.',
+  ]) {
+    const run: HarnessRunResponse = {
+      taskId: 'conclusion-legacy', status: 'Cancelled', stepCount: 3, toolCallsCount: 1, durationMs: 100,
+      finalAnswer,
+    }
+    assert.equal(extractFinalAnswer(run), finalAnswer)
+  }
 })
 
 test('formatToolArguments handles objects and strings', () => {

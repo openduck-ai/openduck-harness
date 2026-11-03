@@ -100,6 +100,33 @@ export function parseAgentAction(action: unknown): ParsedAgentAction {
   return { kind: 'raw', raw: action }
 }
 
+export type TranscriptConclusionTone = 'success' | 'failure' | 'warning' | 'neutral'
+
+export function describeTranscriptConclusion(options: {
+  status: string
+  hasFailureReason: boolean
+}): { title: string; tone: TranscriptConclusionTone } {
+  const status = options.status.toLowerCase()
+  switch (status) {
+    case 'success':
+      return options.hasFailureReason
+        ? { title: '❌ Task Failed', tone: 'failure' }
+        : { title: '✅ Task Completed', tone: 'success' }
+    case 'failure':
+      return { title: '❌ Task Failed', tone: 'failure' }
+    case 'timeout':
+      return { title: '⚠️ Task Incomplete / Timed Out', tone: 'warning' }
+    case 'cancelled':
+      return { title: '⚠️ Task Incomplete / Cancelled', tone: 'warning' }
+    case 'skipped':
+      return { title: 'Task Skipped', tone: 'neutral' }
+    case 'running':
+      return { title: 'Task In Progress', tone: 'neutral' }
+    default:
+      return { title: 'Task Conclusion', tone: 'neutral' }
+  }
+}
+
 /**
  * Extracts a concise failure reason from a run's continuation checkpoint or metadata.
  */
@@ -209,11 +236,16 @@ export function extractFinalAnswer(run: HarnessRunResponse | null | undefined): 
   if (statusStr !== 'success' && statusStr !== 'running') {
     const reason = extractFailureReason(run)
     if (reason) {
+      const { title } = describeTranscriptConclusion({
+        status: String(run.status || ''),
+        hasFailureReason: Boolean(reason.trim()),
+      })
+      const heading = `## ${title} (${run.status})`
       if (!ans) {
-        return `## ❌ Task Incomplete / Failed (${run.status})\n\n**Failure Reason**: ${reason}`
+        return `${heading}\n\n**Failure Reason**: ${reason}`
       }
-      if (!ans.includes('Failure Reason') && !ans.includes('Task Failed') && !ans.includes('Task Incomplete')) {
-        return `## ❌ Task Incomplete / Failed (${run.status})\n\n**Failure Reason**: ${reason}\n\n---\n\n${ans}`
+      if (!ans.includes(heading) && !ans.includes('Failure Reason') && !ans.includes('Task Failed') && !ans.includes('Task Incomplete')) {
+        return `${heading}\n\n**Failure Reason**: ${reason}\n\n---\n\n${ans}`
       }
     }
   }
