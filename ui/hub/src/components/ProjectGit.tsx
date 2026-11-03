@@ -367,7 +367,15 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     if (!message.trim()) return
     await runMutation(async () => {
       const result = await api.commitGitChanges(slug, message, targetPaths)
-      setNotice(`Committed ${result.sha.slice(0, 7)} — ${result.subject}`)
+      const sha = result.sha.trim()
+      const subject = result.subject.trim()
+      setNotice(
+        sha
+          ? `Committed ${sha.slice(0, 7)}${subject ? ` — ${subject}` : ''}`
+          : subject
+            ? `Committed — ${subject}`
+            : 'Committed successfully',
+      )
       setMessage('')
       setMessageSource('')
       setSelectedSha(null)
