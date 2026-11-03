@@ -1,11 +1,12 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import type { KeyboardEvent } from 'react'
 import type {
-  createApi,
   ExecCommandOutput,
   TuiSessionSummary,
   AgentCliKind,
+  ProxyItem,
 } from '@aaif/goose-hub-core'
+import type { createApi } from '../api'
 
 interface ProjectTerminalProps {
   api: ReturnType<typeof createApi>
@@ -48,6 +49,21 @@ export function ProjectTerminal({
   const [tuiBusy, setTuiBusy] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [copiedAttach, setCopiedAttach] = useState(false)
+  const [proxies, setProxies] = useState<ProxyItem[]>([])
+  const [selectedProxyMode, setSelectedProxyMode] = useState<'profile' | 'direct' | 'named' | 'custom'>('profile')
+  const [selectedProxyId, setSelectedProxyId] = useState<string>('')
+  const [customProxyUrl, setCustomProxyUrl] = useState<string>('')
+
+  useEffect(() => {
+    if (typeof (api as any).getProxiesConfig === 'function') {
+      ;(api as any)
+        .getProxiesConfig()
+        .then((res: { proxies?: ProxyItem[] }) => {
+          setProxies(res.proxies || [])
+        })
+        .catch(() => {})
+    }
+  }, [api])
 
   const quickPresets = useMemo(() => {
     const common = ['git status', 'git diff', 'ls -la']
@@ -124,7 +140,7 @@ export function ProjectTerminal({
     try {
       const sessions = await api.listTuiSessions(slug, true)
       setTuiSessions(sessions)
-      if (sessions.length > 0 && (!activeSessionId || !sessions.some(s => s.sessionId === activeSessionId))) {
+      if (sessions.length > 0 && (!activeSessionId || !sessions.some((s: any) => s.sessionId === activeSessionId))) {
         setActiveSessionId(sessions[0].sessionId)
       }
     } catch (err) {
@@ -163,10 +179,21 @@ export function ProjectTerminal({
   const handleStartAgent = async (agent: AgentCliKind) => {
     setTuiBusy(true)
     try {
-      const res = await api.startTuiSession(slug, {
+      const payload: any = {
         agent,
         autoApprove: true,
-      })
+      }
+      if (selectedProxyMode === 'direct') {
+        payload.proxyMode = 'direct'
+      } else if (selectedProxyMode === 'named' && selectedProxyId) {
+        payload.proxyMode = 'named'
+        payload.proxyId = selectedProxyId
+      } else if (selectedProxyMode === 'custom' && customProxyUrl.trim()) {
+        payload.proxyMode = 'custom'
+        payload.proxyId = customProxyUrl.trim()
+        payload.httpsProxy = customProxyUrl.trim()
+      }
+      const res = await api.startTuiSession(slug, payload)
       setActiveSessionId(res.sessionId)
       setActiveScreen(res.initialScreen)
       await fetchTuiSessions()
@@ -356,7 +383,7 @@ export function ProjectTerminal({
         /* --- Interactive Agent TUI Sessions Mode --- */
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           {/* Launch bar */}
-          <div className="quick-presets" style={{ alignItems: 'center' }}>
+          <div className="quick-presets" style={{ alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
             <span className="presets-label">Launch persistent agent:</span>
             <button
               type="button"
@@ -394,6 +421,44 @@ export function ProjectTerminal({
             >
               ⚡ claude (Claude Code)
             </button>
+
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginLeft: 'auto', fontSize: '12px' }}>
+              <span style={{ color: 'var(--text-muted)' }}>Proxy:</span>
+              <select
+                value={selectedProxyMode === 'named' ? selectedProxyId : selectedProxyMode}
+                onChange={e => {
+                  const val = e.target.value
+                  if (val === 'profile' || val === 'direct' || val === 'custom') {
+                    setSelectedProxyMode(val)
+                    setSelectedProxyId('')
+                  } else {
+                    setSelectedProxyMode('named')
+                    setSelectedProxyId(val)
+                  }
+                }}
+                disabled={tuiBusy}
+                style={{ padding: '2px 6px', fontSize: '12px', borderRadius: '4px', border: '1px solid var(--border-default)', background: 'var(--bg-card)' }}
+              >
+                <option value="profile">Profile Default</option>
+                <option value="direct">Direct (No Proxy)</option>
+                {proxies.map(p => (
+                  <option key={p.id} value={p.id}>
+                    Named: {p.id} ({p.url})
+                  </option>
+                ))}
+                <option value="custom">Custom URL…</option>
+              </select>
+              {selectedProxyMode === 'custom' && (
+                <input
+                  type="text"
+                  value={customProxyUrl}
+                  onChange={e => setCustomProxyUrl(e.target.value)}
+                  placeholder="http://127.0.0.1:7890"
+                  disabled={tuiBusy}
+                  style={{ width: '160px', padding: '2px 6px', fontSize: '12px', borderRadius: '4px', border: '1px solid var(--border-default)', background: 'var(--bg-card)' }}
+                />
+              )}
+            </div>
           </div>
 
           {/* Sessions selector tabs */}
@@ -449,6 +514,37 @@ export function ProjectTerminal({
                     style={{ opacity: autoRefresh ? 1 : 0.6 }}
                   >
                     {autoRefresh ? '🔄 Auto-sync: ON' : '⏸ Auto-sync: OFF'}
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-chip"
+                    onClick={async () => {
+                      try {
+                        await api.extendManagedTuiSession(activeSession.sessionId, 30)
+                        alert('Retention extended by 30 minutes')
+                      } catch (e: any) {
+                        alert(e.message)
+                      }
+                    }}
+                    title="Extend session retention countdown by 30 minutes"
+                    style={{ fontSize: '0.72rem' }}
+                  >
+                    +30m Extend
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-chip"
+                    onClick={async () => {
+                      try {
+                        await api.interruptManagedTuiSession(activeSession.sessionId)
+                      } catch (e: any) {
+                        alert(e.message)
+                      }
+                    }}
+                    title="Send Escape and C-c interrupt"
+                    style={{ fontSize: '0.72rem', color: '#fbbf24' }}
+                  >
+                    Interrupt
                   </button>
                   <button
                     type="button"

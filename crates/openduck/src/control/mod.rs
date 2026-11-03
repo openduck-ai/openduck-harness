@@ -19,3 +19,4 @@ pub mod projects;
 pub mod task_scheduler;
 pub mod terminal;
 pub mod tui_agent_extension;
+pub mod tui_management;

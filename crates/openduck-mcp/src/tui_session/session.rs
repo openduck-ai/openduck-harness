@@ -518,9 +518,29 @@ impl TuiSessionManager {
 
         let mut env = config.env.clone();
         if let Some(proxy) = &config.https_proxy {
-            env.retain(|(key, _)| key != "HTTPS_PROXY" && key != "https_proxy");
-            env.push(("HTTPS_PROXY".to_string(), proxy.clone()));
-            env.push(("https_proxy".to_string(), proxy.clone()));
+            let proxy_vars = [
+                "HTTP_PROXY",
+                "http_proxy",
+                "HTTPS_PROXY",
+                "https_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+            ];
+            for var in &proxy_vars {
+                env.retain(|(key, _)| key != *var);
+            }
+            if !proxy.trim().is_empty() && proxy != "direct" {
+                env.push(("HTTPS_PROXY".to_string(), proxy.clone()));
+                env.push(("https_proxy".to_string(), proxy.clone()));
+                env.push(("HTTP_PROXY".to_string(), proxy.clone()));
+                env.push(("http_proxy".to_string(), proxy.clone()));
+                env.push(("ALL_PROXY".to_string(), proxy.clone()));
+                env.push(("all_proxy".to_string(), proxy.clone()));
+            } else {
+                for var in &proxy_vars {
+                    env.push((var.to_string(), String::new()));
+                }
+            }
         }
 
         let pid = self

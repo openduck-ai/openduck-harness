@@ -805,6 +805,21 @@ pub async fn launch_project_task(
             }
         };
 
+        let status_str = match task_status {
+            crate::notification::TaskStatus::Succeeded => "success",
+            crate::notification::TaskStatus::Cancelled => "cancelled",
+            crate::notification::TaskStatus::Failed => "failed",
+        };
+        let tui_svc = crate::control::tui_management::TuiManagementService::global().await;
+        let _ = tui_svc
+            .on_task_run_ended(
+                Some(&persist_slug),
+                Some(&task_id_for_fail),
+                &spawn_job_id,
+                status_str,
+            )
+            .await;
+
         let report = crate::notification::TaskExecutionReport {
             job_id: spawn_job_id.clone(),
             job_name: notify_task_name,
@@ -1114,7 +1129,8 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy, S: S
         let tui_ext = Arc::new(
             crate::control::tui_agent_extension::TuiAgentHarnessExtension::new(
                 crate::control::terminal::get_tui_session_manager(),
-            ),
+            )
+            .with_context(None, Some(task_spec.id.clone()), Some(job_id.to_string())),
         );
         let mut harness = AgentHarness::new(policy, sandbox)
             .with_max_turns(max_turns)
@@ -1164,7 +1180,8 @@ async fn run_with_optional_record<P: openduck_harness::policy::AgentPolicy, S: S
         let tui_ext = Arc::new(
             crate::control::tui_agent_extension::TuiAgentHarnessExtension::new(
                 crate::control::terminal::get_tui_session_manager(),
-            ),
+            )
+            .with_context(None, Some(task_spec.id.clone()), Some(job_id.to_string())),
         );
         let mut harness = AgentHarness::new(base_policy, sandbox)
             .with_max_turns(max_turns)
@@ -1452,6 +1469,10 @@ pub async fn stop_project_task(
 
     let cancelled =
         stop_active_job(&target_job.job_id, Some("Task stopped by user")).map_err(bad)?;
+    let tui_svc = crate::control::tui_management::TuiManagementService::global().await;
+    let _ = tui_svc
+        .on_task_run_ended(Some(&slug), Some(&task_id), &target_job.job_id, "cancelled")
+        .await;
     Ok(Json(serde_json::json!({
         "success": true,
         "message": format!("Task '{task_id}' was stopped"),

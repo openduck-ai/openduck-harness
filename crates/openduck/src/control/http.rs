@@ -1659,6 +1659,14 @@ async fn update_proxies_config(
 }
 
 pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
+    let tui_data_dir = server.data_dir().to_path_buf();
+    tokio::spawn(async move {
+        let db_path = tui_data_dir.join("control.db");
+        if let Err(error) = super::tui_management::TuiManagementService::init_global(db_path).await
+        {
+            tracing::error!(%error, "Failed to initialize TuiManagementService");
+        }
+    });
     tokio::spawn(async {
         match super::task_scheduler::global().await {
             Ok(scheduler) => {
@@ -1943,5 +1951,6 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
             "/api/v1/harness/replay",
             post(super::harness::run_harness_replay),
         )
+        .merge(super::tui_management::tui_management_router())
         .with_state(server)
 }

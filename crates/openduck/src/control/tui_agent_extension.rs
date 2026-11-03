@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use openduck_harness::runtime::HarnessToolExtension;
 use openduck_harness::types::{ToolCallRequest, ToolCallResponse, ToolDefinition};
-use openduck_mcp::tui_session::{AgentCliKind, TuiPaneState, TuiSessionConfig, TuiSessionManager};
+use openduck_mcp::tui_session::{AgentCliKind, TuiPaneState, TuiSessionManager};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -9,11 +9,31 @@ use std::time::Duration;
 
 pub struct TuiAgentHarnessExtension {
     manager: Arc<TuiSessionManager>,
+    project_slug: Option<String>,
+    task_id: Option<String>,
+    run_id: Option<String>,
 }
 
 impl TuiAgentHarnessExtension {
     pub fn new(manager: Arc<TuiSessionManager>) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            project_slug: None,
+            task_id: None,
+            run_id: None,
+        }
+    }
+
+    pub fn with_context(
+        mut self,
+        project_slug: Option<String>,
+        task_id: Option<String>,
+        run_id: Option<String>,
+    ) -> Self {
+        self.project_slug = project_slug;
+        self.task_id = task_id;
+        self.run_id = run_id;
+        self
     }
 
     fn resolve_cwd(raw: Option<&str>, workspace_root: &Path) -> PathBuf {
@@ -86,24 +106,54 @@ impl TuiAgentHarnessExtension {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let config = TuiSessionConfig {
-            session_id: session_id.clone(),
-            kind,
-            cwd,
-            model,
-            effort,
-            auto_approve,
-            resume_id: None,
-            cols: 160,
-            rows: 48,
-            extra_args: Vec::new(),
-            https_proxy: None,
-            env: Vec::new(),
-            idle_timeout_mins: None,
-            exited_retention_mins: None,
-        };
+        let proxy_mode = call
+            .arguments
+            .get("proxy_mode")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
-        let handle = self.manager.start_session(config).await?;
+        let proxy_id = call
+            .arguments
+            .get("proxy_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let https_proxy = call
+            .arguments
+            .get("https_proxy")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let service = crate::control::tui_management::TuiManagementService::global().await;
+        let (rec, _initial_turn) = service
+            .start_session(crate::control::tui_management::StartManagedSessionRequest {
+                agent: kind.to_string(),
+                cwd,
+                model,
+                effort,
+                auto_approve: Some(auto_approve),
+                resume_id: None,
+                initial_prompt: None,
+                session_name: Some(session_id.clone()),
+                extra_args: None,
+                proxy_mode,
+                proxy_id,
+                https_proxy,
+                account_id: None,
+                idle_timeout_mins: None,
+                exited_retention_mins: None,
+                project_slug: self.project_slug.clone(),
+                task_id: self.task_id.clone(),
+                run_id: self.run_id.clone(),
+                subtask_id: None,
+                creation_source: Some("harness".to_string()),
+            })
+            .await?;
+
+        let handle = self.manager.get_session(&rec.session_name).await?;
         let current_state = handle.last_state.lock().await.clone();
 
         if let Some(p) = prompt {
@@ -113,15 +163,21 @@ impl TuiAgentHarnessExtension {
                     name: call.name.clone(),
                     output: format!(
                         "Session started: {}\nAttach command: {}\nState: Waiting for approval: {}\nNote: Initial prompt was held because confirmation is required. Use tui_agent_keys to approve.",
-                        session_id,
-                        handle.backend.attach_command(&session_id),
+                        rec.session_name,
+                        handle.backend.attach_command(&rec.session_name),
                         prompt_snippet
                     ),
                     is_error: false,
                 });
             }
-            let turn = handle
-                .send_prompt(&p, true, Duration::from_secs(timeout_secs))
+            let turn = service
+                .send_prompt(
+                    &rec.session_name,
+                    &p,
+                    true,
+                    Duration::from_secs(timeout_secs),
+                    self.run_id.as_deref(),
+                )
                 .await?;
             let output = if !turn.response.trim().is_empty() {
                 turn.response
@@ -133,7 +189,7 @@ impl TuiAgentHarnessExtension {
                 name: call.name.clone(),
                 output: format!(
                     "Session started: {}\nAttach command: {}\nState: {}\nResponse:\n{}",
-                    session_id,
+                    rec.session_name,
                     turn.attach_command,
                     turn.state.label(),
                     output
@@ -153,8 +209,8 @@ impl TuiAgentHarnessExtension {
                 name: call.name.clone(),
                 output: format!(
                     "Session started: {}\nAttach command: {}\nState: {}",
-                    session_id,
-                    handle.backend.attach_command(&session_id),
+                    rec.session_name,
+                    handle.backend.attach_command(&rec.session_name),
                     state_str
                 ),
                 is_error: false,
@@ -187,9 +243,15 @@ impl TuiAgentHarnessExtension {
             .and_then(|v| v.as_u64())
             .unwrap_or(600);
 
-        let handle = self.manager.get_session(session_id).await?;
-        let turn = handle
-            .send_prompt(prompt, wait, Duration::from_secs(timeout_secs))
+        let service = crate::control::tui_management::TuiManagementService::global().await;
+        let turn = service
+            .send_prompt(
+                session_id,
+                prompt,
+                wait,
+                Duration::from_secs(timeout_secs),
+                self.run_id.as_deref(),
+            )
             .await?;
 
         let output = if !turn.response.trim().is_empty() {
@@ -225,8 +287,10 @@ impl TuiAgentHarnessExtension {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let handle = self.manager.get_session(session_id).await?;
-        let turn = handle.read_state(lines.map(|l| l as i32), raw_ansi).await?;
+        let service = crate::control::tui_management::TuiManagementService::global().await;
+        let turn = service
+            .read_state(session_id, lines.map(|l| l as i32), raw_ansi)
+            .await?;
 
         let text = if !turn.response.trim().is_empty() {
             format!(
@@ -268,8 +332,8 @@ impl TuiAgentHarnessExtension {
             })
             .ok_or_else(|| anyhow!("Parameter 'keys' must be an array of strings"))?;
 
-        let handle = self.manager.get_session(session_id).await?;
-        handle.send_keys(&keys).await?;
+        let service = crate::control::tui_management::TuiManagementService::global().await;
+        service.send_keys(session_id, &keys).await?;
 
         Ok(ToolCallResponse {
             id: call.id.clone(),
@@ -280,7 +344,8 @@ impl TuiAgentHarnessExtension {
     }
 
     async fn handle_list(&self, call: &ToolCallRequest) -> Result<ToolCallResponse> {
-        let summaries = self.manager.list_sessions(false).await;
+        let service = crate::control::tui_management::TuiManagementService::global().await;
+        let summaries = service.session_manager.list_sessions(false).await;
         if summaries.is_empty() {
             return Ok(ToolCallResponse {
                 id: call.id.clone(),
@@ -317,7 +382,10 @@ impl TuiAgentHarnessExtension {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Parameter 'session_id' is required"))?;
 
-        self.manager.stop_session(session_id).await?;
+        let service = crate::control::tui_management::TuiManagementService::global().await;
+        service
+            .stop_session(session_id, Some("harness_stop"))
+            .await?;
 
         Ok(ToolCallResponse {
             id: call.id.clone(),
@@ -400,6 +468,18 @@ impl HarnessToolExtension for TuiAgentHarnessExtension {
                         "auto_approve": {
                             "type": "boolean",
                             "description": "Whether to auto-approve tool execution and permission prompts (defaults to true)."
+                        },
+                        "proxy_mode": {
+                            "type": "string",
+                            "description": "Optional proxy mode: inherit | direct | named | custom"
+                        },
+                        "proxy_id": {
+                            "type": "string",
+                            "description": "Optional named proxy ID or custom proxy URL."
+                        },
+                        "https_proxy": {
+                            "type": "string",
+                            "description": "Optional HTTPS proxy URL override (for example http://127.0.0.1:2087)."
                         },
                         "timeout_secs": {
                             "type": "integer",

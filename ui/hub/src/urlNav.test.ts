@@ -22,6 +22,16 @@ test('parseUrlNav parses settings page correctly', () => {
   })
 })
 
+test('parseUrlNav parses tui-agents page correctly', () => {
+  const state = parseUrlNav('?page=tui-agents')
+  assert.deepEqual(state, {
+    page: 'tui-agents',
+    project: null,
+    tab: null,
+    split: null,
+  })
+})
+
 test('parseUrlNav parses project and subtab accurately', () => {
   const state = parseUrlNav('?project=openduck&tab=chat')
   assert.deepEqual(state, {

@@ -443,7 +443,10 @@ export interface StartTuiSessionInput {
   initialPrompt?: string
   sessionId?: string
   extraArgs?: string[]
+  proxyMode?: string
+  proxyId?: string
   httpsProxy?: string
+  accountId?: string
   idleTimeoutMins?: number
   exitedRetentionMins?: number
 }

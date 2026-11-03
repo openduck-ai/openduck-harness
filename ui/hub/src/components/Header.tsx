@@ -7,6 +7,7 @@ import {
   Bot,
   Sun,
   Moon,
+  Terminal,
 } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext'
 import type { NavPage } from '../urlNav'
@@ -67,6 +68,14 @@ export function Header({
             {runningTasksCount > 0 && (
               <span className="nav-counter">{runningTasksCount}</span>
             )}
+          </button>
+          <button
+            type="button"
+            className={`nav-link ${currentPage === 'tui-agents' ? 'active' : ''}`}
+            onClick={() => onSelectPage('tui-agents')}
+          >
+            <Terminal size={16} />
+            <span>TUI Agents</span>
           </button>
           <button
             type="button"

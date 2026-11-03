@@ -35,6 +35,11 @@ const ServerSettings = lazy(() =>
   import('./components/ServerSettings').then(m => ({ default: m.ServerSettings })),
 )
 
+// Lazy-load TuiAgentsPage
+const TuiAgentsPage = lazy(() =>
+  import('./components/TuiAgentsPage').then(m => ({ default: m.TuiAgentsPage })),
+)
+
 export default function App() {
   const [initialNav] = useState(() =>
     typeof window !== 'undefined'
@@ -146,14 +151,14 @@ export default function App() {
           setIsConnected(true)
 
           if (initialNav.project) {
-            const matched = res.projects.find(p => p.slug === initialNav.project)
+            const matched = res.projects.find((p: any) => p.slug === initialNav.project)
             if (matched) {
               void open(matched, initialNav.tab)
             }
           }
 
           if (initialNav.split && initialNav.split !== initialNav.project) {
-            const splitMatch = res.projects.find(p => p.slug === initialNav.split)
+            const splitMatch = res.projects.find((p: any) => p.slug === initialNav.split)
             if (splitMatch) {
               try {
                 const detail = await api.getProject(splitMatch.slug, { lazy: true })
@@ -580,6 +585,20 @@ export default function App() {
               onOpenProject={project => void open(project, 'harness')}
               onStopJob={job => void handleStopRunningJob(job)}
             />
+          </div>
+        )}
+
+        {currentPage === 'tui-agents' && (
+          <div className="page-view tui-agents-page-view">
+            <Suspense
+              fallback={
+                <div className="page-view tui-agents-page-view">
+                  <TabSkeleton tab="terminal" />
+                </div>
+              }
+            >
+              <TuiAgentsPage api={api} />
+            </Suspense>
           </div>
         )}
 
