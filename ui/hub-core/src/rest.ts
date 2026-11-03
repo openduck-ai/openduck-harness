@@ -53,6 +53,7 @@ import type {
   ProxiesConfigPutBody,
   ProxiesConfigResponse,
   ProviderConfigPutBody,
+  ProviderModelsRefreshResponse,
   ProvidersConfigResponse,
   RenameFileInput,
   SessionSummary,
@@ -103,6 +104,14 @@ export async function readErrorMessage(response: Response): Promise<string> {
 }
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 12_000
+// Git routes use dedicated request budgets. The core commit subprocesses
+// total 240s (ensure-repo 30 + add 60 + commit 120 + post-commit log 30);
+// allow 300s for that subtotal plus response overhead. This is not a bound
+// on git-side lock waiting.
+export const GIT_COMMIT_TIMEOUT_MS = 300_000
+export const GIT_COMMIT_MESSAGE_TIMEOUT_MS = 90_000
+export const GIT_MUTATE_TIMEOUT_MS = 120_000
+export const GIT_READ_TIMEOUT_MS = 30_000
 export const DEFAULT_HISTORY_TIMEOUT_MS = 60_000
 
 export function normalizeHistoryResponse(
@@ -183,8 +192,19 @@ async function fetchWithTimeout(
 }
 
 export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}) {
+  function gitRouteTimeoutMs(route: string): number {
+    if (route.endsWith('/git/commit')) return GIT_COMMIT_TIMEOUT_MS
+    if (route.endsWith('/git/commit-message')) return GIT_COMMIT_MESSAGE_TIMEOUT_MS
+    if (['/git/stage', '/git/unstage', '/git/discard'].some((r) => route.endsWith(r))) {
+      return GIT_MUTATE_TIMEOUT_MS
+    }
+    return GIT_READ_TIMEOUT_MS
+  }
+
   function requestTimeoutMs(path: string, method = 'GET'): number | null {
     const route = path.toLowerCase()
+    const pathname = route.split('?')[0]
+    if (/^\/api\/v1\/projects\/[^/]+\/git\//.test(pathname)) return gitRouteTimeoutMs(pathname)
     if (route === '/api/v1/network/status') return 40_000
     if (method === 'POST' && /\/tui-sessions(?:\/[^/]+\/prompt)?$/.test(route)) {
       return null
@@ -262,6 +282,11 @@ export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}
         method: 'PUT',
         body: JSON.stringify(body),
       }),
+    refreshProviderModels: (providerId: string) =>
+      request<ProviderModelsRefreshResponse>(
+        `/api/v1/config/providers/${encodeURIComponent(providerId)}/models/refresh`,
+        { method: 'POST' },
+      ),
     getProxiesConfig: () => request<ProxiesConfigResponse>('/api/v1/config/proxies'),
     updateProxiesConfig: (body: ProxiesConfigPutBody) =>
       request<ProxiesConfigResponse>('/api/v1/config/proxies', {

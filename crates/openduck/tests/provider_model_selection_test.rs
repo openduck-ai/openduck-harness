@@ -1,18 +1,13 @@
 use openduck::config::providers::{
-    clear_active_provider, clear_secondary_provider_model, get_active_model,
-    get_active_provider, get_provider_entry, get_secondary_provider,
-    provider_roles_migrated, resolve_role_model, resolve_role_model_for_provider,
-    save_role_selection, set_active_provider, set_provider_entry,
-    set_secondary_provider, set_secondary_provider_model, validate_selection,
-    ProviderEntry, Role,
+    clear_active_provider, clear_secondary_provider_model, get_active_model, get_active_provider,
+    get_provider_entry, get_secondary_provider, provider_roles_migrated, resolve_role_model,
+    resolve_role_model_for_provider, save_role_selection, set_active_provider, set_provider_entry,
+    set_secondary_provider, set_secondary_provider_model, validate_selection, ProviderEntry, Role,
 };
 use openduck::config::{Config, ConfigError};
 use tempfile::NamedTempFile;
 
-fn env_set(
-    key: &'static str,
-    val: &'static str,
-) -> impl std::any::Any {
+fn env_set(key: &'static str, val: &'static str) -> impl std::any::Any {
     env_lock::lock_env([(key, Some(val))])
 }
 
@@ -20,6 +15,14 @@ fn new_test_config() -> Config {
     let config_file = NamedTempFile::new().unwrap();
     let secrets_file = NamedTempFile::new().unwrap();
     Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap()
+}
+
+fn config_from_raw_yaml(yaml: &str) -> (Config, NamedTempFile, NamedTempFile) {
+    let config_file = NamedTempFile::new().unwrap();
+    let secrets_file = NamedTempFile::new().unwrap();
+    std::fs::write(config_file.path(), yaml).unwrap();
+    let config = Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap();
+    (config, config_file, secrets_file)
 }
 
 fn enable_provider(config: &Config, name: &str, model: &str) {
@@ -44,8 +47,7 @@ fn explicit_request_model_wins_over_everything() {
     let _env = env_set("MODEL", "env-model");
 
     let resolved =
-        resolve_role_model_for_provider(&config, Role::Major, "openai", Some("explicit"))
-            .unwrap();
+        resolve_role_model_for_provider(&config, Role::Major, "openai", Some("explicit")).unwrap();
     assert_eq!(resolved.provider, "openai");
     assert_eq!(resolved.model, "explicit");
 }
@@ -83,10 +85,18 @@ fn provider_default_used_when_no_role_model() {
 
 #[test]
 fn legacy_goose_model_used_when_unmigrated() {
-    let config = new_test_config();
-    enable_provider(&config, "openai", "entry-default");
-    set_active_provider(&config, "openai", "").unwrap();
-    config.set_param("GOOSE_MODEL", "legacy-model").unwrap();
+    let (config, _config_file, _secrets_file) = config_from_raw_yaml(
+        r#"
+active_provider: openai
+GOOSE_PROVIDER: openai
+GOOSE_MODEL: legacy-model
+providers:
+  openai:
+    enabled: true
+    configured: true
+    model: ""
+"#,
+    );
     assert!(!provider_roles_migrated(&config));
 
     let resolved = resolve_role_model_for_provider(&config, Role::Major, "openai", None).unwrap();
@@ -187,7 +197,8 @@ fn save_role_selection_with_none_clears_role_model() {
 
     save_role_selection(&config, Role::Major, "openai", None).unwrap();
 
-    assert_eq!(get_active_model(&config), None);
+    assert!(openduck::config::providers::file_active_model(&config).is_none());
+    assert_eq!(get_active_model(&config), Some("entry-default".to_string()));
 }
 
 #[test]
@@ -283,10 +294,13 @@ fn fast_model_is_kept_even_when_equal_to_entry_model() {
 
 #[test]
 fn v1_config_with_legacy_keys_resolves() {
-    let config = new_test_config();
-    config.set_param("GOOSE_PROVIDER", "openai").unwrap();
-    config.set_param("GOOSE_MODEL", "legacy-model").unwrap();
-    enable_provider(&config, "openai", "entry-default");
+    let (config, _config_file, _secrets_file) = config_from_raw_yaml(
+        r#"
+GOOSE_PROVIDER: openai
+GOOSE_MODEL: legacy-model
+"#,
+    );
+    assert!(!provider_roles_migrated(&config));
 
     let resolved = resolve_role_model_for_provider(&config, Role::Major, "openai", None).unwrap();
     assert_eq!(resolved.model, "legacy-model");

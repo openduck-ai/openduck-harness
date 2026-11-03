@@ -1,94 +1,39 @@
-# Task: Provider/Model Decoupling — Full Implementation
+# Task: Provider/Model Decoupling — Full Implementation (run 3)
 
 Repo: /mnt/e/openduck-harness  Design: design-docs/provider-model-decoupling-plan.md
-STATUS: Subtask A ~85% done (resolver/config/harness/acp/inventory service complete; build -p openduck GREEN).
-REMAINING A: HTTP GET v2 fields + POST refresh route + PUT v2 path + 2 test files. Then B (hub UI), C (verify).
+Branch: develop. Prior commits: a38080d "feat(config): decouple provider and model selection with role-level resolution",
+2f80680 "feat: store active model top-level and add model refresh endpoint".
 
-## Env
-- `source` unavailable in sh. Use bash: `cd /mnt/e/openduck-harness && . bin/activate-hermit` — hermit activates ok.
-- Build -p openduck ≈ 5 min cold, fast incremental. jemalloc warnings = noise.
+## Prior-run state (from git HEAD notes; treat as HINTS not truth)
+- A ~85%: resolver/config/harness/acp/inventory service done; HTTP GET v2 + POST refresh + PUT v2 written.
+- Known blocking issue: migrations.rs `migrate_provider_config` writes legacy keys into entry.model and
+  cleanup_legacy_provider_keys deletes GOOSE_MODEL at write time => provider_model_selection_test 9/18.
+- Deleted files in working tree: .agent/notes... (restored now), crates/openduck/tests/debug_dump.rs.
+- provider_config_api_test.rs exists untracked (possibly incomplete).
 
-## DESIGN DOC VERIFIED FACTS (§3.6)
-- GET keeps all existing fields; adds: selectionVersion:2; majorModel & secondaryProviderModel: {value,fileValue,fromEnv,source}; source enum: environment|role|providerDefault|legacy|unset. fileValue = ONLY role-key stored value (not fallback disguised).
-- ProviderDetail adds: models[{id,name}] (from ProviderInventoryService; NO other source), inventoryStatus, supportsRefresh, refreshing, lastUpdatedAt, lastRefreshError. Example shows inventoryStatus:"ready", supportsRefresh:true, refreshing:false, lastUpdatedAt:null, lastRefreshError:null.
-- GET reads inventory snapshot + static catalog; NO per-provider network discovery.
-- POST /api/v1/config/providers/{providerId}/models/refresh -> 202; reuse inventory identity/dedup/staleness; HTTP must NOT call ACP handler (shared service done).
-- PUT v2: selectionVersion:2; majorProvider+majorModel+secondaryProvider+secondaryProviderModel ALL required (avoid misread as clear); provider null => clear role AND model must be null; model null => clear explicit role model (fallback to provider default); blank/whitespace model rejected; model IDs saved raw (not display names); provider row OMIT model => keep old default; "" => explicit clear provider default; null model in provider row => reject; no selectionVersion => v1 semantics; provider config check and role model resolution separate; selected roles must resolve non-empty model; env lock compares FILE values, forbid writing env-effective value back; save once atomically after all validation; failure = no partial changes.
-- No credentials in DTO; refresh errors follow existing safe handling (no headers/secrets leaked).
+## DESIGN FACTS (must verify in code)
+- Role keys: active_model, secondary_provider_model. Resolver precedence major: explicit > MODEL env >
+  active_model (only if target provider == stored role provider) > entry.model > legacy GOOSE_MODEL > error.
+- Secondary: explicit > SECONDARY_MODEL env > secondary_provider_model > entry.model >
+  GOOSE_SECONDARY_MODEL/OPENDUCK_SECONDARY_MODEL > error.
+- GET adds selectionVersion=2, majorModel/secondaryProviderModel {value,fileValue,fromEnv,source}
+  source ∈ environment|role|providerDefault|legacy|unset. ProviderDetail adds models[{id,name}],
+  inventoryStatus, supportsRefresh, refreshing, lastUpdatedAt, lastRefreshError.
+- POST /api/v1/config/providers/{providerId}/models/refresh -> 202, shared inventory service (no ACP handler call).
+- PUT v2: selectionVersion=2; all 4 role fields required; provider null => model must be null; model null =>
+  clear explicit role model; blank rejected; IDs raw; provider-row model omitted=keep, ""=clear, null=reject;
+  no selectionVersion => v1 (legacy) semantics incl. syncing role model when legacy client changes that
+  provider's default; env lock compares FILE values; atomic save.
+- Same provider for both roles allowed everywhere (config validate_selection, harness resolve_secondary_target,
+  HTTP, Hub).
+- normalize keeps fast_model even when == entry.model.
+- configured must be decoupled from model non-empty.
 
-## KEY API FACTS (verified in tree this session)
-### config/providers.rs (complete, green)
-- Keys: ACTIVE_MODEL_KEY="active_model", SECONDARY_PROVIDER_MODEL_KEY="secondary_provider_model", ACTIVE_PROVIDER_KEY, SECONDARY_PROVIDER_KEY, PROVIDER_ROLES_MIGRATED_KEY.
-- Role{Major,Secondary}; ResolvedProviderModel{provider,model}; RoleModelUpdate{Unchanged,Set(String),Clear}; RoleSelectionUpdate{active_model,secondary_provider_model}+unchanged().
-- resolve_role_model_for_provider(config, role, provider, explicit_model)->Result<ResolvedProviderModel,ConfigError>: explicit > env(MODEL/SECONDARY_MODEL; NO-inherit when provider switched) > file role key (if !switched) > entry.model non-empty > legacy GOOSE_MODEL / GOOSE_SECONDARY_MODEL|OPENDUCK_SECONDARY_MODEL (if !switched && !migrated) > error. resolve_role_model(config, role, explicit_model) wraps w/ current role provider.
-- save_role_selection(config, role, provider, model:Option<&str>) atomic; sets entry enabled+configured=true; provider entry.model untouched.
-- set_active_provider=role save; clear_active_provider removes active_provider+active_model+legacy GOOSE_MODEL/OPENDUCK_MODEL; set_secondary_provider(None) removes secondary keys; clear_secondary_provider_model exists; validate_selection(config,role,provider)=exists+enabled ONLY (~line 622).
-- ProviderEntry::normalize keeps fast_model even if == model (trimmed). model: String field.
-### config/base.rs
-- save_provider_configuration(major, secondary, &IndexMap<String,ProviderEntry>) delegates to save_provider_configuration_with_models(..., RoleSelectionUpdate::unchanged()).
-- save_provider_configuration_with_models(major, secondary, providers, role_models) — inserts ACTIVE_PROVIDER_KEY (or removes if None), SECONDARY_PROVIDER_KEY, role model keys via role_models (Set=>value, Clear=>remove, Unchanged=>skip), providers map, single save_values.
-- update_role_selection(&[(String, serde_yaml::Value)]) — Null => shift_remove.
-### providers/inventory/mod.rs
-- ProviderInventoryService: Clone; new(Arc<SessionStorage>); entry_for_provider(id)->Result<Option<ProviderInventoryEntry>>; entries(&[String])->Result<Vec<...>>; plan_refresh(&[String])->Result<RefreshPlan> (public); spawn_refresh_jobs(&self,&RefreshPlan,factory:AcpProviderFactory); is_stale(entry) assoc fn.
-- ProviderInventoryEntry (camelCase serde): provider_id, provider_name, description, default_model, configured, available, provider_type, category, acp, visible_in_setup, deprecated, replacement, config_keys, setup_steps, supports_refresh, refreshing, models: Vec<InventoryModel{id,name,family?,context_limit?,reasoning?,recommended}>, last_updated_at: Option<DateTime<Utc>>, last_refresh_attempt_at, last_refresh_error, model_selection_hint.
-- RefreshPlan{started:Vec<String>, skipped:Vec<RefreshSkip{provider_id,reason}>}; RefreshSkipReason enum variants: UnknownProvider, DoesNotSupportRefresh, NotConfigured (+maybe others — check when using).
-- NOTE: provider_id != config display name for some providers; match inventory entries to config entries by provider_id==name AND provider_name==name.
-### acp/server_factory.rs
-- AcpServer::provider_inventory(&self)->Result<&Arc<ProviderInventoryService>> (OnceCell, SessionStorage-backed, pool warmed). AcpServer::new(AcpServerFactoryConfig{builtins, data_dir, config_dir, goose_platform, additional_source_roots, enable_scheduler}).
-- create_agent() builds provider_factory closure: create_with_default_model / create_with_working_dir / create. For HTTP refresh: build same closure inline (Arc::new(move |name, ext, wd, udm| Box::pin(async move { ... }))).
-### control/app_config.rs (current)
-- ProviderSelectorField{value,file_value,from_env}; ProvidersConfigResponse{major_provider,secondary_provider,model_from_env,fast_model_from_env,secondary_model_from_env,available_providers,providers,proxies}; ProviderDetail{name,enabled,configured,model,model_env_value,fast_model,fast_model_env_value,secondary_model,secondary_model_env_value,resolved_fast_model,fast_model_uses_main,suggested_fast_model,proxy?}.
-- get_providers_config(config)@539: env locks PROVIDER/SECONDARY_PROVIDER; available_providers = registry names NOT in config map (sorted); details loop ~593-665; proxies appended.
-- update_providers_config(config, raw Value)@677 (v1): check_no_secret_keys; requires majorProvider+secondaryProvider keys, providers[].name/enabled/model; env locks: PROVIDER set=>req==file active_provider else err "Major provider is locked by environment"; SECONDARY_PROVIDER same; SECONDARY_MODEL env set => for file secondary provider: submitted model.trim() must == file entry.model else "Secondary model is locked by environment". Registry check: name in existing_map || registry_names. Per-entry: fast/secondary model trim+require_token; configured = is_live || previously_configured; proxy trim. Validation: req_major (if Some) must be in new_map, enabled, configured, model non-empty; same for secondary. Ends: save_provider_configuration(req_major, req_secondary, &new_map); then get_providers_config(config).await.
-- STRUCTURAL_KEYS already includes active_model + secondary_provider_model. DEDICATED_KEYS has GOOSE/OPENDUCK PROVIDER/MODEL/MODE. LEGACY_PROVIDER_ROLE_KEYS has fast/secondary legacy keys. is_secret_key heuristic + check_no_secret_keys exist. require_token helper exists.
-### control/http.rs
-- routes(server: Arc<AcpServer>)@1576; handlers take State<Arc<AcpServer>>; get_providers_config/update_providers_config handlers @1539/1552 (call app_config::* with Config::global()); route "/api/v1/config/providers" get+put @1598; config_error maps errors; session_manager(server) helper @174.
-- For POST refresh route: need AcpProviderFactory closure (copy from server_factory.create_agent) — build inline in http.rs handler: let factory: AcpProviderFactory = Arc::new(move |name, ext, wd, udm| Box::pin(async move { if udm { create_with_default_model(&name, ext).await } else if let Some(wd)=wd { create_with_working_dir(&name, ext, wd).await } else { create(&name, ext).await }})); then inventory.plan_refresh(&ids).await?, spawn_refresh_jobs(&plan, factory), StatusCode::ACCEPTED + Json(plan).
-- route syntax: .route("/api/v1/config/providers/{provider_id}/models/refresh", post(refresh_provider_models)) — check axum version path syntax in file (older axum uses :provider_id). GREP: existing routes use "/api/v1/..." with {} style? CHECK FIRST.
+## PLAN
+1. Verify actual current state: build -p openduck, run provider_model_selection_test.
+2. Fix A remainder (migrations, tests, API tests) → A acceptance gate.
+3. Subtask B (hub UI).
+4. Subtask C (full verify).
 
-## IMPLEMENTATION PLAN (A remainder)
-1. app_config.rs GET: add ModelSelectorField{value,file_value,from_env,source} (source enum serialize snake_case lowercase strings "environment"|"role"|"providerDefault"|"legacy"|"unset" — use #[serde(rename_all="camelCase")] on enum w/ variants Environment, Role, ProviderDefault, Legacy, Unset). Add fields to ProvidersConfigResponse: selection_version: u8 (=2), major_model, secondary_provider_model. ProviderDetail adds: models: Option<Vec<ProviderModelDto>> (skip if none? design example shows always present when inventory present — use Option + skip_serializing_if for back-compat), inventory_status/supports_refresh/refreshing/last_updated_at/last_refresh_error all Option skip_serializing_if=None. get_providers_config(config, inventory: Option<&ProviderInventoryService>). Match entries: build HashMap<provider_id, entry> + HashMap<provider_name, entry>. models list: entry.models.map(|m| {id, name}). major_model source: env MODEL set => environment; file active_model present => role; legacy GOOSE_MODEL (unmigrated) => legacy; else if entry.model non-empty for active provider => providerDefault; else unset. value = resolver result (resolve_role_model ok => Some(model), else effective value shown). Actually: value = effective resolved model (env value if env; else role file; else entry default; else legacy); fileValue = file role key ONLY.
-2. http.rs: GET/PUT handlers pass server.provider_inventory().await.ok().as_deref() (Option<&_>). POST refresh handler as above; register route; respond 202 w/ Json{started, skipped} (RefreshPlan serializable? RefreshSkip needs Serialize — check; RefreshSkipReason has Serialize? if not, map to strings).
-3. update v2 in app_config.rs: parse selectionVersion via raw_obj.get("selectionVersion") — if present must ==2 (u64) else invalid "Unsupported selectionVersion". v2 body struct: V2ProviderConfigPutBody {major_provider: Option<String> (None = clear), major_model: Option<String>, secondary_provider: Option<String>, secondary_provider_model: Option<String>, providers: Vec<V2ProviderEntryPutItem{name, enabled, model: Option<String> (missing=keep; None=reject per contract? NO: contract says null rejected — use serde w/ untagged? simpler: parse raw JSON manually)}...}. Simplest: manual JSON parsing like v1 does w/ raw_obj. v2 rules: if provider null => model must be null too (else invalid); major_model null => RoleModelUpdate::Clear; Some(non-blank) => Set(raw trimmed? NO — raw as-is, reject blank/whitespace); provider Some => validate exists in new_map + enabled + configured(entry) + resolver resolves non-empty. env locks: MODEL env set => major_model must not be sent as different from file role value? Design: "环境锁定比较文件值，禁止把环境生效值写回配置" => if MODEL env set and req major_model != file active_model value (or != current effective?), reject. Follow v1 pattern: compare submitted vs file_value; also when env set and submitted == env value (which != file) reject with "locked". Then build new_map (v2 entry model: missing => keep existing entry model; "" => set empty; Some => set raw; null => reject). configured = is_live || prev. save via save_provider_configuration_with_models(req_major, req_secondary, &new_map, RoleSelectionUpdate{active_model: major_model_update, secondary_provider_model: secondary_model_update}).
-4. v1 path: keep existing semantics; add role sync: if file active_provider == Some(name) && entry model changed => active_model Set(new model); same secondary => secondary_provider_model. Pass RoleSelectionUpdate to save_provider_configuration_with_models.
-5. Tests:
-   - crates/openduck/tests/provider_model_selection_test.rs: resolver precedence (explicit/env/role/entry-default/legacy/error), switch-provider-no-inherit, clear chains (clear_active_provider removes role+legacy; set_secondary_provider(None)), same provider both roles, normalize keeps fast_model==model, save_role_selection atomic (entry model untouched), v1 config compat (GOOSE_PROVIDER/GOOSE_MODEL config resolves).
-   - crates/openduck/tests/provider_config_api_test.rs: GET shape (selectionVersion=2, majorModel.source variants, models[] from inventory Option None => fields absent), PUT v1 (old semantics + role sync), PUT v2 (all fields required, null provider+model clear, model null clear, omit keep, "" clear, blank reject, null in provider row reject, raw model id saved, roles resolve non-empty, env lock reject), POST refresh 202 shape, no credentials in GET response (assert no secret-ish strings). Use tower ServiceExt on app_config fns directly where possible; for HTTP-level test use axum Router w/ AcpServer::new(config with tempdir) (pattern in server_factory tests::server()).
-
-## Subtask B (after A green)
-ui/hub-core/src/types.ts + rest.ts(+rest.test.ts); ui/hub/src/providerConfig.ts(+test), components/OpenDuckConfigPanel.tsx. Role selectors above table; candidates enabled&&configured; secondary may equal major; models[] w/ search, recommended sorts first, fallback manual input; provider switch clears model draft; "继承默认 (xxx)" option when default exists; custom/unlisted tag; refresh POST + re-GET with per-provider race guard; fromEnv lock shows file vs effective, no writeback; column rename 默认模型(可选); fast/secondary into collapsed advanced; save rebuilds draft from response (clear dirty); v1 server (no selectionVersion) => legacy mode + hint, no v2 PUT. No ui/desktop/src/api; no `any`; vitest.
-
-## Subtask C
-. bin/activate-hermit; cargo fmt --all; cargo build (-p openduck -p openduck-cli if slow); cargo clippy --all-targets -- -D warnings; cargo test -p openduck; cd ui/hub && pnpm test (+hub-core); recipe self-test optional.
-
-## SESSION 2 APPENDED FACTS (verified)
-- axum uses `{provider_id}` brace path syntax (e.g. "/api/v1/jobs/{job_id}/run"). RefreshSkipReason NOT Serialize; ACP maps it in refresh_plan_to_response@providers.rs:452 (UnknownProvider/NotConfigured/DoesNotSupportRefresh/AlreadyRefreshing). HTTP POST refresh must map reasons itself (serde_json::json or local enum w/ Serialize camelCase).
-- ProviderEntry{enabled:bool, model:String, configured:bool, fast_model:Option, secondary_model:Option, proxy:Option}. file_string/file_has_key/file_bool on Config.
-- resolve_role_model(config, role)->Result<ResolvedProviderModel>; resolve_role_model(config,Role::Major).ok().map(model) is get_active_model pattern. file_active_model = file_string(ACTIVE_MODEL_KEY).or GOOSE_MODEL; file_secondary_provider_model = SECONDARY_PROVIDER_MODEL_KEY.or GOOSE_SECONDARY_MODEL.or OPENDUCK_SECONDARY_MODEL.
-- v1 update new_map building: model trim; selected major/secondary row empty model => err "Selected provider 'X' cannot have an empty model"; else require_token. fast_model: trim, filter empty && != model; require_token. configured = is_live || previously_configured. proxy trim->Option. Final selected checks: in new_map, enabled, configured, model non-empty.
-- app_config STRUCTURAL_KEYS already has active_model/secondary_provider_model. require_token(label) helper. AppConfigError::invalid / From<ConfigError>.
-- UI hub-core types: ProviderSelectorField{value,fileValue,fromEnv}; ProviderDetail{...,proxy?}; ProvidersConfigResponse{majorProvider,secondaryProvider,modelFromEnv,fastModelFromEnv,secondaryModelFromEnv,availableProviders,providers,proxies?}; ProviderConfigPutBody{majorProvider,secondaryProvider,providers}. rest.ts api.updateProvidersConfig(PUT).
-- ui/hub/src/providerConfig.ts (277 lines): ProviderRowDraft{name,enabled,configured,model,fastModel,secondaryModel,proxy,modelEnvValue,fastModelEnvValue,secondaryModelEnvValue,resolvedFastModel,fastModelUsesMain,suggestedFastModel,fileModel,fileFastModel,fileSecondaryModel,fileProxy}; ProviderConfigDraft{majorProvider,secondaryProvider,majorFileValue,majorFromEnv,secondaryFileValue,secondaryFromEnv,modelFromEnv,fastModelFromEnv,secondaryModelFromEnv,availableProviders,providers}; fns: normalizeFastModel(drops fastModel==model), normalizeSecondaryModel, normalizeProxy, validateProxyUrl, validateProxyId, fastModelLabel, secondaryModelLabel, draftFromResponse, addProvider, validateDraft (rejects major==secondary "Secondary provider cannot equal major provider" — MUST REMOVE for decoupling; rejects empty model for selected rows), buildPutBody (env-locked model uses fileModel; fastModel env->fileFastModel).
-- draftFromResponse reads resp.majorProvider.fromEnv ? value : fileValue etc.
-- UI plan for B: extend types.ts (ModelSelectorField, ProviderModelDto, ProviderDetail.models/inventoryStatus/etc, ProvidersConfigResponse.selectionVersion/majorModel/secondaryProviderModel, V2 put body), rest.ts (refreshProviderModels POST + updateProvidersConfigV2), providerConfig.ts (v2 draft fields majorModel/secondaryProviderModel + source, per-provider models list + status; buildPutBodyV2; keep v1 fns for legacy servers), OpenDuckConfigPanel.tsx (role model selectors above table; search; inherit-default option; custom/unlisted tag; refresh button; advanced collapse; v1 compat hint).
-- OpenDuckConfigPanel.tsx is 1319 lines — must read relevant sections before editing (role selector area, provider table, save handler).
-
-## Session-3 progress (resume point)
-- provider_model_selection_test.rs compiles; 9/18 pass. 9 failures ALL traced to
-  migrations.rs migrate_provider_config: it still writes legacy keys into
-  entry.model on every save (load_write_config runs migrations) AND
-  cleanup_legacy_provider_keys deletes GOOSE_MODEL at write time, so tests that
-  set_param("GOOSE_MODEL") then read back lose it / or role keys get copied into entry.model.
-  Fixes needed in migrations.rs:
-  1. When providers block exists: also seed active_model/secondary_provider_model role keys
-     from legacy flat keys (not entry.model).
-  2. Fresh migration: write role keys; keep entry.model only as provider default.
-  3. cleanup_legacy_provider_keys must NOT delete keys inside providers block? (verify scope)
-- save_role_selection currently force-enables+configured=true the provider entry — check
-  design: configured decoupled from model; enabling on save is OK per A1.4? keep.
-- v2 PUT handler exists (update_providers_config_v2) with role parse, env locks, atomic
-  save_provider_configuration_with_models. GET has selectionVersion=2 + majorModel +
-  secondaryProviderModel + models[] + inventory fields. role_model_field() implements source.
-- http.rs wired with inventory param + POST refresh route (202).
-- Next: fix migrations.rs, rerun provider_model_selection_test to 18/18, then write
-  provider_config_api_test.rs, then A-acceptance gate (fmt/build/clippy/tests).
+## PROGRESS LOG
+- (init) read design doc; restored prior notes; need build state check.

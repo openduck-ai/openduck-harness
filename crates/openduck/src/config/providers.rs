@@ -126,16 +126,11 @@ pub fn get_active_model(config: &Config) -> Option<String> {
 }
 
 pub fn file_active_model(config: &Config) -> Option<String> {
-    config
-        .file_string(ACTIVE_MODEL_KEY)
-        .or_else(|| config.file_string("GOOSE_MODEL"))
+    config.file_string(ACTIVE_MODEL_KEY)
 }
 
 pub fn file_secondary_provider_model(config: &Config) -> Option<String> {
-    config
-        .file_string(SECONDARY_PROVIDER_MODEL_KEY)
-        .or_else(|| config.file_string("GOOSE_SECONDARY_MODEL"))
-        .or_else(|| config.file_string("OPENDUCK_SECONDARY_MODEL"))
+    config.file_string(SECONDARY_PROVIDER_MODEL_KEY)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,13 +173,38 @@ fn env_role_model(role: Role) -> Option<String> {
         Role::Major => "MODEL",
         Role::Secondary => "SECONDARY_MODEL",
     };
-    openduck_env::get_var(key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    openduck_env::env_lookup(key)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn file_role_model(config: &Config, role: Role) -> Option<String> {
     match role {
         Role::Major => file_active_model(config),
         Role::Secondary => file_secondary_provider_model(config),
+    }
+}
+
+/// File-stored provider for a role. Environment overrides are ignored.
+/// Unmigrated files that only have the legacy flat key still count as that provider.
+fn file_role_provider(config: &Config, role: Role) -> Option<String> {
+    let selected = match role {
+        Role::Major => config.file_string(ACTIVE_PROVIDER_KEY),
+        Role::Secondary => config.file_string(SECONDARY_PROVIDER_KEY),
+    };
+    if selected.is_some() {
+        return selected;
+    }
+    if provider_roles_migrated(config) {
+        return None;
+    }
+    match role {
+        Role::Major => config
+            .file_string("GOOSE_PROVIDER")
+            .or_else(|| config.file_string("OPENDUCK_PROVIDER")),
+        Role::Secondary => config
+            .file_string("GOOSE_SECONDARY_PROVIDER")
+            .or_else(|| config.file_string("OPENDUCK_SECONDARY_PROVIDER")),
     }
 }
 
@@ -254,9 +274,7 @@ pub fn resolve_role_model_for_provider(
         )));
     }
 
-    let explicit_role_model = explicit_model
-        .map(str::trim)
-        .filter(|m| !m.is_empty());
+    let explicit_role_model = explicit_model.map(str::trim).filter(|m| !m.is_empty());
 
     if let Some(model) = explicit_role_model {
         return Ok(ResolvedProviderModel {
@@ -265,10 +283,7 @@ pub fn resolve_role_model_for_provider(
         });
     }
 
-    let provider_switched = match role {
-        Role::Major => get_active_provider(config).as_deref() != Some(provider),
-        Role::Secondary => get_secondary_provider(config).as_deref() != Some(provider),
-    };
+    let provider_switched = file_role_provider(config, role).as_deref() != Some(provider);
 
     if let Some(model) = env_role_model(role) {
         return Ok(ResolvedProviderModel {
@@ -345,17 +360,20 @@ pub fn save_role_selection(
         None => updates.push((model_key.to_string(), serde_yaml::Value::Null)),
     }
 
-    let mut entry = get_provider_entry(config, provider).unwrap_or_default();
+    let mut map = get_providers_map(config);
+    let mut entry = map.get(provider).cloned().unwrap_or_default();
     entry.enabled = true;
     entry.configured = true;
-    let providers = serde_yaml::to_value(indexmap::IndexMap::from([(provider.to_string(), entry)]))?;
-    updates.push((PROVIDERS_CONFIG_KEY.to_string(), providers));
+    map.insert(provider.to_string(), entry);
+    updates.push((PROVIDERS_CONFIG_KEY.to_string(), serde_yaml::to_value(map)?));
 
     config.update_role_selection(&updates)
 }
 
 pub fn set_active_provider(config: &Config, name: &str, model: &str) -> Result<(), ConfigError> {
-    save_role_selection(config, Role::Major, name, Some(model))
+    let model = model.trim();
+    let model = if model.is_empty() { None } else { Some(model) };
+    save_role_selection(config, Role::Major, name, model)
 }
 
 pub fn set_active_provider_model(config: &Config, model: &str) -> Result<(), ConfigError> {
@@ -459,23 +477,33 @@ pub fn get_secondary_provider(config: &Config) -> Option<String> {
 }
 
 pub fn set_secondary_provider(config: &Config, name: Option<&str>) -> Result<(), ConfigError> {
-    match name.map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        Some(sec) => config.set_param(SECONDARY_PROVIDER_KEY, sec),
+    let new_name = name.map(str::trim).filter(|s| !s.is_empty());
+    let current = config.file_string(SECONDARY_PROVIDER_KEY);
+    match new_name {
+        Some(sec) => {
+            let mut updates = vec![(
+                SECONDARY_PROVIDER_KEY.to_string(),
+                serde_yaml::to_value(sec)?,
+            )];
+            if current.as_deref() != Some(sec) {
+                updates.push((
+                    SECONDARY_PROVIDER_MODEL_KEY.to_string(),
+                    serde_yaml::Value::Null,
+                ));
+            }
+            config.update_role_selection(&updates)
+        }
         None => {
-            for key in [
+            let updates = [
+                SECONDARY_PROVIDER_KEY,
                 SECONDARY_PROVIDER_MODEL_KEY,
                 "GOOSE_SECONDARY_MODEL",
                 "OPENDUCK_SECONDARY_MODEL",
-            ] {
-                match config.delete(key) {
-                    Ok(()) | Err(ConfigError::NotFound(_)) => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            match config.delete(SECONDARY_PROVIDER_KEY) {
-                Ok(()) | Err(ConfigError::NotFound(_)) => Ok(()),
-                Err(e) => Err(e),
-            }
+            ]
+            .into_iter()
+            .map(|key| (key.to_string(), serde_yaml::Value::Null))
+            .collect::<Vec<_>>();
+            config.update_role_selection(&updates)
         }
     }
 }
@@ -627,11 +655,11 @@ pub fn validate_selection(
     let major_clean = major.map(|s| s.trim()).filter(|s| !s.is_empty());
     let sec_clean = secondary.map(|s| s.trim()).filter(|s| !s.is_empty());
 
-    let selections = [
-        ("Major", major_clean),
-        ("Secondary", sec_clean),
-    ];
-    for (role, name) in selections.into_iter().filter_map(|(r, n)| n.map(|n| (r, n))) {
+    let selections = [("Major", major_clean), ("Secondary", sec_clean)];
+    for (role, name) in selections
+        .into_iter()
+        .filter_map(|(r, n)| n.map(|n| (r, n)))
+    {
         let entry = get_provider_entry(config, name).ok_or_else(|| {
             ConfigError::NotFound(format!(
                 "Provider '{name}' not found in providers configuration"
@@ -646,7 +674,6 @@ pub fn validate_selection(
 
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -708,17 +735,30 @@ mod tests {
 
         let active: String = config.get_param(ACTIVE_PROVIDER_KEY).unwrap();
         assert_eq!(active, "claude-acp");
+        let model: String = config.get_param(ACTIVE_MODEL_KEY).unwrap();
+        assert_eq!(model, "current");
 
         let entry = get_provider_entry(&config, "claude-acp").unwrap();
         assert!(entry.enabled);
         assert!(entry.configured);
-        assert_eq!(entry.model, "current");
+        assert_eq!(entry.model, "");
     }
 
     #[test]
     fn test_clear_active_provider_preserves_provider_entries() {
         let config = new_test_config();
-        set_active_provider(&config, "openai", "gpt-4o").unwrap();
+        set_provider_entry(
+            &config,
+            "openai",
+            &ProviderEntry {
+                enabled: true,
+                model: "gpt-4o".to_string(),
+                configured: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set_active_provider(&config, "openai", "role-model").unwrap();
 
         clear_active_provider(&config).unwrap();
 
@@ -752,11 +792,36 @@ mod tests {
     #[test]
     fn test_multiple_providers_preserved() {
         let config = new_test_config();
-        set_active_provider(&config, "openai", "gpt-4o").unwrap();
-        set_active_provider(&config, "anthropic", "claude-3-opus").unwrap();
+        set_provider_entry(
+            &config,
+            "openai",
+            &ProviderEntry {
+                enabled: true,
+                model: "gpt-4o".to_string(),
+                configured: true,
+                fast_model: Some("gpt-4o-mini".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set_provider_entry(
+            &config,
+            "anthropic",
+            &ProviderEntry {
+                enabled: true,
+                model: "claude-3-opus".to_string(),
+                configured: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        set_active_provider(&config, "openai", "role-openai").unwrap();
+        set_active_provider(&config, "anthropic", "role-anthropic").unwrap();
 
         let openai = get_provider_entry(&config, "openai").unwrap();
         assert_eq!(openai.model, "gpt-4o");
+        assert_eq!(openai.fast_model.as_deref(), Some("gpt-4o-mini"));
         assert!(openai.configured);
 
         let anthropic = get_provider_entry(&config, "anthropic").unwrap();
@@ -764,6 +829,7 @@ mod tests {
         assert!(anthropic.configured);
 
         assert_eq!(get_active_provider(&config), Some("anthropic".to_string()));
+        assert_eq!(get_active_model(&config).as_deref(), Some("role-anthropic"));
     }
 
     #[test]
@@ -861,16 +927,17 @@ mod tests {
         set_active_provider(&config, "openai", "gpt-4o").unwrap();
 
         let loaded = get_provider_entry(&config, "openai").unwrap();
-        assert_eq!(loaded.model, "gpt-4o");
+        assert_eq!(loaded.model, "gpt-4");
         assert_eq!(loaded.fast_model, Some("gpt-4o-mini".to_string()));
         assert_eq!(loaded.secondary_model, Some("gpt-4.1".to_string()));
+        assert_eq!(get_active_model(&config).as_deref(), Some("gpt-4o"));
     }
 
     #[test]
     fn test_set_active_provider_rejects_empty_model() {
         let config = new_test_config();
-        assert!(set_active_provider(&config, "openai", "").is_err());
-        assert!(set_active_provider(&config, "openai", "   ").is_err());
+        assert!(save_role_selection(&config, Role::Major, "openai", Some("")).is_err());
+        assert!(save_role_selection(&config, Role::Major, "openai", Some("   ")).is_err());
     }
 
     #[test]

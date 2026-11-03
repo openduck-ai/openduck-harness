@@ -345,11 +345,9 @@ fn migrate_provider_config(config: &mut Mapping) -> bool {
         }
 
         if secondary_written {
-            if let Some(sec_model) = get_legacy_mapping_str(
-                config,
-                "GOOSE_SECONDARY_MODEL",
-                "OPENDUCK_SECONDARY_MODEL",
-            ) {
+            if let Some(sec_model) =
+                get_legacy_mapping_str(config, "GOOSE_SECONDARY_MODEL", "OPENDUCK_SECONDARY_MODEL")
+            {
                 config.insert(
                     serde_yaml::Value::String(SECONDARY_PROVIDER_MODEL_KEY.to_string()),
                     serde_yaml::Value::String(sec_model),
@@ -558,7 +556,11 @@ mod tests {
         .unwrap();
         assert!(entry.enabled);
         assert!(entry.configured);
-        assert_eq!(entry.model, "current");
+        assert_eq!(
+            config.get("active_model").and_then(|v| v.as_str()),
+            Some("current")
+        );
+        assert_eq!(entry.model, "");
 
         // Old flat keys should be removed
         assert!(!config.contains_key(serde_yaml::Value::String("GOOSE_PROVIDER".to_string())));
@@ -605,7 +607,11 @@ mod tests {
                 .clone(),
         )
         .unwrap();
-        assert_eq!(claude.model, "current");
+        assert_eq!(
+            config.get("active_model").and_then(|v| v.as_str()),
+            Some("current")
+        );
+        assert_eq!(claude.model, "");
         assert!(claude.configured);
 
         let lmstudio: ProviderEntry = serde_yaml::from_value(
@@ -822,11 +828,18 @@ mod tests {
             Some("anthropic")
         );
         let providers = config.get("providers").unwrap().as_mapping().unwrap();
-        let anthropic: ProviderEntry =
-            serde_yaml::from_value(providers.get("anthropic").unwrap().clone()).unwrap();
-        assert_eq!(anthropic.model, "claude-sonnet");
-        assert!(anthropic.enabled);
-        assert!(anthropic.configured);
+        assert_eq!(
+            config
+                .get("secondary_provider_model")
+                .and_then(|v| v.as_str()),
+            Some("claude-sonnet")
+        );
+        assert!(!providers.contains_key("anthropic"));
+        let openai: ProviderEntry =
+            serde_yaml::from_value(providers.get("openai").unwrap().clone()).unwrap();
+        assert_eq!(openai.model, "");
+        assert!(openai.enabled);
+        assert!(openai.configured);
     }
 
     #[test]
@@ -854,7 +867,12 @@ mod tests {
         let providers = config.get("providers").unwrap().as_mapping().unwrap();
         let openai: ProviderEntry =
             serde_yaml::from_value(providers.get("openai").unwrap().clone()).unwrap();
-        assert_eq!(openai.model, "gpt-4o");
+        assert!(!config.contains_key("secondary_provider_model"));
+        assert_eq!(
+            config.get("active_model").and_then(|v| v.as_str()),
+            Some("gpt-4o")
+        );
+        assert_eq!(openai.model, "");
         assert_eq!(
             config
                 .get("provider_roles_migrated")
@@ -864,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn test_migrate_secondary_model_fills_empty_entry_model() {
+    fn test_migrate_secondary_model_sets_role_model_without_filling_entry_model() {
         let mut config = Mapping::new();
         let mut providers_map = Mapping::new();
         providers_map.insert(
@@ -898,7 +916,13 @@ mod tests {
         let providers = config.get("providers").unwrap().as_mapping().unwrap();
         let anthropic: ProviderEntry =
             serde_yaml::from_value(providers.get("anthropic").unwrap().clone()).unwrap();
-        assert_eq!(anthropic.model, "claude-sonnet");
+        assert_eq!(
+            config
+                .get("secondary_provider_model")
+                .and_then(|v| v.as_str()),
+            Some("claude-sonnet")
+        );
+        assert_eq!(anthropic.model, "");
     }
 
     #[test]
@@ -962,9 +986,18 @@ mod tests {
 
         migrate_provider_config(&mut config);
         let providers = config.get("providers").unwrap().as_mapping().unwrap();
-        let anthropic: ProviderEntry =
-            serde_yaml::from_value(providers.get("anthropic").unwrap().clone()).unwrap();
-        assert_eq!(anthropic.secondary_model, None);
+        assert_eq!(
+            config
+                .get("secondary_provider_model")
+                .and_then(|v| v.as_str()),
+            Some("claude-sonnet")
+        );
+        assert!(!providers.contains_key("anthropic"));
+        assert!(!providers.is_empty());
+        for value in providers.values() {
+            let entry: ProviderEntry = serde_yaml::from_value(value.clone()).unwrap();
+            assert_eq!(entry.secondary_model, None);
+        }
     }
 
     #[test]
@@ -1132,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn test_second_migrate_does_not_restore_cleared_secondary_entry_model() {
+    fn test_second_migrate_does_not_restore_cleared_secondary_role_model() {
         let mut config = Mapping::new();
         config.insert(
             serde_yaml::Value::String("GOOSE_PROVIDER".to_string()),
@@ -1152,24 +1185,21 @@ mod tests {
         );
 
         migrate_provider_config(&mut config);
-        // Clear anthropic model
-        {
-            let providers_val = config.get_mut("providers").unwrap();
-            let p_map = providers_val.as_mapping_mut().unwrap();
-            let mut anthropic: ProviderEntry =
-                serde_yaml::from_value(p_map.get("anthropic").unwrap().clone()).unwrap();
-            anthropic.model = String::new();
-            p_map.insert(
-                serde_yaml::Value::String("anthropic".to_string()),
-                serde_yaml::to_value(&anthropic).unwrap(),
-            );
-        }
+        assert_eq!(
+            config
+                .get("secondary_provider_model")
+                .and_then(|v| v.as_str()),
+            Some("claude-sonnet")
+        );
+        config.shift_remove("secondary_provider_model");
 
-        // Run migration again; because provider_roles_migrated is true, it does not restore model
         migrate_provider_config(&mut config);
+        assert!(!config.contains_key("secondary_provider_model"));
+        assert_eq!(
+            config.get("secondary_provider").and_then(|v| v.as_str()),
+            Some("anthropic")
+        );
         let providers = config.get("providers").unwrap().as_mapping().unwrap();
-        let anthropic: ProviderEntry =
-            serde_yaml::from_value(providers.get("anthropic").unwrap().clone()).unwrap();
-        assert_eq!(anthropic.model, "");
+        assert!(!providers.contains_key("anthropic"));
     }
 }

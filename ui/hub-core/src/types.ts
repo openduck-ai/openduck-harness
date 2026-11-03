@@ -179,6 +179,28 @@ export interface ProviderSelectorField {
   fromEnv: boolean
 }
 
+export type RoleModelSource =
+  | 'environment'
+  | 'role'
+  | 'providerDefault'
+  | 'legacy'
+  | 'unset'
+
+export interface RoleModelField {
+  value: string | null
+  fileValue: string | null
+  fromEnv: boolean
+  source: RoleModelSource
+}
+
+export type ProviderInventoryStatus = 'ready' | 'stale' | 'neverFetched' | 'unsupported'
+
+export interface ProviderModelOption {
+  id: string
+  name: string
+  recommended?: boolean
+}
+
 export interface ProviderDetail {
   name: string
   enabled: boolean
@@ -193,6 +215,12 @@ export interface ProviderDetail {
   fastModelUsesMain: boolean
   suggestedFastModel: string | null
   proxy?: string | null
+  models?: ProviderModelOption[] | null
+  inventoryStatus?: ProviderInventoryStatus | null
+  supportsRefresh?: boolean | null
+  refreshing?: boolean | null
+  lastUpdatedAt?: string | null
+  lastRefreshError?: string | null
 }
 
 export interface ProxyItem {
@@ -210,8 +238,11 @@ export interface ProxiesConfigPutBody {
 }
 
 export interface ProvidersConfigResponse {
+  selectionVersion?: 2
   majorProvider: ProviderSelectorField
   secondaryProvider: ProviderSelectorField
+  majorModel?: RoleModelField
+  secondaryProviderModel?: RoleModelField
   modelFromEnv: boolean
   fastModelFromEnv: boolean
   secondaryModelFromEnv: boolean
@@ -229,10 +260,41 @@ export interface ProviderEntryPutItem {
   proxy?: string | null
 }
 
-export interface ProviderConfigPutBody {
+export interface ProviderConfigPutBodyV1 {
   majorProvider: string | null
   secondaryProvider: string | null
   providers: ProviderEntryPutItem[]
+}
+
+/** Omitted `model` keeps the stored default. `""` clears it. `null` is rejected. */
+export interface ProviderEntryPutItemV2 {
+  name: string
+  enabled: boolean
+  model?: string
+  fastModel: string | null
+  secondaryModel: string | null
+  proxy: string | null
+}
+
+export interface ProviderConfigPutBodyV2 {
+  selectionVersion: 2
+  majorProvider: string | null
+  majorModel: string | null
+  secondaryProvider: string | null
+  secondaryProviderModel: string | null
+  providers: ProviderEntryPutItemV2[]
+}
+
+export type ProviderConfigPutBody = ProviderConfigPutBodyV1 | ProviderConfigPutBodyV2
+
+export interface ProviderModelRefreshSkip {
+  providerId: string
+  reason: string
+}
+
+export interface ProviderModelsRefreshResponse {
+  started: string[]
+  skipped: ProviderModelRefreshSkip[]
 }
 
 export interface Job {

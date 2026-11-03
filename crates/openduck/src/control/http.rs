@@ -1548,8 +1548,23 @@ async fn get_providers_config(
         Ok(inv) => Some(Arc::clone(inv)),
         Err(_) => None,
     };
-    app_config::get_providers_config(
+    app_config::get_providers_config(crate::config::Config::global(), inventory.as_deref())
+        .await
+        .map(Json)
+        .map_err(config_error)
+}
+
+async fn update_providers_config(
+    State(server): State<Arc<crate::acp::server_factory::AcpServer>>,
+    Json(raw_body): Json<serde_json::Value>,
+) -> Result<Json<app_config::ProvidersConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let inventory = match server.provider_inventory().await {
+        Ok(inv) => Some(Arc::clone(inv)),
+        Err(_) => None,
+    };
+    app_config::update_providers_config(
         crate::config::Config::global(),
+        raw_body,
         inventory.as_deref(),
     )
     .await
@@ -1557,17 +1572,7 @@ async fn get_providers_config(
     .map_err(config_error)
 }
 
-async fn update_providers_config(
-    Json(raw_body): Json<serde_json::Value>,
-) -> Result<Json<app_config::ProvidersConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
-    app_config::update_providers_config(crate::config::Config::global(), raw_body)
-        .await
-        .map(Json)
-        .map_err(config_error)
-}
-
-fn http_provider_factory(
-) -> crate::acp::server::AcpProviderFactory {
+fn http_provider_factory() -> crate::acp::server::AcpProviderFactory {
     Arc::new(
         |provider_name, extensions, working_dir, use_default_model| {
             Box::pin(async move {
@@ -1595,15 +1600,12 @@ async fn refresh_provider_models(
     State(server): State<Arc<crate::acp::server_factory::AcpServer>>,
     AxumPath(provider_id): AxumPath<String>,
 ) -> Result<(StatusCode, Json<app_config::RefreshPlanDto>), (StatusCode, Json<serde_json::Value>)> {
-    let inventory = server
-        .provider_inventory()
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": error.to_string() })),
-            )
-        })?;
+    let inventory = server.provider_inventory().await.map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )
+    })?;
     let plan = inventory
         .plan_refresh(&[provider_id])
         .await

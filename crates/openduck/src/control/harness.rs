@@ -5195,7 +5195,7 @@ mod tests {
         let err = resolve_secondary_target(&config, "openai", None, None).unwrap_err();
         assert!(err
             .to_string()
-            .contains("No model configured for secondary provider 'anthropic'"));
+            .contains("No model available for secondary provider 'anthropic'"));
     }
 
     #[test]

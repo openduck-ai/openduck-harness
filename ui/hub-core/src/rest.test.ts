@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
-import { apiUrl, createApi, normalizeHistoryResponse, readErrorMessage } from './rest.ts'
+import test, { type TestContext } from 'node:test'
+import {
+  apiUrl,
+  createApi,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  GIT_COMMIT_MESSAGE_TIMEOUT_MS,
+  GIT_COMMIT_TIMEOUT_MS,
+  GIT_MUTATE_TIMEOUT_MS,
+  GIT_READ_TIMEOUT_MS,
+  normalizeHistoryResponse,
+  readErrorMessage,
+} from './rest.ts'
 import { defaultJobId } from './cron.ts'
 
 test('apiUrl joins server and route without duplicate slashes', () => {
@@ -672,5 +682,205 @@ test('REST client reads and updates OpenDuck config', async () => {
     assert.equal(JSON.parse(calls[6]?.body ?? '{}').maxTurns, 40)
   } finally {
     globalThis.fetch = originalFetch
+  }
+})
+
+test('provider refresh posts the encoded route and v2 bodies are sent unchanged', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: { url: string; method: string; body?: string }[] = []
+  globalThis.fetch = async (input, init) => {
+    const req = new Request(input, init)
+    calls.push({ url: req.url, method: req.method, body: init?.body ? String(init.body) : undefined })
+    if (req.method === 'POST') {
+      return new Response(JSON.stringify({
+        started: ['open ai'],
+        skipped: [{ providerId: 'other', reason: 'alreadyRefreshing' }],
+      }), { status: 202, headers: { 'content-type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ providers: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    const api = createApi('http://host', 'secret')
+    const plan = await api.refreshProviderModels('open ai')
+    await api.updateProvidersConfig({
+      selectionVersion: 2,
+      majorProvider: 'ark',
+      majorModel: 'deepseek-v3',
+      secondaryProvider: 'ark',
+      secondaryProviderModel: null,
+      providers: [
+        { name: 'ark', enabled: true, fastModel: null, secondaryModel: null, proxy: null },
+      ],
+    })
+    assert.equal(plan.started[0], 'open ai')
+    assert.equal(plan.skipped[0]?.reason, 'alreadyRefreshing')
+    assert.equal(calls[0]?.method, 'POST')
+    assert.equal(calls[0]?.url, 'http://host/api/v1/config/providers/open%20ai/models/refresh')
+    const put = JSON.parse(calls[1]?.body ?? '{}')
+    assert.equal(put.selectionVersion, 2)
+    assert.equal(put.majorModel, 'deepseek-v3')
+    assert.equal(put.secondaryProviderModel, null)
+    assert.equal('model' in put.providers[0], false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('git routes get long git-specific timeouts', async () => {
+  const originalFetch = globalThis.fetch
+  const urls: string[] = []
+  const signals: (AbortSignal | null | undefined)[] = []
+  globalThis.fetch = async (input, init) => {
+    urls.push(new Request(input, init).url)
+    signals.push(init?.signal)
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const api = createApi('http://host', 'secret')
+    await api.commitGitChanges('my-proj', 'feat: thing', [])
+    await api.generateGitCommitMessage('my-proj', [])
+    await api.stageGitFiles('my-proj', ['a.txt'])
+    await api.unstageGitFiles('my-proj', ['a.txt'])
+    await api.discardGitFiles('my-proj', ['a.txt'])
+    await api.getGitStatus('my-proj')
+
+    assert.ok(signals[0], 'commit should carry an abort signal')
+    assert.ok(signals[1], 'commit-message should carry an abort signal')
+    assert.ok(signals[2], 'stage should carry an abort signal')
+    assert.ok(signals[3], 'unstage should carry an abort signal')
+    assert.ok(signals[4], 'discard should carry an abort signal')
+    assert.ok(signals[5], 'status should carry an abort signal')
+    assert.ok(urls[0].endsWith('/git/commit'))
+    assert.ok(urls[5].endsWith('/git/status'))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('git request budgets use their dedicated tiers', () => {
+  assert.equal(GIT_COMMIT_TIMEOUT_MS, 300_000)
+  assert.ok(GIT_COMMIT_TIMEOUT_MS > (30 + 60 + 120 + 30) * 1_000)
+  assert.equal(GIT_COMMIT_TIMEOUT_MS - 240_000, 60_000)
+  assert.equal(GIT_COMMIT_MESSAGE_TIMEOUT_MS, 90_000)
+  assert.equal(GIT_MUTATE_TIMEOUT_MS, 120_000)
+  assert.equal(GIT_READ_TIMEOUT_MS, 30_000)
+  assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, 12_000)
+})
+
+function scheduledTimeouts(t: TestContext): number[] {
+  const scheduled: number[] = []
+  const originalSetTimeout = globalThis.setTimeout
+  t.mock.method(globalThis, 'setTimeout', (...args: Parameters<typeof setTimeout>) => {
+    scheduled.push(Number(args[1]))
+    return originalSetTimeout(...args)
+  })
+  t.mock.method(globalThis, 'fetch', async () =>
+    new Response('{}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  )
+  return scheduled
+}
+
+function installTimeoutSources(store: Record<string, string>): () => void {
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const hadEnv = Object.prototype.hasOwnProperty.call(process.env, 'VITE_API_TIMEOUT_MS')
+  const previousEnv = process.env.VITE_API_TIMEOUT_MS
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      localStorage: {
+        getItem(key: string) {
+          return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null
+        },
+      },
+    },
+  })
+  return () => {
+    if (windowDescriptor) Object.defineProperty(globalThis, 'window', windowDescriptor)
+    else Reflect.deleteProperty(globalThis, 'window')
+    if (hadEnv) process.env.VITE_API_TIMEOUT_MS = previousEnv
+    else delete process.env.VITE_API_TIMEOUT_MS
+  }
+}
+
+test('git routes schedule their dedicated timeout tiers', async (t) => {
+  const scheduled = scheduledTimeouts(t)
+  const api = createApi('http://host', 'secret')
+  await api.commitGitChanges('my-proj', 'feat: thing', [])
+  await api.generateGitCommitMessage('my-proj', [])
+  await api.stageGitFiles('my-proj', ['a.txt'])
+  await api.unstageGitFiles('my-proj', ['a.txt'])
+  await api.discardGitFiles('my-proj', ['a.txt'])
+  await api.getGitStatus('my-proj')
+  await api.getGitLog('my-proj', 150)
+  await api.commitGitChanges('runner', 'feat: thing', [])
+  assert.deepEqual(scheduled, [
+    300_000, 90_000, 120_000, 120_000, 120_000, 30_000, 30_000, 300_000,
+  ])
+})
+
+test('git route timeouts ignore generic overrides', async (t) => {
+  const scheduled = scheduledTimeouts(t)
+  const store: Record<string, string> = {}
+  const restore = installTimeoutSources(store)
+  const cases: Array<{
+    name: string
+    timeoutMs?: number
+    stored?: string
+    env?: string
+    expected: number[]
+  }> = [
+    { name: 'no overrides', expected: [300_000, 30_000, 12_000] },
+    { name: 'timeoutMs 12000', timeoutMs: 12_000, expected: [300_000, 30_000, 12_000] },
+    { name: 'timeoutMs 0', timeoutMs: 0, expected: [300_000, 30_000] },
+    { name: 'timeoutMs 600000', timeoutMs: 600_000, expected: [300_000, 30_000, 600_000] },
+    { name: 'localStorage 12000', stored: '12000', expected: [300_000, 30_000, 12_000] },
+    { name: 'localStorage 0', stored: '0', expected: [300_000, 30_000] },
+    { name: 'localStorage 600000', stored: '600000', expected: [300_000, 30_000, 600_000] },
+    { name: 'env 12000', env: '12000', expected: [300_000, 30_000, 12_000] },
+    { name: 'env 0', env: '0', expected: [300_000, 30_000] },
+    { name: 'env 600000', env: '600000', expected: [300_000, 30_000, 600_000] },
+  ]
+  try {
+    for (const item of cases) {
+      scheduled.length = 0
+      for (const key of Object.keys(store)) delete store[key]
+      if (item.stored !== undefined) store['openduck.api.timeoutMs'] = item.stored
+      if (item.env === undefined) delete process.env.VITE_API_TIMEOUT_MS
+      else process.env.VITE_API_TIMEOUT_MS = item.env
+      const api = createApi(
+        'http://host',
+        'secret',
+        item.timeoutMs === undefined ? {} : { timeoutMs: item.timeoutMs },
+      )
+      await api.commitGitChanges('my-proj', 'feat: thing', [])
+      await api.getGitStatus('my-proj')
+      await api.listProjects()
+      assert.deepEqual(scheduled, item.expected, item.name)
+    }
+  } finally {
+    restore()
+  }
+})
+
+test('ordinary routes keep caller, storage, then environment timeout precedence', async (t) => {
+  const scheduled = scheduledTimeouts(t)
+  const store: Record<string, string> = { 'openduck.api.timeoutMs': '23000' }
+  const restore = installTimeoutSources(store)
+  process.env.VITE_API_TIMEOUT_MS = '34000'
+  try {
+    await createApi('http://host', '', { timeoutMs: 45_000 }).listProjects()
+    await createApi('http://host').listProjects()
+    delete store['openduck.api.timeoutMs']
+    await createApi('http://host').listProjects()
+    assert.deepEqual(scheduled, [45_000, 23_000, 34_000])
+  } finally {
+    restore()
   }
 })

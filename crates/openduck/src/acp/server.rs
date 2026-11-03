@@ -857,6 +857,10 @@ impl GooseAcpAgent {
         })
     }
 
+    pub(crate) fn share_provider_inventory(&mut self, inventory: ProviderInventoryService) {
+        self.provider_inventory = inventory;
+    }
+
     fn config(&self) -> Result<&'static Config, agent_client_protocol::Error> {
         Ok(Config::global())
     }

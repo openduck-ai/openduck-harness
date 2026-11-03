@@ -237,6 +237,10 @@ impl GooseAcpAgent {
         }
 
         let config = self.config()?;
+        let effective_model = match model_id.as_deref() {
+            Some(model) => model.to_string(),
+            None => major_model_after_role_clear(config, &provider_id)?,
+        };
         crate::config::providers::save_role_selection(
             config,
             crate::config::providers::Role::Major,
@@ -245,14 +249,9 @@ impl GooseAcpAgent {
         )
         .internal_err_ctx("Failed to save default provider")?;
 
-        let resolved = crate::config::providers::resolve_role_model(
-            config,
-            crate::config::providers::Role::Major,
-        )
-            .internal_err_ctx("Failed to resolve default model")?;
         Ok(DefaultsReadResponse {
             provider_id: Some(provider_id),
-            model_id: Some(resolved.model),
+            model_id: Some(effective_model),
         })
     }
 
@@ -269,6 +268,44 @@ impl GooseAcpAgent {
             model_id: None,
         })
     }
+}
+
+fn major_model_after_role_clear(
+    config: &crate::config::Config,
+    provider_id: &str,
+) -> Result<String, agent_client_protocol::Error> {
+    if let Some(model) = crate::config::env_lookup("MODEL") {
+        let model = model.trim();
+        if !model.is_empty() {
+            return Ok(model.to_string());
+        }
+    }
+    if let Some(entry) = crate::config::providers::get_provider_entry(config, provider_id) {
+        if !entry.model.trim().is_empty() {
+            return Ok(entry.model);
+        }
+    }
+    let migrated = crate::config::providers::provider_roles_migrated(config);
+    let file_provider = config
+        .file_string(crate::config::providers::ACTIVE_PROVIDER_KEY)
+        .or_else(|| {
+            if migrated {
+                None
+            } else {
+                config.file_string("GOOSE_PROVIDER")
+            }
+        });
+    if !migrated && file_provider.as_deref() == Some(provider_id) {
+        if let Some(model) = config
+            .file_string("GOOSE_MODEL")
+            .or_else(|| config.file_string("OPENDUCK_MODEL"))
+            .filter(|model| !model.trim().is_empty())
+        {
+            return Ok(model);
+        }
+    }
+    Err(agent_client_protocol::Error::invalid_params()
+        .data("Major role must resolve to a non-empty model"))
 }
 
 fn local_inference_model_exists(model_id: &str) -> Result<bool, agent_client_protocol::Error> {

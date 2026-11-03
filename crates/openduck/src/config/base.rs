@@ -1363,7 +1363,6 @@ impl Config {
     }
     pub fn set_goose_provider(&self, v: impl Into<String>) -> Result<(), ConfigError> {
         let name = v.into();
-        crate::config::providers::validate_selection(self, Some(&name), None)?;
         crate::config::providers::save_role_selection(
             self,
             crate::config::providers::Role::Major,
@@ -1384,29 +1383,11 @@ impl Config {
             .ok_or_else(|| ConfigError::NotFound("secondary_provider".to_string()))
     }
     pub fn get_goose_secondary_model(&self) -> Result<String, ConfigError> {
-        if let Some(val) = openduck_env::get_var("SECONDARY_MODEL") {
-            let trimmed = val.trim().to_string();
-            if !trimmed.is_empty() {
-                return Ok(trimmed);
-            }
-        }
-        if let Some(sec_p) = crate::config::providers::get_secondary_provider(self) {
-            if let Some(entry) = crate::config::providers::get_provider_entry(self, &sec_p) {
-                let trimmed = entry.model.trim().to_string();
-                if !trimmed.is_empty() {
-                    return Ok(trimmed);
-                }
-            }
-        }
-        if !crate::config::providers::provider_roles_migrated(self) {
-            if let Some(legacy) = self
-                .file_string("GOOSE_SECONDARY_MODEL")
-                .or_else(|| self.file_string("OPENDUCK_SECONDARY_MODEL"))
-            {
-                return Ok(legacy);
-            }
-        }
-        Err(ConfigError::NotFound("secondary_model".to_string()))
+        crate::config::providers::resolve_role_model(
+            self,
+            crate::config::providers::Role::Secondary,
+        )
+        .map(|resolved| resolved.model)
     }
 }
 config_value!(GOOSE_PROMPT_EDITOR, Option<String>);

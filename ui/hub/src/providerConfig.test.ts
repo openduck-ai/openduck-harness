@@ -2,16 +2,28 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { ProvidersConfigResponse } from '@aaif/goose-hub-core'
 import {
+  IDENTICAL_ROLE_TARGET_WARNING,
   addProvider,
+  applyProviderInventoryIfCurrent,
   buildPutBody,
   draftFromResponse,
   fastModelLabel,
+  filterModelOptions,
   findMatchingProxyId,
+  identicalRoleTargetWarning,
+  modelChoiceState,
+  nextRefreshGeneration,
   normalizeFastModel,
   normalizeProxy,
   normalizeSecondaryModel,
+  refreshGuardIsCurrent,
   resolveProxyLabel,
+  roleProviderOptions,
   secondaryModelLabel,
+  selectRoleModel,
+  selectRoleProvider,
+  updateProviderRow,
+  usesFreeTextModelInput,
   validateDraft,
   validateProxyId,
   validateProxyUrl,
@@ -74,10 +86,14 @@ test('label is "no secondary model" when secondary model is absent', () => {
   assert.equal(secondaryModelLabel('gpt-4.1'), 'gpt-4.1')
 })
 
-test('secondary equal to major is rejected', () => {
-  const draft = draftFromResponse(sampleResponse)
-  draft.secondaryProvider = 'openai'
-  assert.throws(() => validateDraft(draft), /cannot equal major provider/)
+test('same provider can fill both roles', () => {
+  const draft = selectRoleProvider(draftFromResponse(sampleResponse), 'secondary', 'openai')
+  assert.doesNotThrow(() => validateDraft(draft))
+  const putBody = buildPutBody(draft)
+  assert.equal(putBody.majorProvider, 'openai')
+  assert.equal(putBody.secondaryProvider, 'openai')
+  assert.equal('selectionVersion' in putBody, false)
+  assert.equal(identicalRoleTargetWarning(draft), IDENTICAL_ROLE_TARGET_WARNING)
 })
 
 test('majorProvider: null is the explicit clear; omitting the key is rejected', () => {
@@ -292,5 +308,274 @@ test('resolveProxyLabel and findMatchingProxyId resolve aliases', () => {
   assert.equal(findMatchingProxyId('clash', proxies), 'clash')
   assert.equal(findMatchingProxyId('http://127.0.0.1:7890', proxies), 'clash')
   assert.equal(findMatchingProxyId('http://custom:1234', proxies), null)
+})
+
+function providerDetail(
+  name: string,
+  model: string,
+  extra: Partial<ProvidersConfigResponse['providers'][number]> = {},
+): ProvidersConfigResponse['providers'][number] {
+  return {
+    name,
+    enabled: true,
+    configured: true,
+    model,
+    modelEnvValue: null,
+    fastModel: null,
+    fastModelEnvValue: null,
+    secondaryModel: null,
+    secondaryModelEnvValue: null,
+    resolvedFastModel: model,
+    fastModelUsesMain: true,
+    suggestedFastModel: null,
+    ...extra,
+  }
+}
+
+const arkInventory = [
+  { id: 'glm-4.6', name: 'GLM 4.6' },
+  { id: 'deepseek-v3', name: 'DeepSeek V3', recommended: true },
+  { id: 'm1', name: 'M1' },
+  { id: 'm2', name: 'M2' },
+  { id: 'm3', name: 'M3' },
+  { id: 'm4', name: 'M4' },
+  { id: 'm5', name: 'M5' },
+  { id: 'm6', name: 'M6' },
+]
+
+const v2Response: ProvidersConfigResponse = {
+  selectionVersion: 2,
+  majorProvider: { value: 'ark', fileValue: 'ark', fromEnv: false },
+  secondaryProvider: { value: 'ark', fileValue: 'ark', fromEnv: false },
+  majorModel: { value: 'deepseek-v3', fileValue: 'deepseek-v3', fromEnv: false, source: 'role' },
+  secondaryProviderModel: { value: 'glm-4.6', fileValue: 'glm-4.6', fromEnv: false, source: 'role' },
+  modelFromEnv: false,
+  fastModelFromEnv: false,
+  secondaryModelFromEnv: false,
+  availableProviders: ['openai'],
+  providers: [
+    providerDetail('ark', '', {
+      models: arkInventory,
+      inventoryStatus: 'ready',
+      supportsRefresh: true,
+      refreshing: false,
+    }),
+    providerDetail('openai', 'gpt-4o', { models: [{ id: 'gpt-4o', name: 'GPT-4o' }] }),
+  ],
+}
+
+test('provider candidates are enabled and configured and include the major provider', () => {
+  const draft = draftFromResponse({
+    ...v2Response,
+    providers: [
+      providerDetail('ark', ''),
+      providerDetail('openai', '', { configured: false }),
+      providerDetail('offline', 'gpt-4o', { enabled: false }),
+    ],
+  })
+  const secondary = roleProviderOptions(draft, 'secondary').map(option => option.name)
+  assert.deepEqual(secondary, ['ark'])
+  assert.ok(secondary.includes(draft.majorProvider ?? ''))
+})
+
+test('v2 save sends both role models and omits an unchanged default model', () => {
+  const draft = draftFromResponse(v2Response)
+  assert.equal(draft.dirty, false)
+  assert.equal(draft.majorModel, 'deepseek-v3')
+  const putBody = buildPutBody(draft)
+  assert.equal(putBody.selectionVersion, 2)
+  if (putBody.selectionVersion !== 2) return
+  assert.equal(putBody.majorProvider, 'ark')
+  assert.equal(putBody.majorModel, 'deepseek-v3')
+  assert.equal(putBody.secondaryProvider, 'ark')
+  assert.equal(putBody.secondaryProviderModel, 'glm-4.6')
+  assert.equal(identicalRoleTargetWarning(draft), null)
+  const ark = putBody.providers.find(provider => provider.name === 'ark')
+  assert.ok(ark)
+  assert.equal('model' in ark, false)
+  assert.equal(JSON.stringify(putBody).includes('"model":null'), false)
+})
+
+test('different role models on one provider do not warn', () => {
+  const draft = draftFromResponse(v2Response)
+  assert.equal(identicalRoleTargetWarning(draft), null)
+  const same = selectRoleModel(draft, 'secondary', 'deepseek-v3')
+  assert.equal(identicalRoleTargetWarning(same), IDENTICAL_ROLE_TARGET_WARNING)
+})
+
+test('v2 empty string clears a default model', () => {
+  const draft = updateProviderRow(draftFromResponse({
+    ...v2Response,
+    providers: [providerDetail('openai', 'gpt-4o'), providerDetail('ark', '')],
+  }), 0, { model: '' })
+  const putBody = buildPutBody(selectRoleProvider(draft, 'secondary', null))
+  if (putBody.selectionVersion !== 2) throw new Error('expected v2')
+  assert.equal(putBody.providers.find(provider => provider.name === 'openai')?.model, '')
+})
+
+test('clearing a role provider forces a null role model', () => {
+  const cleared = selectRoleProvider(draftFromResponse(v2Response), 'secondary', null)
+  assert.equal(cleared.secondaryProvider, null)
+  assert.equal(cleared.secondaryProviderModel, null)
+  const putBody = buildPutBody(cleared)
+  if (putBody.selectionVersion !== 2) throw new Error('expected v2')
+  assert.equal(putBody.secondaryProvider, null)
+  assert.equal(putBody.secondaryProviderModel, null)
+  cleared.secondaryProviderModel = 'glm-4.6'
+  assert.throws(() => validateDraft(cleared), /model must be null when secondary provider is null/)
+})
+
+test('inherit default submits null and a missing default requires an explicit model', () => {
+  const inherited = selectRoleModel(draftFromResponse(v2Response), 'major', null)
+  assert.doesNotThrow(() => validateDraft({ ...inherited, majorProvider: 'openai', majorModel: null }))
+  const inheritBody = buildPutBody({ ...inherited, majorProvider: 'openai', majorModel: null })
+  if (inheritBody.selectionVersion !== 2) throw new Error('expected v2')
+  assert.equal(inheritBody.majorModel, null)
+
+  const missing = selectRoleModel(draftFromResponse(v2Response), 'major', null)
+  assert.throws(() => validateDraft(missing), /Major role must resolve to a non-empty model/)
+  assert.doesNotThrow(() => validateDraft(selectRoleModel(missing, 'major', 'custom-id')))
+})
+
+test('switching provider clears the model draft and restores a buffered choice', () => {
+  const draft = draftFromResponse(v2Response)
+  const switched = selectRoleProvider(draft, 'major', 'openai')
+  assert.equal(switched.majorProvider, 'openai')
+  assert.equal(switched.majorModel, null)
+  const back = selectRoleProvider(switched, 'major', 'ark')
+  assert.equal(back.majorModel, 'deepseek-v3')
+  assert.equal(back.dirty, true)
+  assert.equal(draftFromResponse(v2Response).dirty, false)
+})
+
+test('an effective model missing from inventory is labeled custom / not listed', () => {
+  const choice = modelChoiceState({
+    models: [{ id: 'glm-4.6', name: 'GLM 4.6' }],
+    defaultModel: '',
+    explicitModel: null,
+    effectiveModel: 'my-custom',
+  })
+  const custom = choice.options.find(option => option.value === 'my-custom')
+  assert.equal(custom?.custom, true)
+  assert.match(custom?.label ?? '', /custom \/ not listed/)
+  assert.equal(choice.selectValue, 'my-custom')
+  assert.equal(choice.freeText, false)
+})
+
+test('recommended models sort first and are not auto-selected', () => {
+  const loaded = draftFromResponse({
+    ...v2Response,
+    majorModel: { value: 'gpt-4o', fileValue: null, fromEnv: false, source: 'providerDefault' },
+    majorProvider: { value: 'openai', fileValue: 'openai', fromEnv: false },
+  })
+  assert.equal(loaded.majorModel, null)
+  const choice = modelChoiceState({
+    models: arkInventory,
+    defaultModel: 'gpt-4o',
+    explicitModel: null,
+    effectiveModel: 'gpt-4o',
+  })
+  const listed = choice.options.filter(option => !option.inherit)
+  assert.equal(listed[0]?.value, 'deepseek-v3')
+  assert.equal(listed[0]?.recommended, true)
+  assert.equal(choice.selectValue, '')
+  assert.match(choice.options[0]?.label ?? '', /inherit default \(gpt-4o\)/)
+})
+
+test('long model lists are searchable and empty inventories fall back to free text', () => {
+  const longList = modelChoiceState({
+    models: arkInventory,
+    defaultModel: '',
+    explicitModel: 'deepseek-v3',
+    effectiveModel: 'deepseek-v3',
+  })
+  assert.equal(longList.searchable, true)
+  const filtered = filterModelOptions(longList.options, 'glm', longList.selectValue)
+  assert.ok(filtered.some(option => option.value === 'glm-4.6'))
+  assert.equal(filtered.some(option => option.value === 'm1'), false)
+  assert.ok(filtered.some(option => option.value === 'deepseek-v3'))
+
+  const shortList = modelChoiceState({
+    models: arkInventory.slice(0, 2),
+    defaultModel: '',
+    explicitModel: null,
+    effectiveModel: null,
+  })
+  assert.equal(shortList.searchable, false)
+  assert.equal(usesFreeTextModelInput(null), true)
+  assert.equal(usesFreeTextModelInput([]), true)
+  assert.equal(usesFreeTextModelInput([{ id: 'gpt-4o', name: 'GPT-4o' }]), false)
+})
+
+test('env-locked role models submit the file value', () => {
+  const draft = draftFromResponse({
+    selectionVersion: 2,
+    majorProvider: { value: 'env-provider', fileValue: 'openai', fromEnv: true },
+    secondaryProvider: { value: 'env-secondary', fileValue: null, fromEnv: true },
+    majorModel: { value: 'env-model', fileValue: 'file-model', fromEnv: true, source: 'environment' },
+    secondaryProviderModel: { value: 'env-secondary-model', fileValue: null, fromEnv: true, source: 'environment' },
+    modelFromEnv: true,
+    fastModelFromEnv: false,
+    secondaryModelFromEnv: true,
+    availableProviders: [],
+    providers: [providerDetail('openai', 'file-default', { modelEnvValue: 'env-model' })],
+  })
+  draft.majorModel = 'user-typed'
+  draft.majorProvider = 'user-provider'
+  const putBody = buildPutBody(draft)
+  if (putBody.selectionVersion !== 2) throw new Error('expected v2')
+  assert.equal(putBody.majorProvider, 'openai')
+  assert.equal(putBody.majorModel, 'file-model')
+  assert.equal(putBody.secondaryProvider, null)
+  assert.equal(putBody.secondaryProviderModel, null)
+})
+
+test('a selected v2 provider must be enabled and configured even with an empty default model', () => {
+  const draft = draftFromResponse(v2Response)
+  draft.providers[0]!.enabled = false
+  assert.throws(() => validateDraft(draft), /is disabled/)
+  draft.providers[0]!.enabled = true
+  draft.providers[0]!.configured = false
+  assert.throws(() => validateDraft(draft), /is not configured/)
+})
+
+test('padded role models are rejected', () => {
+  const draft = selectRoleModel(draftFromResponse(v2Response), 'major', ' deepseek-v3 ')
+  assert.throws(() => validateDraft(draft), /cannot be blank or padded/)
+})
+
+test('refresh inventory applies only to the requested provider and ignores a stale generation', () => {
+  const draft = selectRoleProvider(draftFromResponse(v2Response), 'major', 'openai')
+  draft.providers[1]!.model = 'user-typed-default'
+  const first = nextRefreshGeneration({}, 'ark')
+  const second = nextRefreshGeneration(first.generations, 'ark')
+  assert.equal(refreshGuardIsCurrent(second.generations, first.guard), false)
+  const stale = applyProviderInventoryIfCurrent(draft, second.generations, first.guard, {
+    ...v2Response,
+    providers: [
+      providerDetail('ark', 'server-reset', { models: [{ id: 'new-model', name: 'New' }] }),
+      providerDetail('openai', 'server-reset'),
+    ],
+  })
+  assert.equal(stale, draft)
+  const applied = applyProviderInventoryIfCurrent(draft, second.generations, second.guard, {
+    ...v2Response,
+    majorProvider: { value: 'ark', fileValue: 'ark', fromEnv: false },
+    providers: [
+      providerDetail('ark', 'server-reset', {
+        models: [{ id: 'new-model', name: 'New' }],
+        inventoryStatus: 'stale',
+        lastRefreshError: null,
+      }),
+      providerDetail('openai', 'server-reset'),
+    ],
+  })
+  assert.equal(applied.majorProvider, 'openai')
+  assert.equal(applied.majorModel, null)
+  assert.equal(applied.providers[1]?.model, 'user-typed-default')
+  assert.equal(applied.providers[0]?.model, '')
+  assert.equal(applied.providers[0]?.models?.[0]?.id, 'new-model')
+  assert.equal(applied.providers[0]?.inventoryStatus, 'stale')
+  assert.equal(applied.dirty, true)
 })
 

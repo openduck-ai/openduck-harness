@@ -13,7 +13,7 @@ use crate::config::declarative_providers::{DeclarativeProviderConfig, ProviderEn
 use crate::config::Config;
 use crate::session::session_manager::SessionStorage;
 use crate::utils::bytes_to_hex;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -171,6 +171,9 @@ pub(crate) struct RefreshJob {
 pub struct RefreshPlan {
     pub started: Vec<String>,
     pub skipped: Vec<RefreshSkip>,
+    /// Identities captured while the refreshing keys were inserted. Scheduling
+    /// must keep these so a later re-describe cannot abandon the planned key.
+    pub(crate) jobs: Vec<RefreshJob>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -184,10 +187,11 @@ impl RefreshJobPlan {
         RefreshPlan {
             started: self
                 .started
-                .into_iter()
-                .map(|job| job.provider_id)
+                .iter()
+                .map(|job| job.provider_id.clone())
                 .collect(),
             skipped: self.skipped,
+            jobs: self.started,
         }
     }
 }
@@ -294,7 +298,17 @@ impl ProviderInventoryService {
         let Some(descriptor) = self.describe_provider(provider_id).await? else {
             return Ok(None);
         };
-        let snapshot = self.read_snapshot(&descriptor.identity).await?;
+        let (snapshot, read_error) = match self.read_snapshot(&descriptor.identity).await {
+            Ok(snapshot) => (snapshot, None),
+            Err(error) => {
+                warn!(
+                    provider = %provider_id,
+                    %error,
+                    "failed to read provider inventory snapshot"
+                );
+                (None, Some(sanitize_refresh_error(&error.to_string())))
+            }
+        };
         let refreshing = self
             .refreshing_keys
             .read()
@@ -306,6 +320,10 @@ impl ProviderInventoryService {
             &descriptor.static_models,
             descriptor.supports_refresh,
         );
+        let stored_error = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.last_refresh_error.clone())
+            .map(|error| sanitize_refresh_error(&error));
 
         Ok(Some(ProviderInventoryEntry {
             provider_id: descriptor.provider_id,
@@ -331,7 +349,7 @@ impl ProviderInventoryService {
             last_refresh_attempt_at: snapshot
                 .as_ref()
                 .and_then(|snapshot| snapshot.last_refresh_attempt_at),
-            last_refresh_error: snapshot.and_then(|snapshot| snapshot.last_refresh_error),
+            last_refresh_error: read_error.or(stored_error),
             model_selection_hint: descriptor.model_selection_hint,
         }))
     }
@@ -359,15 +377,32 @@ impl ProviderInventoryService {
             .into_iter()
             .map(|id| {
                 let this = self.clone();
-                tokio::spawn(async move { this.entry_for_provider(&id).await })
+                tokio::spawn(async move {
+                    let result = this.entry_for_provider(&id).await;
+                    (id, result)
+                })
             })
             .collect();
         let results = futures::future::join_all(handles).await;
         let mut entries = Vec::with_capacity(results.len());
         for result in results {
-            let inner = result.context("provider inventory task panicked")?;
-            if let Some(entry) = inner? {
-                entries.push(entry);
+            match result {
+                Ok((_id, Ok(Some(entry)))) => entries.push(entry),
+                Ok((_, Ok(None))) => {}
+                Ok((id, Err(error))) => {
+                    warn!(
+                        provider = %id,
+                        %error,
+                        "provider inventory entry failed; keeping the rest of the inventory"
+                    );
+                    entries.push(degraded_inventory_entry(&id, &error.to_string()));
+                }
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "provider inventory task panicked; keeping the rest of the inventory"
+                    );
+                }
             }
         }
         Ok(entries)
@@ -551,7 +586,7 @@ impl ProviderInventoryService {
         identity: &InventoryIdentity,
         error: impl Into<String>,
     ) -> Result<()> {
-        let error = error.into();
+        let error = sanitize_refresh_error(&error.into());
         let existing = self.read_snapshot(identity).await?;
 
         sqlx::query(
@@ -599,107 +634,149 @@ impl ProviderInventoryService {
     /// Spawn background refresh jobs for the given providers. The factory is
     /// used to construct provider instances for fetching; both the ACP server
     /// and HTTP routes share this entry point so refresh state stays in sync.
+    /// Jobs keep the identities captured at plan time so a failed re-describe
+    /// still clears the refreshing key that planning inserted.
     pub fn spawn_refresh_jobs(
         &self,
         plan: &RefreshPlan,
         factory: crate::acp::server::AcpProviderFactory,
     ) {
-        for provider_id in plan.started.iter().cloned() {
+        for job in plan.jobs.clone() {
             let provider_inventory = self.clone();
             let factory = Arc::clone(&factory);
             tokio::spawn(async move {
-                provider_inventory
-                    .run_refresh_job(&provider_id, factory)
-                    .await;
+                provider_inventory.run_refresh_job(job, factory).await;
             });
         }
     }
 
     async fn run_refresh_job(
         &self,
-        provider_id: &str,
+        job: RefreshJob,
         factory: crate::acp::server::AcpProviderFactory,
     ) {
         use futures::FutureExt;
 
-        let descriptor = match self.describe_provider(provider_id).await {
-            Ok(Some(descriptor)) => descriptor,
-            Ok(None) => return,
+        let identity = job.identity;
+        let provider_id = job.provider_id;
+        let mut refresh_guard = self.refresh_guard(&identity);
+        match self.describe_provider(&provider_id).await {
+            Ok(Some(descriptor)) if descriptor.identity == identity => {}
+            Ok(Some(_)) => {
+                let message = "provider inventory identity changed before refresh completed";
+                if let Err(store_error) = self
+                    .store_refresh_error_for_identity(&identity, message)
+                    .await
+                {
+                    warn!(
+                        provider = %provider_id,
+                        error = %store_error,
+                        "failed to store provider inventory refresh error"
+                    );
+                }
+                refresh_guard.complete();
+                return;
+            }
+            Ok(None) => {
+                let message = format!("Unknown provider: {provider_id}");
+                if let Err(store_error) = self
+                    .store_refresh_error_for_identity(&identity, message)
+                    .await
+                {
+                    warn!(
+                        provider = %provider_id,
+                        error = %store_error,
+                        "failed to store provider inventory refresh error"
+                    );
+                }
+                refresh_guard.complete();
+                return;
+            }
             Err(error) => {
                 warn!(
                     provider = %provider_id,
                     error = %error,
                     "failed to describe provider for inventory refresh"
                 );
+                if let Err(store_error) = self
+                    .store_refresh_error_for_identity(&identity, error.to_string())
+                    .await
+                {
+                    warn!(
+                        provider = %provider_id,
+                        error = %store_error,
+                        "failed to store provider inventory refresh error"
+                    );
+                }
+                refresh_guard.complete();
                 return;
             }
-        };
-        let identity = descriptor.identity;
-        let provider_id = provider_id.to_string();
-        {
-            let mut refresh_guard = self.refresh_guard(&identity);
-                let provider_result = AssertUnwindSafe(async {
-                    factory(provider_id.clone(), Vec::new(), None, true).await
-                })
+        }
+        let provider_result =
+            AssertUnwindSafe(async { factory(provider_id.clone(), Vec::new(), None, true).await })
                 .catch_unwind()
                 .await;
 
-                let fetch_result: Result<Vec<String>> = match provider_result {
-                    Ok(Ok(provider)) => {
-                        match ensure_refresh_identity_current(&provider_id, &identity).await {
-                            Ok(()) => {
-                                match AssertUnwindSafe(provider.fetch_recommended_models(
-                                    crate::model_config::global_toolshim(),
-                                ))
-                                .catch_unwind()
-                                .await
-                                {
-                                    Ok(Ok(models)) => Ok(models),
-                                    Ok(Err(error)) => Err(anyhow::anyhow!(error.to_string())),
-                                    Err(_) => Err(anyhow::anyhow!(
-                                        "provider inventory refresh task panicked"
-                                    )),
-                                }
+        let fetch_result: Result<Vec<String>> = match provider_result {
+            Ok(Ok(provider)) => {
+                match ensure_refresh_identity_current(&provider_id, &identity).await {
+                    Ok(()) => {
+                        match AssertUnwindSafe(
+                            provider
+                                .fetch_recommended_models(crate::model_config::global_toolshim()),
+                        )
+                        .catch_unwind()
+                        .await
+                        {
+                            Ok(Ok(models)) => Ok(models),
+                            Ok(Err(error)) => Err(anyhow::anyhow!(error.to_string())),
+                            Err(_) => {
+                                Err(anyhow::anyhow!("provider inventory refresh task panicked"))
                             }
-                            Err(error) => Err(error),
                         }
                     }
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => Err(anyhow::anyhow!("provider inventory refresh task panicked")),
-                };
-
-                match fetch_result {
-                    Ok(models) => {
-                        if let Err(error) = self
-                            .store_refreshed_models_for_identity(&identity, &models)
-                            .await
-                        {
-                            warn!(
-                                provider = %provider_id,
-                                error = %error,
-                                "failed to store refreshed provider inventory"
-                            );
-                        } else {
-                            refresh_guard.complete();
-                        }
-                    }
-                    Err(error) => {
-                        let error_message = error.to_string();
-                        match self
-                            .store_refresh_error_for_identity(&identity, error_message.clone())
-                            .await
-                        {
-                            Ok(()) => refresh_guard.complete(),
-                            Err(store_error) => warn!(
-                                provider = %provider_id,
-                                error = %store_error,
-                                refresh_error = %error_message,
-                                "failed to store provider inventory refresh error"
-                            ),
-                        }
-                        warn!(provider = %provider_id, error = %error_message, "provider inventory refresh failed");
-                    }
+                    Err(error) => Err(error),
                 }
+            }
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(anyhow::anyhow!("provider inventory refresh task panicked")),
+        };
+
+        match fetch_result {
+            Ok(models) => {
+                if let Err(error) = self
+                    .store_refreshed_models_for_identity(&identity, &models)
+                    .await
+                {
+                    warn!(
+                        provider = %provider_id,
+                        error = %error,
+                        "failed to store refreshed provider inventory"
+                    );
+                } else {
+                    refresh_guard.complete();
+                }
+            }
+            Err(error) => {
+                let error_message = error.to_string();
+                match self
+                    .store_refresh_error_for_identity(&identity, error_message.clone())
+                    .await
+                {
+                    Ok(()) => refresh_guard.complete(),
+                    Err(store_error) => warn!(
+                        provider = %provider_id,
+                        error = %store_error,
+                        refresh_error = %error_message,
+                        "failed to store provider inventory refresh error"
+                    ),
+                }
+                warn!(
+                    provider = %provider_id,
+                    error = %error_message,
+                    "provider inventory refresh failed"
+                );
+            }
         }
     }
 
@@ -1152,6 +1229,59 @@ fn fallback_inventory_identity(provider_id: &str) -> InventoryIdentityInput {
     )
 }
 
+fn degraded_inventory_entry(provider_id: &str, error: &str) -> ProviderInventoryEntry {
+    ProviderInventoryEntry {
+        provider_id: provider_id.to_string(),
+        provider_name: provider_id.to_string(),
+        description: String::new(),
+        default_model: String::new(),
+        configured: false,
+        available: false,
+        provider_type: ProviderType::Builtin,
+        category: ProviderSetupCategory::Model,
+        acp: false,
+        visible_in_setup: false,
+        deprecated: false,
+        replacement: None,
+        config_keys: Vec::new(),
+        setup_steps: Vec::new(),
+        supports_refresh: false,
+        refreshing: false,
+        models: Vec::new(),
+        last_updated_at: None,
+        last_refresh_attempt_at: None,
+        last_refresh_error: Some(sanitize_refresh_error(error)),
+        model_selection_hint: None,
+    }
+}
+
+/// Strip credentials, bearer tokens, and secret-bearing headers before a
+/// refresh failure is stored or returned to API clients.
+pub fn sanitize_refresh_error(message: &str) -> String {
+    use std::sync::LazyLock;
+
+    static SECRET: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)(bearer\s+)\S+|((?:api[_-]?key|x-api-key|authorization|token)\s*[:=]\s*)\S+|sk-[A-Za-z0-9]{8,}",
+        )
+        .expect("refresh error sanitizer pattern")
+    });
+    static URL: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"https?://\S+").expect("refresh error url pattern"));
+
+    let redacted = SECRET.replace_all(message, |caps: &regex::Captures| {
+        if let Some(prefix) = caps.get(1).or_else(|| caps.get(2)) {
+            format!("{}[REDACTED]", prefix.as_str())
+        } else {
+            "[REDACTED]".to_string()
+        }
+    });
+    URL.replace_all(&redacted, |caps: &regex::Captures| {
+        crate::providers::http_status::sanitize_url(caps.get(0).map(|m| m.as_str()).unwrap_or(""))
+    })
+    .into_owned()
+}
+
 fn enrich_model_ids_with_canonical(
     provider_family: &str,
     model_ids: &[String],
@@ -1517,5 +1647,32 @@ mod tests {
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "gpt-5.6");
+    }
+
+    #[test]
+    fn public_refresh_plan_keeps_provider_identities() {
+        let identity = test_identity("openai", "key-a");
+        let plan = RefreshJobPlan {
+            started: vec![RefreshJob {
+                provider_id: "openai".to_string(),
+                identity: identity.clone(),
+            }],
+            skipped: Vec::new(),
+        };
+        let public_plan = plan.into_public_plan();
+        assert_eq!(public_plan.started, vec!["openai".to_string()]);
+        assert_eq!(public_plan.jobs[0].identity, identity);
+    }
+
+    #[test]
+    fn sanitize_refresh_error_redacts_secrets_and_url_credentials() {
+        let raw = "POST https://user:sk-supersecretkey@example.test/v1/models?api_key=abcdef123456 failed: Authorization: Bearer abc.def.ghi api-key: sk-anothersecret";
+        let clean = sanitize_refresh_error(raw);
+        assert!(!clean.contains("sk-supersecretkey"));
+        assert!(!clean.contains("abcdef123456"));
+        assert!(!clean.contains("abc.def.ghi"));
+        assert!(!clean.contains("sk-anothersecret"));
+        assert!(clean.contains("[REDACTED]"));
+        assert!(clean.contains("https://example.test/v1/models"));
     }
 }

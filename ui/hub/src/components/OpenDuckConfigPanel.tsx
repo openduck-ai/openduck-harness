@@ -1,16 +1,35 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AppConfigDocument, ProxyItem, createApi } from '@aaif/goose-hub-core'
 import { Check, Edit2, Trash2, X } from 'lucide-react'
 import {
-  draftFromResponse,
+  CUSTOM_MODEL_OPTION,
+  LEGACY_PROVIDER_SERVER_NOTICE,
   addProvider,
+  applyProviderInventoryIfCurrent,
   buildPutBody,
+  draftFromResponse,
+  envLockDescription,
   fastModelLabel,
-  secondaryModelLabel,
+  filterModelOptions,
   findMatchingProxyId,
+  identicalRoleTargetWarning,
+  inventoryStatusLabel,
+  markProviderRefreshFailed,
+  markProviderRefreshing,
+  modelChoiceState,
+  nextRefreshGeneration,
+  refreshGuardIsCurrent,
+  removeProvider,
+  roleProviderOptions,
+  secondaryModelLabel,
+  selectRoleModel,
+  selectRoleProvider,
+  updateProviderRow,
   validateProxyId,
   validateProxyUrl,
   type ProviderConfigDraft,
+  type ProviderRole,
+  type ProviderRowDraft,
 } from '../providerConfig'
 import {
   JUDGE_MODES,
@@ -37,6 +56,7 @@ type ConfigApi = Pick<
   | 'removeJudgeConfig'
   | 'getProvidersConfig'
   | 'updateProvidersConfig'
+  | 'refreshProviderModels'
   | 'getProxiesConfig'
   | 'updateProxiesConfig'
 >
@@ -52,6 +72,360 @@ function messageFrom(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
+function RoleModelEditor({
+  draft,
+  role,
+  saving,
+  query,
+  onQuery,
+  onModel,
+}: {
+  draft: ProviderConfigDraft
+  role: ProviderRole
+  saving: boolean
+  query: string
+  onQuery: (value: string) => void
+  onModel: (model: string | null) => void
+}) {
+  const providerName = role === 'major' ? draft.majorProvider : draft.secondaryProvider
+  const fromEnv = role === 'major'
+    ? draft.majorModelFromEnv || draft.modelFromEnv
+    : draft.secondaryProviderModelFromEnv || draft.secondaryModelFromEnv
+  const explicit = role === 'major' ? draft.majorModel : draft.secondaryProviderModel
+  const fileValue = role === 'major' ? draft.majorModelFileValue : draft.secondaryModelFileValue
+  const effectiveProvider = role === 'major'
+    ? draft.majorModelEffectiveProvider
+    : draft.secondaryModelEffectiveProvider
+  const storedEffective = role === 'major' ? draft.majorModelEffective : draft.secondaryModelEffective
+  const effective = providerName && effectiveProvider === providerName ? storedEffective : null
+  const row = draft.providers.find(provider => provider.name === providerName)
+  const [enteringCustom, setEnteringCustom] = useState(false)
+  useEffect(() => {
+    setEnteringCustom(false)
+  }, [providerName])
+
+  if (!providerName) {
+    return <p className="form-hint">Select a provider first.</p>
+  }
+  if (fromEnv) {
+    return (
+      <div>
+        <input value={effective ?? ''} disabled readOnly />
+        <div className="config-env-note">{envLockDescription(fileValue, effective)}</div>
+      </div>
+    )
+  }
+
+  const choice = modelChoiceState({
+    models: row?.models,
+    defaultModel: row?.model ?? '',
+    explicitModel: explicit,
+    effectiveModel: effective,
+  })
+  if (choice.freeText) {
+    return (
+      <div>
+        <input
+          value={explicit ?? ''}
+          disabled={saving}
+          placeholder={
+            row?.model.trim()
+              ? `Model ID, or blank to inherit default (${row.model.trim()})`
+              : 'Model ID'
+          }
+          onChange={event => onModel(event.target.value === '' ? null : event.target.value)}
+          style={{ width: '100%' }}
+        />
+        {row?.models && row.models.length === 0 && (
+          <div className="form-hint">No models were returned.</div>
+        )}
+        {row?.lastRefreshError && (
+          <div className="form-hint">{row.lastRefreshError} Enter a model ID or retry refresh.</div>
+        )}
+        {!row?.model.trim() && !explicit?.trim() && (
+          <div className="form-hint">This provider has no default model. Choose one.</div>
+        )}
+      </div>
+    )
+  }
+
+  const visible = choice.searchable ? filterModelOptions(choice.options, query, choice.selectValue) : choice.options
+  return (
+    <div>
+      {choice.searchable && (
+        <input
+          value={query}
+          disabled={saving}
+          placeholder="Search models"
+          onChange={event => onQuery(event.target.value)}
+          style={{ width: '100%', marginBottom: '0.35rem' }}
+        />
+      )}
+      <select
+        value={choice.selectValue}
+        disabled={saving}
+        onChange={event => {
+          const value = event.target.value
+          if (value === CUSTOM_MODEL_OPTION) {
+            setEnteringCustom(true)
+            return
+          }
+          setEnteringCustom(false)
+          onModel(value === '' ? null : value)
+        }}
+      >
+        {!row?.model.trim() && <option value="">Select a model</option>}
+        {visible.map(option => (
+          <option key={option.inherit ? '__inherit__' : option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+        <option value={CUSTOM_MODEL_OPTION}>Enter a model ID…</option>
+      </select>
+      {enteringCustom && (
+        <input
+          value={explicit ?? ''}
+          disabled={saving}
+          placeholder="Model ID"
+          onChange={event => onModel(event.target.value === '' ? null : event.target.value)}
+          style={{ width: '100%', marginTop: '0.35rem' }}
+        />
+      )}
+    </div>
+  )
+}
+
+function ProviderSettingsTable({
+  draft,
+  proxies,
+  saving,
+  onDraft,
+  onRefresh,
+}: {
+  draft: ProviderConfigDraft
+  proxies: ProxyItem[]
+  saving: boolean
+  onDraft: (next: ProviderConfigDraft) => void
+  onRefresh: (providerId: string) => void
+}) {
+  const legacy = draft.selectionVersion !== 2
+  return (
+    <div className="provider-table-wrapper" style={{ overflowX: 'auto', marginTop: '1rem' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+            <th style={{ padding: '0.5rem' }}>Name</th>
+            <th style={{ padding: '0.5rem' }}>Enabled</th>
+            <th style={{ padding: '0.5rem' }}>Default model (optional)</th>
+            <th style={{ padding: '0.5rem' }}>Advanced</th>
+            <th style={{ padding: '0.5rem' }}>Proxy</th>
+            <th style={{ padding: '0.5rem' }}>Models</th>
+            <th style={{ padding: '0.5rem', width: '2.5rem' }}></th>
+          </tr>
+        </thead>
+        <tbody>
+          {draft.providers.length === 0 ? (
+            <tr>
+              <td colSpan={7} style={{ padding: '1rem', textAlign: 'center' }} className="muted">
+                No providers configured. Add one below.
+              </td>
+            </tr>
+          ) : (
+            draft.providers.map((row, idx) => (
+              <ProviderSettingsRow
+                key={row.name}
+                draft={draft}
+                row={row}
+                index={idx}
+                proxies={proxies}
+                saving={saving}
+                legacy={legacy}
+                onDraft={onDraft}
+                onRefresh={onRefresh}
+              />
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ProviderSettingsRow({
+  draft,
+  row,
+  index,
+  proxies,
+  saving,
+  legacy,
+  onDraft,
+  onRefresh,
+}: {
+  draft: ProviderConfigDraft
+  row: ProviderRowDraft
+  index: number
+  proxies: ProxyItem[]
+  saving: boolean
+  legacy: boolean
+  onDraft: (next: ProviderConfigDraft) => void
+  onRefresh: (providerId: string) => void
+}) {
+  const isMajorRow = (draft.majorFromEnv ? draft.majorFileValue : draft.majorProvider) === row.name
+  const isSecondaryRow = (draft.secondaryFromEnv ? draft.secondaryFileValue : draft.secondaryProvider) === row.name
+  const modelLocked = (draft.modelFromEnv && isMajorRow) || (draft.secondaryModelFromEnv && isSecondaryRow)
+  const fastModelLocked = draft.fastModelFromEnv
+  const matchedProxyId = findMatchingProxyId(row.proxy, proxies)
+  const isCustomProxy = Boolean(row.proxy.trim() && !matchedProxyId)
+  const selectVal = matchedProxyId ? matchedProxyId : isCustomProxy ? '__custom__' : ''
+  const statusLabel = inventoryStatusLabel(row.inventoryStatus)
+  const refreshDisabled = saving || legacy || row.supportsRefresh === false || row.refreshing
+  const refreshLabel = row.refreshing ? 'Refreshing…' : row.lastRefreshError ? 'Retry refresh' : 'Refresh models'
+
+  return (
+    <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+      <td style={{ padding: '0.5rem', fontWeight: 600 }}>{row.name}</td>
+      <td style={{ padding: '0.5rem' }}>
+        <input
+          type="checkbox"
+          checked={row.enabled}
+          disabled={saving}
+          onChange={event => onDraft(updateProviderRow(draft, index, { enabled: event.target.checked }))}
+        />
+      </td>
+      <td style={{ padding: '0.5rem' }}>
+        <input
+          value={
+            modelLocked
+              ? ((isMajorRow ? row.modelEnvValue : row.secondaryModelEnvValue) ?? row.model)
+              : row.model
+          }
+          disabled={modelLocked || saving}
+          onChange={event => onDraft(updateProviderRow(draft, index, { model: event.target.value }))}
+          placeholder="optional"
+          style={{ width: '100%', minWidth: '8rem' }}
+        />
+        {modelLocked && (
+          <div className="config-env-note">
+            {envLockDescription(
+              row.fileModel,
+              (isMajorRow ? row.modelEnvValue : row.secondaryModelEnvValue) ?? row.model,
+            )}
+          </div>
+        )}
+      </td>
+      <td style={{ padding: '0.5rem' }}>
+        <details>
+          <summary>Advanced</summary>
+          <label style={{ display: 'block', marginTop: '0.4rem' }}>
+            Fast model
+            <input
+              value={fastModelLocked ? (row.fastModelEnvValue ?? row.fastModel) : row.fastModel}
+              disabled={fastModelLocked || saving}
+              onChange={event => onDraft(updateProviderRow(draft, index, { fastModel: event.target.value }))}
+              placeholder={row.suggestedFastModel ? `Suggested: ${row.suggestedFastModel}` : 'uses model'}
+              style={{ width: '100%', minWidth: '8rem' }}
+            />
+            <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
+              {fastModelLabel(row.fastModel, row.model)}
+            </div>
+            {fastModelLocked && (
+              <div className="config-env-note">
+                {envLockDescription(row.fileFastModel, row.fastModelEnvValue ?? row.fastModel)}
+              </div>
+            )}
+          </label>
+          <label style={{ display: 'block', marginTop: '0.4rem' }}>
+            Secondary model
+            <input
+              value={row.secondaryModel}
+              disabled={saving}
+              onChange={event => onDraft(updateProviderRow(draft, index, { secondaryModel: event.target.value }))}
+              placeholder="no secondary model"
+              style={{ width: '100%', minWidth: '8rem' }}
+            />
+            <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
+              {secondaryModelLabel(row.secondaryModel)}
+            </div>
+          </label>
+        </details>
+      </td>
+      <td style={{ padding: '0.5rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+          <select
+            value={selectVal}
+            disabled={saving}
+            style={{ width: '100%', minWidth: '9.5rem' }}
+            onChange={event => {
+              const val = event.target.value
+              if (val === '') onDraft(updateProviderRow(draft, index, { proxy: '' }))
+              else if (val === '__custom__') {
+                onDraft(updateProviderRow(draft, index, { proxy: isCustomProxy ? row.proxy : 'http://' }))
+              } else onDraft(updateProviderRow(draft, index, { proxy: val }))
+            }}
+          >
+            <option value="">None (direct)</option>
+            {proxies.map(proxy => (
+              <option key={proxy.id} value={proxy.id}>
+                {proxy.id} ({proxy.url})
+              </option>
+            ))}
+            <option value="__custom__">Custom URL…</option>
+          </select>
+          {selectVal === '__custom__' && (
+            <input
+              value={row.proxy}
+              disabled={saving}
+              onChange={event => onDraft(updateProviderRow(draft, index, { proxy: event.target.value }))}
+              placeholder="http://127.0.0.1:8080"
+              style={{ width: '100%', minWidth: '9.5rem', marginTop: '0.2rem' }}
+            />
+          )}
+          <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.15rem' }}>
+            {row.proxy.trim() ? (
+              matchedProxyId ? (
+                <span title={`Resolved to ${proxies.find(proxy => proxy.id === matchedProxyId)?.url}`}>
+                  Using {matchedProxyId}
+                </span>
+              ) : (
+                <span>Custom proxy</span>
+              )
+            ) : (
+              'direct'
+            )}
+          </div>
+        </div>
+      </td>
+      <td style={{ padding: '0.5rem' }}>
+        <button
+          type="button"
+          className="btn-secondary"
+          disabled={refreshDisabled}
+          title={legacy ? 'Role model refresh needs a newer server' : row.lastRefreshError ?? 'Refresh the model list'}
+          onClick={() => onRefresh(row.name)}
+        >
+          {refreshLabel}
+        </button>
+        {row.models && row.models.length === 0 && <div className="form-hint">No models were returned.</div>}
+        {statusLabel && <div className="form-hint">{statusLabel}</div>}
+        {row.lastRefreshError && <div className="form-hint">{row.lastRefreshError}</div>}
+      </td>
+      <td style={{ padding: '0.5rem' }}>
+        {row.name !== draft.majorProvider && row.name !== draft.secondaryProvider && (
+          <button
+            type="button"
+            className="btn-icon"
+            title={`Remove ${row.name}`}
+            disabled={saving}
+            onClick={() => onDraft(removeProvider(draft, row.name))}
+          >
+            <Trash2 size={16} />
+          </button>
+        )}
+      </td>
+    </tr>
+  )
+}
+
 export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelProps) {
   const [doc, setDoc] = useState<AppConfigDocument | null>(null)
   const [drafts, setDrafts] = useState<ConfigDrafts | null>(null)
@@ -65,6 +439,8 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
   const [editProxyUrl, setEditProxyUrl] = useState('')
   const [editProxyDesc, setEditProxyDesc] = useState('')
   const [newProviderSelect, setNewProviderSelect] = useState('')
+  const [modelQuery, setModelQuery] = useState<{ major: string; secondary: string }>({ major: '', secondary: '' })
+  const refreshGenerations = useRef<Record<string, number>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -139,6 +515,37 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       setError(messageFrom(cause, 'Failed to save provider settings'))
     } finally {
       setSaving(null)
+    }
+  }
+
+  const refreshModels = async (providerId: string) => {
+    if (!providersDraft || providersDraft.selectionVersion !== 2) return
+    const started = nextRefreshGeneration(refreshGenerations.current, providerId)
+    refreshGenerations.current = started.generations
+    const guard = started.guard
+    setProvidersDraft(current => (current ? markProviderRefreshing(current, providerId, true) : current))
+    try {
+      const plan = await api.refreshProviderModels(providerId)
+      const latest = await api.getProvidersConfig()
+      if (!refreshGuardIsCurrent(refreshGenerations.current, guard)) return
+      setProvidersDraft(current => (
+        current ? applyProviderInventoryIfCurrent(current, refreshGenerations.current, guard, latest) : current
+      ))
+      const skip = plan.skipped.find(item => item.providerId === providerId)
+      if (!skip || !refreshGuardIsCurrent(refreshGenerations.current, guard)) return
+      setProvidersDraft(current => (
+        current && refreshGuardIsCurrent(refreshGenerations.current, guard)
+          ? markProviderRefreshFailed(current, providerId, skip.reason)
+          : current
+      ))
+    } catch (cause) {
+      if (!refreshGuardIsCurrent(refreshGenerations.current, guard)) return
+      const message = messageFrom(cause, 'Failed to refresh models')
+      setProvidersDraft(current => (
+        current && refreshGuardIsCurrent(refreshGenerations.current, guard)
+          ? markProviderRefreshFailed(current, providerId, message)
+          : current
+      ))
     }
   }
 
@@ -393,282 +800,109 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
           <section className="config-section">
             <h4>Providers</h4>
             <p className="form-hint">
-              Configure primary and secondary fallback providers and models.
+              Choose a provider and model for the major role and the secondary fallback. The same
+              provider can fill both roles.
             </p>
+            {providersDraft.selectionVersion !== 2 && (
+              <p className="form-hint">{LEGACY_PROVIDER_SERVER_NOTICE}</p>
+            )}
 
             <div className="config-form-grid" style={{ marginBottom: '1rem' }}>
               <label>
                 Major provider
-                {providersDraft.majorFromEnv && <span className="config-env-note">From environment</span>}
+                {providersDraft.majorFromEnv && (
+                  <span className="config-env-note">
+                    {envLockDescription(providersDraft.majorFileValue, providersDraft.majorProvider)}
+                  </span>
+                )}
                 <select
                   value={providersDraft.majorProvider ?? ''}
                   disabled={providersDraft.majorFromEnv || saving === 'providers'}
-                  onChange={e => {
-                    const val = e.target.value || null
-                    setProvidersDraft({ ...providersDraft, majorProvider: val })
+                  onChange={event => {
+                    const value = event.target.value || null
+                    setModelQuery(current => ({ ...current, major: '' }))
+                    setProvidersDraft(current => (current ? selectRoleProvider(current, 'major', value) : current))
                   }}
                 >
                   <option value="">Unset (clear)</option>
-                  {providersDraft.providers
-                    .filter(p => p.enabled && p.model.trim())
-                    .map(p => (
-                      <option key={p.name} value={p.name}>
-                        {p.name}
-                      </option>
-                    ))}
-                  {providersDraft.majorProvider &&
-                    !providersDraft.providers.some(
-                      p => p.enabled && p.model.trim() && p.name === providersDraft.majorProvider,
-                    ) && (
-                      <option value={providersDraft.majorProvider}>
-                        {providersDraft.majorProvider}
-                      </option>
-                    )}
+                  {roleProviderOptions(providersDraft, 'major').map(option => (
+                    <option key={option.name} value={option.name}>
+                      {option.eligible ? option.name : `${option.name} (unavailable)`}
+                    </option>
+                  ))}
                 </select>
               </label>
 
+              {providersDraft.selectionVersion === 2 && (
+                <label>
+                  Major model
+                  <RoleModelEditor
+                    draft={providersDraft}
+                    role="major"
+                    saving={saving === 'providers'}
+                    query={modelQuery.major}
+                    onQuery={value => setModelQuery(current => ({ ...current, major: value }))}
+                    onModel={model => setProvidersDraft(current => (
+                      current ? selectRoleModel(current, 'major', model) : current
+                    ))}
+                  />
+                </label>
+              )}
+
               <label>
-                Secondary provider (fallback)
-                {providersDraft.secondaryFromEnv && <span className="config-env-note">From environment</span>}
+                Secondary provider
+                {providersDraft.secondaryFromEnv && (
+                  <span className="config-env-note">
+                    {envLockDescription(providersDraft.secondaryFileValue, providersDraft.secondaryProvider)}
+                  </span>
+                )}
                 <select
                   value={providersDraft.secondaryProvider ?? ''}
                   disabled={providersDraft.secondaryFromEnv || saving === 'providers'}
-                  onChange={e => {
-                    const val = e.target.value || null
-                    setProvidersDraft({ ...providersDraft, secondaryProvider: val })
+                  onChange={event => {
+                    const value = event.target.value || null
+                    setModelQuery(current => ({ ...current, secondary: '' }))
+                    setProvidersDraft(current => (
+                      current ? selectRoleProvider(current, 'secondary', value) : current
+                    ))
                   }}
                 >
                   <option value="">None</option>
-                  {providersDraft.providers
-                    .filter(p => p.enabled && p.model.trim() && p.name !== providersDraft.majorProvider)
-                    .map(p => (
-                      <option key={p.name} value={p.name}>
-                        {p.name}
-                      </option>
-                    ))}
-                  {providersDraft.secondaryProvider &&
-                    !providersDraft.providers.some(
-                      p =>
-                        p.enabled &&
-                        p.model.trim() &&
-                        p.name !== providersDraft.majorProvider &&
-                        p.name === providersDraft.secondaryProvider,
-                    ) && (
-                      <option value={providersDraft.secondaryProvider}>
-                        {providersDraft.secondaryProvider}
-                      </option>
-                    )}
+                  {roleProviderOptions(providersDraft, 'secondary').map(option => (
+                    <option key={option.name} value={option.name}>
+                      {option.eligible ? option.name : `${option.name} (unavailable)`}
+                    </option>
+                  ))}
                 </select>
               </label>
+
+              {providersDraft.selectionVersion === 2 && (
+                <label>
+                  Secondary model
+                  <RoleModelEditor
+                    draft={providersDraft}
+                    role="secondary"
+                    saving={saving === 'providers'}
+                    query={modelQuery.secondary}
+                    onQuery={value => setModelQuery(current => ({ ...current, secondary: value }))}
+                    onModel={model => setProvidersDraft(current => (
+                      current ? selectRoleModel(current, 'secondary', model) : current
+                    ))}
+                  />
+                </label>
+              )}
             </div>
+            {identicalRoleTargetWarning(providersDraft) && (
+              <p className="form-hint" role="status">{identicalRoleTargetWarning(providersDraft)}</p>
+            )}
 
-            <div className="provider-table-wrapper" style={{ overflowX: 'auto', marginTop: '1rem' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                    <th style={{ padding: '0.5rem' }}>Name</th>
-                    <th style={{ padding: '0.5rem' }}>Enabled</th>
-                    <th style={{ padding: '0.5rem' }}>Model</th>
-                    <th style={{ padding: '0.5rem' }}>Fast model</th>
-                    <th style={{ padding: '0.5rem' }}>Secondary model</th>
-                    <th style={{ padding: '0.5rem' }}>Proxy</th>
-                    <th style={{ padding: '0.5rem', width: '2.5rem' }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {providersDraft.providers.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} style={{ padding: '1rem', textAlign: 'center' }} className="muted">
-                        No providers configured. Add one below.
-                      </td>
-                    </tr>
-                  ) : (
-                    providersDraft.providers.map((row, idx) => {
-                      const isMajorRow =
-                        (providersDraft.majorFromEnv
-                          ? providersDraft.majorFileValue
-                          : providersDraft.majorProvider) === row.name
-                      const isSecondaryRow =
-                        (providersDraft.secondaryFromEnv
-                          ? providersDraft.secondaryFileValue
-                          : providersDraft.secondaryProvider) === row.name
-                      const modelLocked =
-                        (providersDraft.modelFromEnv && isMajorRow) ||
-                        (providersDraft.secondaryModelFromEnv && isSecondaryRow)
-                      const fastModelLocked = providersDraft.fastModelFromEnv
-
-                      return (
-                        <tr key={row.name} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                          <td style={{ padding: '0.5rem', fontWeight: 600 }}>{row.name}</td>
-                          <td style={{ padding: '0.5rem' }}>
-                            <input
-                              type="checkbox"
-                              checked={row.enabled}
-                              disabled={saving === 'providers'}
-                              onChange={e => {
-                                const next = [...providersDraft.providers]
-                                next[idx] = { ...row, enabled: e.target.checked }
-                                setProvidersDraft({ ...providersDraft, providers: next })
-                              }}
-                            />
-                          </td>
-                          <td style={{ padding: '0.5rem' }}>
-                            <input
-                              value={
-                                modelLocked
-                                  ? ((isMajorRow ? row.modelEnvValue : row.secondaryModelEnvValue) ??
-                                    row.model)
-                                  : row.model
-                              }
-                              disabled={modelLocked || saving === 'providers'}
-                              onChange={e => {
-                                const next = [...providersDraft.providers]
-                                next[idx] = { ...row, model: e.target.value }
-                                setProvidersDraft({ ...providersDraft, providers: next })
-                              }}
-                              placeholder="e.g. gpt-4o"
-                              style={{ width: '100%', minWidth: '8rem' }}
-                            />
-                            {modelLocked && <div className="config-env-note">From env</div>}
-                          </td>
-                          <td style={{ padding: '0.5rem' }}>
-                            <input
-                              value={
-                                fastModelLocked
-                                  ? (row.fastModelEnvValue ?? row.fastModel)
-                                  : row.fastModel
-                              }
-                              disabled={fastModelLocked || saving === 'providers'}
-                              onChange={e => {
-                                const next = [...providersDraft.providers]
-                                next[idx] = { ...row, fastModel: e.target.value }
-                                setProvidersDraft({ ...providersDraft, providers: next })
-                              }}
-                              placeholder={
-                                row.suggestedFastModel
-                                  ? `Suggested: ${row.suggestedFastModel}`
-                                  : 'uses model'
-                              }
-                              style={{ width: '100%', minWidth: '8rem' }}
-                            />
-                            <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
-                              {fastModelLabel(row.fastModel, row.model)}
-                            </div>
-                          </td>
-                          <td style={{ padding: '0.5rem' }}>
-                            <input
-                              value={row.secondaryModel}
-                              disabled={saving === 'providers'}
-                              onChange={e => {
-                                const next = [...providersDraft.providers]
-                                next[idx] = { ...row, secondaryModel: e.target.value }
-                                setProvidersDraft({ ...providersDraft, providers: next })
-                              }}
-                              placeholder="no secondary model"
-                              style={{ width: '100%', minWidth: '8rem' }}
-                            />
-                            <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
-                              {secondaryModelLabel(row.secondaryModel)}
-                            </div>
-                          </td>
-                          <td style={{ padding: '0.5rem' }}>
-                            {(() => {
-                              const matchedProxyId = findMatchingProxyId(row.proxy, proxiesDraft)
-                              const isCustom = Boolean(row.proxy.trim() && !matchedProxyId)
-                              const selectVal = matchedProxyId ? matchedProxyId : isCustom ? '__custom__' : ''
-
-                              return (
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                                  <select
-                                    value={selectVal}
-                                    disabled={saving === 'providers'}
-                                    style={{ width: '100%', minWidth: '9.5rem' }}
-                                    onChange={e => {
-                                      const val = e.target.value
-                                      const next = [...providersDraft.providers]
-                                      if (val === '') {
-                                        next[idx] = { ...row, proxy: '' }
-                                      } else if (val === '__custom__') {
-                                        const customVal = isCustom ? row.proxy : 'http://'
-                                        next[idx] = { ...row, proxy: customVal }
-                                      } else {
-                                        next[idx] = { ...row, proxy: val }
-                                      }
-                                      setProvidersDraft({ ...providersDraft, providers: next })
-                                    }}
-                                  >
-                                    <option value="">None (direct)</option>
-                                    {proxiesDraft.map(p => (
-                                      <option key={p.id} value={p.id}>
-                                        {p.id} ({p.url})
-                                      </option>
-                                    ))}
-                                    <option value="__custom__">Custom URL…</option>
-                                  </select>
-
-                                  {selectVal === '__custom__' && (
-                                    <input
-                                      value={row.proxy}
-                                      disabled={saving === 'providers'}
-                                      onChange={e => {
-                                        const next = [...providersDraft.providers]
-                                        next[idx] = { ...row, proxy: e.target.value }
-                                        setProvidersDraft({ ...providersDraft, providers: next })
-                                      }}
-                                      placeholder="http://127.0.0.1:8080"
-                                      style={{ width: '100%', minWidth: '9.5rem', marginTop: '0.2rem' }}
-                                    />
-                                  )}
-
-                                  <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.15rem' }}>
-                                    {row.proxy.trim() ? (
-                                      matchedProxyId ? (
-                                        <span title={`Resolved to ${proxiesDraft.find(p => p.id === matchedProxyId)?.url}`}>
-                                          Using {matchedProxyId}
-                                        </span>
-                                      ) : (
-                                        <span>Custom proxy</span>
-                                      )
-                                    ) : (
-                                      'direct'
-                                    )}
-                                  </div>
-                                </div>
-                              )
-                            })()}
-                          </td>
-                          <td style={{ padding: '0.5rem' }}>
-                            {row.name !== providersDraft.majorProvider &&
-                              row.name !== providersDraft.secondaryProvider && (
-                                <button
-                                  type="button"
-                                  className="btn-icon"
-                                  title={`Remove ${row.name}`}
-                                  disabled={saving === 'providers'}
-                                  onClick={() => {
-                                    const next = providersDraft.providers.filter((_, i) => i !== idx)
-                                    const available = [
-                                      ...providersDraft.availableProviders,
-                                      row.name,
-                                    ].sort()
-                                    setProvidersDraft({
-                                      ...providersDraft,
-                                      providers: next,
-                                      availableProviders: available,
-                                    })
-                                  }}
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              )}
-                          </td>
-                        </tr>
-                      )
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+            <ProviderSettingsTable
+              draft={providersDraft}
+              proxies={proxiesDraft}
+              saving={saving === 'providers'}
+              onDraft={setProvidersDraft}
+              onRefresh={providerId => { void refreshModels(providerId) }}
+            />
 
             <div className="config-add-row" style={{ marginTop: '1rem' }}>
               <select
@@ -710,7 +944,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
               <button
                 type="button"
                 className="btn-primary"
-                disabled={saving === 'providers'}
+                disabled={saving === 'providers' || !providersDraft.dirty}
                 onClick={() => void saveProviders()}
               >
                 {saving === 'providers' ? 'Saving…' : 'Save provider settings'}

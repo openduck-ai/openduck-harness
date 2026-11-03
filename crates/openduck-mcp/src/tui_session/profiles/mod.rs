@@ -321,7 +321,7 @@ pub fn suggested_approval_keys(screen_text: &str) -> Vec<String> {
             if number.is_empty() || !label.starts_with(['.', ')']) {
                 return None;
             }
-            Some((number, label[1..].trim(), selected))
+            Some((number, label.get(1..).unwrap_or_default().trim(), selected))
         })
         .collect();
     if let Some(target) = options.iter().position(|(_, label, _)| {

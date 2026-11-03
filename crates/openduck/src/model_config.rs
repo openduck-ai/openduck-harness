@@ -326,33 +326,6 @@ mod fast_model_resolution_tests {
     use crate::config::providers::{set_provider_entry, ProviderEntry};
     use std::io::Write;
     use tempfile::NamedTempFile;
-    use tokio::sync::Mutex as AsyncMutex;
-
-    static ENV_MUTEX: AsyncMutex<()> = AsyncMutex::const_new(());
-
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, val: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            std::env::set_var(key, val);
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(val) = &self.prev {
-                std::env::set_var(self.key, val);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
     fn new_test_config() -> Config {
         let config_file = NamedTempFile::new().unwrap();
         let secrets_file = NamedTempFile::new().unwrap();
@@ -361,7 +334,10 @@ mod fast_model_resolution_tests {
 
     #[tokio::test]
     async fn test_get_fast_model_unset_uses_caller_model_not_registry() {
-        let _lock = ENV_MUTEX.lock().await;
+        let _guard = env_lock::lock_env([
+            ("OPENDUCK_FAST_MODEL", None::<&str>),
+            ("GOOSE_FAST_MODEL", None::<&str>),
+        ]);
         let config = new_test_config();
         let main_model = ModelConfig::new("claude-sonnet-4-5");
         let resolved = get_fast_model_with_config(&config, "anthropic", &main_model)
@@ -372,7 +348,10 @@ mod fast_model_resolution_tests {
 
     #[tokio::test]
     async fn test_get_fast_model_uses_entry_fast_model() {
-        let _lock = ENV_MUTEX.lock().await;
+        let _guard = env_lock::lock_env([
+            ("OPENDUCK_FAST_MODEL", None::<&str>),
+            ("GOOSE_FAST_MODEL", None::<&str>),
+        ]);
         let config = new_test_config();
         let entry = ProviderEntry {
             model: "gpt-4o".to_string(),
@@ -390,7 +369,10 @@ mod fast_model_resolution_tests {
 
     #[tokio::test]
     async fn test_get_fast_model_env_wins_over_entry() {
-        let _lock = ENV_MUTEX.lock().await;
+        let _guard = env_lock::lock_env([
+            ("OPENDUCK_FAST_MODEL", Some("gpt-4.1-mini")),
+            ("GOOSE_FAST_MODEL", None::<&str>),
+        ]);
         let config = new_test_config();
         let entry = ProviderEntry {
             model: "gpt-4o".to_string(),
@@ -399,7 +381,6 @@ mod fast_model_resolution_tests {
         };
         set_provider_entry(&config, "openai", &entry).unwrap();
 
-        let _guard = EnvGuard::set("OPENDUCK_FAST_MODEL", "gpt-4.1-mini");
         let main_model = ModelConfig::new("gpt-4o");
         let resolved = get_fast_model_with_config(&config, "openai", &main_model)
             .await
@@ -409,7 +390,10 @@ mod fast_model_resolution_tests {
 
     #[tokio::test]
     async fn test_get_fast_model_ignores_file_key_when_marker_set() {
-        let _lock = ENV_MUTEX.lock().await;
+        let _guard = env_lock::lock_env([
+            ("OPENDUCK_FAST_MODEL", None::<&str>),
+            ("GOOSE_FAST_MODEL", None::<&str>),
+        ]);
         let mut file = NamedTempFile::new().unwrap();
         let secrets_file = NamedTempFile::new().unwrap();
         let yaml = r#"

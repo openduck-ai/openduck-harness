@@ -1,8 +1,25 @@
 import type {
   ProviderConfigPutBody,
+  ProviderEntryPutItemV2,
+  ProviderInventoryStatus,
+  ProviderModelOption,
   ProvidersConfigResponse,
   ProxyItem,
+  RoleModelField,
+  RoleModelSource,
 } from '@aaif/goose-hub-core'
+
+export type ProviderRole = 'major' | 'secondary'
+
+export const MODEL_SEARCH_MIN_COUNT = 8
+
+export const CUSTOM_MODEL_OPTION = '__enter_model_id__'
+
+export const LEGACY_PROVIDER_SERVER_NOTICE =
+  'This server does not support role-level model selection. Edit the default model in the table. Saves keep the legacy request format.'
+
+export const IDENTICAL_ROLE_TARGET_WARNING =
+  'Identical targets cause duplicate invocations'
 
 export interface ProviderRowDraft {
   name: string
@@ -22,21 +39,72 @@ export interface ProviderRowDraft {
   fileFastModel: string | null
   fileSecondaryModel: string | null
   fileProxy: string | null
+  models: ProviderModelOption[] | null
+  inventoryStatus: ProviderInventoryStatus | null
+  supportsRefresh: boolean | null
+  refreshing: boolean
+  lastUpdatedAt: string | null
+  lastRefreshError: string | null
 }
 
 export interface ProviderConfigDraft {
+  selectionVersion: 2 | null
   majorProvider: string | null
   secondaryProvider: string | null
+  majorModel: string | null
+  secondaryProviderModel: string | null
   majorFileValue: string | null
   majorFromEnv: boolean
   secondaryFileValue: string | null
   secondaryFromEnv: boolean
+  majorModelFileValue: string | null
+  majorModelEffective: string | null
+  majorModelFromEnv: boolean
+  majorModelSource: RoleModelSource | null
+  majorModelEffectiveProvider: string | null
+  secondaryModelFileValue: string | null
+  secondaryModelEffective: string | null
+  secondaryProviderModelFromEnv: boolean
+  secondaryModelSource: RoleModelSource | null
+  secondaryModelEffectiveProvider: string | null
   modelFromEnv: boolean
   fastModelFromEnv: boolean
   secondaryModelFromEnv: boolean
   availableProviders: string[]
   providers: ProviderRowDraft[]
   proxies: ProxyItem[]
+  modelDraftsByProvider: Record<ProviderRole, Record<string, string | null>>
+  dirty: boolean
+}
+
+export interface ProviderSelectOption {
+  name: string
+  eligible: boolean
+}
+
+export interface ModelChoiceOption {
+  value: string
+  label: string
+  recommended: boolean
+  custom: boolean
+  inherit: boolean
+}
+
+export interface ModelChoiceState {
+  freeText: boolean
+  searchable: boolean
+  options: ModelChoiceOption[]
+  selectValue: string
+}
+
+export interface ProviderRefreshGuard {
+  providerId: string
+  generation: number
+}
+
+export interface ResolvedRoleTarget {
+  provider: string | null
+  model: string | null
 }
 
 export function normalizeFastModel(fastModel: string | null | undefined, model: string): string | null {
@@ -124,46 +192,122 @@ export function secondaryModelLabel(secondaryModel: string | null | undefined): 
   return norm ? norm : 'no secondary model'
 }
 
-export function draftFromResponse(resp: ProvidersConfigResponse): ProviderConfigDraft {
+export function envLockDescription(fileValue: string | null, effectiveValue: string | null): string {
+  return `From environment. File: ${fileValue ?? 'unset'}. Effective: ${effectiveValue ?? 'unset'}.`
+}
+
+export function inventoryStatusLabel(status: ProviderInventoryStatus | null | undefined): string | null {
+  switch (status) {
+    case 'stale':
+      return 'Model list may be stale'
+    case 'neverFetched':
+      return 'Models have not been fetched'
+    case 'unsupported':
+      return 'This provider does not support model refresh'
+    default:
+      return null
+  }
+}
+
+export function supportsRoleModelSelection(draft: ProviderConfigDraft): boolean {
+  return draft.selectionVersion === 2
+}
+
+function emptyModelBuffers(): Record<ProviderRole, Record<string, string | null>> {
+  return { major: {}, secondary: {} }
+}
+
+function copyModels(models: ProviderModelOption[] | null | undefined): ProviderModelOption[] | null {
+  if (!models) return null
+  return models.map(model => ({
+    id: model.id,
+    name: model.name,
+    ...(model.recommended ? { recommended: true } : {}),
+  }))
+}
+
+function rowFromDetail(provider: ProvidersConfigResponse['providers'][number]): ProviderRowDraft {
   return {
+    name: provider.name,
+    enabled: provider.enabled,
+    configured: provider.configured,
+    model: provider.model,
+    fastModel: provider.fastModel ?? '',
+    secondaryModel: provider.secondaryModel ?? '',
+    proxy: provider.proxy ?? '',
+    modelEnvValue: provider.modelEnvValue,
+    fastModelEnvValue: provider.fastModelEnvValue,
+    secondaryModelEnvValue: provider.secondaryModelEnvValue,
+    resolvedFastModel: provider.resolvedFastModel,
+    fastModelUsesMain: provider.fastModelUsesMain,
+    suggestedFastModel: provider.suggestedFastModel,
+    fileModel: provider.model,
+    fileFastModel: provider.fastModel,
+    fileSecondaryModel: provider.secondaryModel,
+    fileProxy: provider.proxy ?? null,
+    models: copyModels(provider.models),
+    inventoryStatus: provider.inventoryStatus ?? null,
+    supportsRefresh: provider.supportsRefresh ?? null,
+    refreshing: provider.refreshing ?? false,
+    lastUpdatedAt: provider.lastUpdatedAt ?? null,
+    lastRefreshError: provider.lastRefreshError ?? null,
+  }
+}
+
+function roleModelDraft(field: RoleModelField | undefined): {
+  explicit: string | null
+  fileValue: string | null
+  effective: string | null
+  fromEnv: boolean
+  source: RoleModelSource | null
+} {
+  return {
+    explicit: field?.fileValue ?? null,
+    fileValue: field?.fileValue ?? null,
+    effective: field?.value ?? null,
+    fromEnv: field?.fromEnv ?? false,
+    source: field?.source ?? null,
+  }
+}
+
+export function draftFromResponse(resp: ProvidersConfigResponse): ProviderConfigDraft {
+  const majorModel = roleModelDraft(resp.majorModel)
+  const secondaryModel = roleModelDraft(resp.secondaryProviderModel)
+  return {
+    selectionVersion: resp.selectionVersion === 2 ? 2 : null,
     majorProvider: resp.majorProvider.fromEnv ? resp.majorProvider.value : resp.majorProvider.fileValue,
-    secondaryProvider: resp.secondaryProvider.fromEnv ? resp.secondaryProvider.value : resp.secondaryProvider.fileValue,
+    secondaryProvider: resp.secondaryProvider.fromEnv
+      ? resp.secondaryProvider.value
+      : resp.secondaryProvider.fileValue,
+    majorModel: majorModel.explicit,
+    secondaryProviderModel: secondaryModel.explicit,
     majorFileValue: resp.majorProvider.fileValue,
     majorFromEnv: resp.majorProvider.fromEnv,
     secondaryFileValue: resp.secondaryProvider.fileValue,
     secondaryFromEnv: resp.secondaryProvider.fromEnv,
+    majorModelFileValue: majorModel.fileValue,
+    majorModelEffective: majorModel.effective,
+    majorModelFromEnv: majorModel.fromEnv,
+    majorModelSource: majorModel.source,
+    majorModelEffectiveProvider: resp.majorProvider.value,
+    secondaryModelFileValue: secondaryModel.fileValue,
+    secondaryModelEffective: secondaryModel.effective,
+    secondaryProviderModelFromEnv: secondaryModel.fromEnv,
+    secondaryModelSource: secondaryModel.source,
+    secondaryModelEffectiveProvider: resp.secondaryProvider.value,
     modelFromEnv: resp.modelFromEnv,
     fastModelFromEnv: resp.fastModelFromEnv,
     secondaryModelFromEnv: resp.secondaryModelFromEnv,
     availableProviders: [...resp.availableProviders],
     proxies: resp.proxies ? resp.proxies.map(p => ({ id: p.id, url: p.url, description: p.description ?? null })) : [],
-    providers: resp.providers.map(p => ({
-      name: p.name,
-      enabled: p.enabled,
-      configured: p.configured,
-      model: p.model,
-      fastModel: p.fastModel ?? '',
-      secondaryModel: p.secondaryModel ?? '',
-      proxy: p.proxy ?? '',
-      modelEnvValue: p.modelEnvValue,
-      fastModelEnvValue: p.fastModelEnvValue,
-      secondaryModelEnvValue: p.secondaryModelEnvValue,
-      resolvedFastModel: p.resolvedFastModel,
-      fastModelUsesMain: p.fastModelUsesMain,
-      suggestedFastModel: p.suggestedFastModel,
-      fileModel: p.model,
-      fileFastModel: p.fastModel,
-      fileSecondaryModel: p.secondaryModel,
-      fileProxy: p.proxy ?? null,
-    })),
+    providers: resp.providers.map(rowFromDetail),
+    modelDraftsByProvider: emptyModelBuffers(),
+    dirty: false,
   }
 }
 
-export function addProvider(draft: ProviderConfigDraft, name: string): ProviderConfigDraft {
-  if (!name || draft.providers.some(p => p.name === name)) {
-    return draft
-  }
-  const newRow: ProviderRowDraft = {
+function blankRow(name: string): ProviderRowDraft {
+  return {
     name,
     enabled: true,
     configured: false,
@@ -181,97 +325,485 @@ export function addProvider(draft: ProviderConfigDraft, name: string): ProviderC
     fileFastModel: null,
     fileSecondaryModel: null,
     fileProxy: null,
+    models: null,
+    inventoryStatus: null,
+    supportsRefresh: null,
+    refreshing: false,
+    lastUpdatedAt: null,
+    lastRefreshError: null,
+  }
+}
+
+export function addProvider(draft: ProviderConfigDraft, name: string): ProviderConfigDraft {
+  if (!name || draft.providers.some(p => p.name === name)) {
+    return draft
   }
   return {
     ...draft,
     availableProviders: draft.availableProviders.filter(p => p !== name),
-    providers: [...draft.providers, newRow],
+    providers: [...draft.providers, blankRow(name)],
+    dirty: true,
   }
 }
 
+export function removeProvider(draft: ProviderConfigDraft, name: string): ProviderConfigDraft {
+  if (name === draft.majorProvider || name === draft.secondaryProvider) return draft
+  if (!draft.providers.some(p => p.name === name)) return draft
+  return {
+    ...draft,
+    providers: draft.providers.filter(p => p.name !== name),
+    availableProviders: [...draft.availableProviders, name].sort(),
+    dirty: true,
+  }
+}
+
+export function updateProviderRow(
+  draft: ProviderConfigDraft,
+  index: number,
+  patch: Partial<Pick<ProviderRowDraft, 'enabled' | 'model' | 'fastModel' | 'secondaryModel' | 'proxy'>>,
+): ProviderConfigDraft {
+  const current = draft.providers[index]
+  if (!current) return draft
+  return {
+    ...draft,
+    providers: draft.providers.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)),
+    dirty: true,
+  }
+}
+
+function roleProvider(draft: ProviderConfigDraft, role: ProviderRole): string | null {
+  const name = role === 'major' ? draft.majorProvider : draft.secondaryProvider
+  return name?.trim() ? name : null
+}
+
+function roleExplicitModel(draft: ProviderConfigDraft, role: ProviderRole): string | null {
+  return role === 'major' ? draft.majorModel : draft.secondaryProviderModel
+}
+
+function writeRole(
+  draft: ProviderConfigDraft,
+  role: ProviderRole,
+  provider: string | null,
+  model: string | null,
+  buffers: Record<string, string | null>,
+): ProviderConfigDraft {
+  const modelDraftsByProvider = { ...draft.modelDraftsByProvider, [role]: buffers }
+  if (role === 'major') {
+    return { ...draft, majorProvider: provider, majorModel: model, modelDraftsByProvider, dirty: true }
+  }
+  return {
+    ...draft,
+    secondaryProvider: provider,
+    secondaryProviderModel: model,
+    modelDraftsByProvider,
+    dirty: true,
+  }
+}
+
+export function selectRoleProvider(
+  draft: ProviderConfigDraft,
+  role: ProviderRole,
+  nextProvider: string | null,
+): ProviderConfigDraft {
+  if ((role === 'major' ? draft.majorFromEnv : draft.secondaryFromEnv)) return draft
+  const currentProvider = roleProvider(draft, role)
+  const buffers = { ...draft.modelDraftsByProvider[role] }
+  if (currentProvider) buffers[currentProvider] = roleExplicitModel(draft, role)
+  const trimmed = nextProvider?.trim() || null
+  let nextModel: string | null = null
+  if (trimmed && Object.prototype.hasOwnProperty.call(buffers, trimmed)) {
+    nextModel = buffers[trimmed] ?? null
+  }
+  return writeRole(draft, role, trimmed, nextModel, buffers)
+}
+
+export function selectRoleModel(
+  draft: ProviderConfigDraft,
+  role: ProviderRole,
+  model: string | null,
+): ProviderConfigDraft {
+  if (roleModelLocked(draft, role)) return draft
+  const provider = roleProvider(draft, role)
+  if (!provider) return writeRole(draft, role, null, null, draft.modelDraftsByProvider[role])
+  const buffers = { ...draft.modelDraftsByProvider[role], [provider]: model }
+  return writeRole(draft, role, provider, model, buffers)
+}
+
+export function roleProviderOptions(draft: ProviderConfigDraft, role: ProviderRole): ProviderSelectOption[] {
+  const selected = roleProvider(draft, role)
+  const options = draft.providers
+    .filter(provider => provider.enabled && provider.configured)
+    .map(provider => ({ name: provider.name, eligible: true }))
+  if (selected && !options.some(option => option.name === selected)) {
+    options.push({ name: selected, eligible: false })
+  }
+  return options
+}
+
+export function sortModelInventory(models: readonly ProviderModelOption[]): ProviderModelOption[] {
+  return models
+    .map((model, index) => ({ model, index }))
+    .sort((left, right) => {
+      const leftRank = left.model.recommended ? 0 : 1
+      const rightRank = right.model.recommended ? 0 : 1
+      if (leftRank !== rightRank) return leftRank - rightRank
+      return left.index - right.index
+    })
+    .map(item => item.model)
+}
+
+export function usesFreeTextModelInput(models: ProviderModelOption[] | null | undefined): boolean {
+  return !models || models.length === 0
+}
+
+export function roleModelSelectValue(
+  explicitModel: string | null,
+  effectiveModel: string | null,
+  defaultModel: string,
+): string {
+  if (explicitModel && explicitModel.trim()) return explicitModel.trim()
+  if (defaultModel.trim()) return ''
+  if (effectiveModel && effectiveModel.trim()) return effectiveModel.trim()
+  return ''
+}
+
+export function modelChoiceState(input: {
+  models: ProviderModelOption[] | null | undefined
+  defaultModel: string
+  explicitModel: string | null
+  effectiveModel: string | null
+}): ModelChoiceState {
+  const defaultTrimmed = input.defaultModel.trim()
+  const inventory = input.models ?? null
+  const options: ModelChoiceOption[] = []
+  if (defaultTrimmed) {
+    options.push({
+      value: '',
+      label: `inherit default (${defaultTrimmed})`,
+      recommended: false,
+      custom: false,
+      inherit: true,
+    })
+  }
+  const seen = new Set<string>()
+  for (const model of sortModelInventory(inventory ?? [])) {
+    if (seen.has(model.id)) continue
+    seen.add(model.id)
+    const recommended = model.recommended === true
+    options.push({
+      value: model.id,
+      label: recommended ? `${model.name} (recommended)` : model.name,
+      recommended,
+      custom: false,
+      inherit: false,
+    })
+  }
+  const extras = [input.explicitModel, input.effectiveModel]
+  for (const raw of extras) {
+    const id = raw?.trim()
+    if (!id || seen.has(id)) continue
+    if (!input.explicitModel?.trim() && id === defaultTrimmed) continue
+    seen.add(id)
+    options.push({
+      value: id,
+      label: `${id} (custom / not listed)`,
+      recommended: false,
+      custom: true,
+      inherit: false,
+    })
+  }
+  return {
+    freeText: usesFreeTextModelInput(inventory),
+    searchable: (inventory?.length ?? 0) >= MODEL_SEARCH_MIN_COUNT,
+    options,
+    selectValue: roleModelSelectValue(input.explicitModel, input.effectiveModel, input.defaultModel),
+  }
+}
+
+export function filterModelOptions(
+  options: readonly ModelChoiceOption[],
+  query: string,
+  selectedValue?: string,
+): ModelChoiceOption[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return [...options]
+  return options.filter(option =>
+    option.inherit
+    || option.value === selectedValue
+    || option.label.toLowerCase().includes(needle)
+    || option.value.toLowerCase().includes(needle),
+  )
+}
+
+function submittedProvider(draft: ProviderConfigDraft, role: ProviderRole): string | null {
+  const fromEnv = role === 'major' ? draft.majorFromEnv : draft.secondaryFromEnv
+  const fileValue = role === 'major' ? draft.majorFileValue : draft.secondaryFileValue
+  const raw = fromEnv ? fileValue : roleProvider(draft, role)
+  const trimmed = raw?.trim()
+  return trimmed ? trimmed : null
+}
+
+function roleModelLocked(draft: ProviderConfigDraft, role: ProviderRole): boolean {
+  if (role === 'major') return draft.majorModelFromEnv || draft.modelFromEnv
+  return draft.secondaryProviderModelFromEnv || draft.secondaryModelFromEnv
+}
+
+function submittedRoleModel(draft: ProviderConfigDraft, role: ProviderRole): string | null {
+  if (!submittedProvider(draft, role)) return null
+  if (roleModelLocked(draft, role)) {
+    const fileValue = role === 'major' ? draft.majorModelFileValue : draft.secondaryModelFileValue
+    return fileValue && fileValue.length > 0 ? fileValue : null
+  }
+  return roleExplicitModel(draft, role)
+}
+
+function roleLabel(role: ProviderRole): string {
+  return role === 'major' ? 'major' : 'secondary'
+}
+
+function assertProviderSelectable(draft: ProviderConfigDraft, role: ProviderRole, name: string): ProviderRowDraft {
+  const entry = draft.providers.find(provider => provider.name === name)
+  const label = roleLabel(role)
+  if (!entry) throw new Error(`Selected ${label} provider ${name} not found`)
+  if (!entry.enabled) throw new Error(`Selected ${label} provider ${name} is disabled`)
+  if (!entry.configured) throw new Error(`Selected ${label} provider ${name} is not configured`)
+  return entry
+}
+
+function assertRoleResolves(draft: ProviderConfigDraft, role: ProviderRole, name: string, entry: ProviderRowDraft): void {
+  const Label = role === 'major' ? 'Major' : 'Secondary'
+  const explicit = submittedRoleModel(draft, role)
+  if (explicit !== null && !roleModelLocked(draft, role)) {
+    if (explicit.trim() === '' || explicit !== explicit.trim()) {
+      throw new Error(`${Label} model cannot be blank or padded`)
+    }
+    return
+  }
+  if (explicit !== null) return
+  if (entry.model.trim()) return
+  const effective = role === 'major' ? draft.majorModelEffective : draft.secondaryModelEffective
+  const effectiveProvider = role === 'major'
+    ? draft.majorModelEffectiveProvider
+    : draft.secondaryModelEffectiveProvider
+  if (roleModelLocked(draft, role) && effective?.trim()) return
+  const loadedFile = role === 'major' ? draft.majorModelFileValue : draft.secondaryModelFileValue
+  // A cleared explicit choice must not keep resolving through the previous effective model.
+  if (roleExplicitModel(draft, role) === loadedFile && effectiveProvider === name && effective?.trim()) return
+  throw new Error(`${Label} role must resolve to a non-empty model`)
+}
+
 export function validateDraft(draft: ProviderConfigDraft): void {
-  const major = draft.majorFromEnv
-    ? (draft.majorFileValue ? draft.majorFileValue.trim() : null)
-    : (draft.majorProvider ? draft.majorProvider.trim() : null)
-
-  const secondary = draft.secondaryFromEnv
-    ? (draft.secondaryFileValue ? draft.secondaryFileValue.trim() : null)
-    : (draft.secondaryProvider ? draft.secondaryProvider.trim() : null)
-
-  if (major && secondary && major === secondary) {
-    throw new Error('Secondary provider cannot equal major provider')
-  }
-
-  if (major) {
-    const entry = draft.providers.find(p => p.name === major)
-    if (!entry) {
-      throw new Error(`Selected major provider ${major} not found`)
+  for (const role of ['major', 'secondary'] as const) {
+    const name = submittedProvider(draft, role)
+    const label = roleLabel(role)
+    const Label = role === 'major' ? 'Major' : 'Secondary'
+    if (!name) {
+      if (draft.selectionVersion === 2 && !roleModelLocked(draft, role) && roleExplicitModel(draft, role) !== null) {
+        throw new Error(`${Label} model must be null when ${label} provider is null`)
+      }
+      continue
     }
-    if (!entry.enabled) {
-      throw new Error(`Selected major provider ${major} is disabled`)
-    }
-    if (!entry.model.trim()) {
-      throw new Error(`Selected major provider ${major} has an empty model`)
+    const entry = assertProviderSelectable(draft, role, name)
+    if (draft.selectionVersion === 2) {
+      assertRoleResolves(draft, role, name, entry)
+    } else if (!entry.model.trim()) {
+      throw new Error(`Selected ${label} provider ${name} has an empty model`)
     }
   }
+}
 
-  if (secondary) {
-    const entry = draft.providers.find(p => p.name === secondary)
-    if (!entry) {
-      throw new Error(`Selected secondary provider ${secondary} not found`)
+function legacyProviderItems(draft: ProviderConfigDraft): ProviderConfigPutBody {
+  const providers = draft.providers.map(row => {
+    const isMajorRow = (draft.majorFromEnv ? draft.majorFileValue : draft.majorProvider) === row.name
+    const isSecondaryRow = (draft.secondaryFromEnv ? draft.secondaryFileValue : draft.secondaryProvider) === row.name
+    let model = row.model.trim()
+    if (draft.modelFromEnv && isMajorRow) {
+      model = row.fileModel.trim()
+    } else if (draft.secondaryModelFromEnv && isSecondaryRow) {
+      model = row.fileModel.trim()
     }
-    if (!entry.enabled) {
-      throw new Error(`Selected secondary provider ${secondary} is disabled`)
+    let fastModel: string | null = normalizeFastModel(row.fastModel, model)
+    if (draft.fastModelFromEnv) {
+      fastModel = row.fileFastModel ?? null
     }
-    if (!entry.model.trim()) {
-      throw new Error(`Selected secondary provider ${secondary} has an empty model`)
+    return {
+      name: row.name.trim(),
+      enabled: row.enabled,
+      model,
+      fastModel,
+      secondaryModel: normalizeSecondaryModel(row.secondaryModel),
+      proxy: normalizeProxy(row.proxy),
     }
+  })
+  return {
+    majorProvider: submittedProvider(draft, 'major'),
+    secondaryProvider: submittedProvider(draft, 'secondary'),
+    providers,
   }
+}
+
+function defaultModelForV2(draft: ProviderConfigDraft, row: ProviderRowDraft): string | undefined {
+  const isMajorRow = (draft.majorFromEnv ? draft.majorFileValue : draft.majorProvider) === row.name
+  const isSecondaryRow = (draft.secondaryFromEnv ? draft.secondaryFileValue : draft.secondaryProvider) === row.name
+  let model = row.model.trim()
+  if ((draft.modelFromEnv && isMajorRow) || (draft.secondaryModelFromEnv && isSecondaryRow)) {
+    model = row.fileModel.trim()
+  }
+  if (model === row.fileModel.trim()) return undefined
+  return model
+}
+
+function v2ProviderItem(draft: ProviderConfigDraft, row: ProviderRowDraft): ProviderEntryPutItemV2 {
+  const keptOrCleared = defaultModelForV2(draft, row)
+  const modelForFast = keptOrCleared ?? row.fileModel.trim()
+  let fastModel: string | null = normalizeFastModel(row.fastModel, modelForFast)
+  if (draft.fastModelFromEnv) fastModel = row.fileFastModel ?? null
+  const item: ProviderEntryPutItemV2 = {
+    name: row.name.trim(),
+    enabled: row.enabled,
+    fastModel,
+    secondaryModel: normalizeSecondaryModel(row.secondaryModel),
+    proxy: normalizeProxy(row.proxy),
+  }
+  if (keptOrCleared !== undefined) item.model = keptOrCleared
+  return item
 }
 
 export function buildPutBody(draft: ProviderConfigDraft): ProviderConfigPutBody {
   validateDraft(draft)
-
-  const majorProvider = draft.majorFromEnv
-    ? (draft.majorFileValue ?? null)
-    : (draft.majorProvider ? draft.majorProvider.trim() : null)
-
-  const secondaryProvider = draft.secondaryFromEnv
-    ? (draft.secondaryFileValue ?? null)
-    : (draft.secondaryProvider ? draft.secondaryProvider.trim() : null)
-
-  const providers = draft.providers.map(p => {
-    const isMajorRow = (draft.majorFromEnv ? draft.majorFileValue : draft.majorProvider) === p.name
-    const isSecondaryRow = (draft.secondaryFromEnv ? draft.secondaryFileValue : draft.secondaryProvider) === p.name
-
-    let model = p.model.trim()
-    if (draft.modelFromEnv && isMajorRow) {
-      model = p.fileModel.trim()
-    } else if (draft.secondaryModelFromEnv && isSecondaryRow) {
-      model = p.fileModel.trim()
-    }
-
-    let fastModel: string | null = normalizeFastModel(p.fastModel, model)
-    if (draft.fastModelFromEnv) {
-      fastModel = p.fileFastModel ?? null
-    }
-
-    let secondaryModel: string | null = normalizeSecondaryModel(p.secondaryModel)
-    let proxy: string | null = normalizeProxy(p.proxy)
-
-    return {
-      name: p.name.trim(),
-      enabled: p.enabled,
-      model,
-      fastModel,
-      secondaryModel,
-      proxy,
-    }
-  })
-
+  if (draft.selectionVersion !== 2) return legacyProviderItems(draft)
   return {
-    majorProvider,
-    secondaryProvider,
-    providers,
+    selectionVersion: 2,
+    majorProvider: submittedProvider(draft, 'major'),
+    majorModel: submittedRoleModel(draft, 'major'),
+    secondaryProvider: submittedProvider(draft, 'secondary'),
+    secondaryProviderModel: submittedRoleModel(draft, 'secondary'),
+    providers: draft.providers.map(row => v2ProviderItem(draft, row)),
+  }
+}
+
+export function resolvedRoleTarget(draft: ProviderConfigDraft, role: ProviderRole): ResolvedRoleTarget {
+  const provider = roleProvider(draft, role)
+  if (!provider) return { provider: null, model: null }
+  const row = draft.providers.find(item => item.name === provider)
+  if (draft.selectionVersion !== 2) {
+    if (!row) return { provider, model: null }
+    const envLocked = role === 'major' ? draft.modelFromEnv : draft.secondaryModelFromEnv
+    const shown = envLocked
+      ? ((role === 'major' ? row.modelEnvValue : row.secondaryModelEnvValue) ?? row.model)
+      : row.model
+    const trimmed = shown.trim()
+    return { provider, model: trimmed || null }
+  }
+  if (roleModelLocked(draft, role)) {
+    const effective = role === 'major' ? draft.majorModelEffective : draft.secondaryModelEffective
+    return { provider, model: effective?.trim() || null }
+  }
+  const explicit = roleExplicitModel(draft, role)
+  if (explicit && explicit.trim() && explicit === explicit.trim()) {
+    return { provider, model: explicit.trim() }
+  }
+  const fallback = row?.model.trim() || null
+  if (fallback) return { provider, model: fallback }
+  const effective = role === 'major' ? draft.majorModelEffective : draft.secondaryModelEffective
+  const effectiveProvider = role === 'major'
+    ? draft.majorModelEffectiveProvider
+    : draft.secondaryModelEffectiveProvider
+  if (effectiveProvider === provider && effective?.trim()) {
+    return { provider, model: effective.trim() }
+  }
+  return { provider, model: null }
+}
+
+export function identicalRoleTargetWarning(draft: ProviderConfigDraft): string | null {
+  const major = resolvedRoleTarget(draft, 'major')
+  const secondary = resolvedRoleTarget(draft, 'secondary')
+  if (!major.provider || !secondary.provider || !major.model || !secondary.model) return null
+  if (major.provider === secondary.provider && major.model === secondary.model) {
+    return IDENTICAL_ROLE_TARGET_WARNING
+  }
+  return null
+}
+
+function mergeInventory(row: ProviderRowDraft, fresh: ProvidersConfigResponse['providers'][number]): ProviderRowDraft {
+  return {
+    ...row,
+    models: copyModels(fresh.models),
+    inventoryStatus: fresh.inventoryStatus ?? null,
+    supportsRefresh: fresh.supportsRefresh ?? null,
+    refreshing: fresh.refreshing ?? false,
+    lastUpdatedAt: fresh.lastUpdatedAt ?? null,
+    lastRefreshError: fresh.lastRefreshError ?? null,
+  }
+}
+
+// Refresh results update only the named provider's inventory. Role selections and
+// every other row stay as the user left them, including after a provider switch.
+export function applyProviderInventory(
+  draft: ProviderConfigDraft,
+  providerId: string,
+  response: ProvidersConfigResponse,
+): ProviderConfigDraft {
+  const fresh = response.providers.find(provider => provider.name === providerId)
+  if (!fresh) return draft
+  return {
+    ...draft,
+    providers: draft.providers.map(row => (row.name === providerId ? mergeInventory(row, fresh) : row)),
+  }
+}
+
+export function nextRefreshGeneration(
+  generations: Readonly<Record<string, number>>,
+  providerId: string,
+): { generations: Record<string, number>; guard: ProviderRefreshGuard } {
+  const generation = (generations[providerId] ?? 0) + 1
+  return {
+    generations: { ...generations, [providerId]: generation },
+    guard: { providerId, generation },
+  }
+}
+
+export function refreshGuardIsCurrent(
+  generations: Readonly<Record<string, number>>,
+  guard: ProviderRefreshGuard,
+): boolean {
+  return generations[guard.providerId] === guard.generation
+}
+
+export function applyProviderInventoryIfCurrent(
+  draft: ProviderConfigDraft,
+  generations: Readonly<Record<string, number>>,
+  guard: ProviderRefreshGuard,
+  response: ProvidersConfigResponse,
+): ProviderConfigDraft {
+  if (!refreshGuardIsCurrent(generations, guard)) return draft
+  return applyProviderInventory(draft, guard.providerId, response)
+}
+
+export function markProviderRefreshing(
+  draft: ProviderConfigDraft,
+  providerId: string,
+  refreshing: boolean,
+): ProviderConfigDraft {
+  return {
+    ...draft,
+    providers: draft.providers.map(row => (
+      row.name === providerId
+        ? { ...row, refreshing, lastRefreshError: refreshing ? null : row.lastRefreshError }
+        : row
+    )),
+  }
+}
+
+export function markProviderRefreshFailed(
+  draft: ProviderConfigDraft,
+  providerId: string,
+  message: string,
+): ProviderConfigDraft {
+  return {
+    ...draft,
+    providers: draft.providers.map(row => (
+      row.name === providerId ? { ...row, refreshing: false, lastRefreshError: message } : row
+    )),
   }
 }

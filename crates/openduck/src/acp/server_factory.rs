@@ -125,7 +125,8 @@ impl AcpServer {
             },
         );
 
-        let agent = GooseAcpAgent::new(GooseAcpAgentOptions {
+        let shared = self.provider_inventory().await?;
+        let mut agent = GooseAcpAgent::new(GooseAcpAgentOptions {
             provider_factory,
             builtin_selection: self.config.builtins.clone(),
             data_dir: self.config.data_dir.clone(),
@@ -136,6 +137,7 @@ impl AcpServer {
             scheduler,
         })
         .await?;
+        agent.share_provider_inventory(shared.as_ref().clone());
         info!("Created new ACP agent");
 
         Ok(Arc::new(agent))
