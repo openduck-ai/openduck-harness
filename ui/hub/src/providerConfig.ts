@@ -1,3 +1,5 @@
+import { ConfigValidationError, type ConfigMessageDescriptor } from './configEditor.ts'
+import { translate } from './i18n/index.ts'
 import type {
   ProviderConfigPutBody,
   ProviderEntryPutItemV2,
@@ -15,11 +17,11 @@ export const MODEL_SEARCH_MIN_COUNT = 8
 
 export const CUSTOM_MODEL_OPTION = '__enter_model_id__'
 
-export const LEGACY_PROVIDER_SERVER_NOTICE =
-  'This server does not support role-level model selection. Edit the default model in the table. Saves keep the legacy request format.'
+export function getLegacyProviderServerNotice(): string {
+  return translate('config.providers.legacyServerNotice')
+}
 
-export const IDENTICAL_ROLE_TARGET_WARNING =
-  'Identical targets cause duplicate invocations'
+export const IDENTICAL_ROLE_TARGET_WARNING = 'Identical targets cause duplicate invocations'
 
 export interface ProviderRowDraft {
   name: string
@@ -44,7 +46,7 @@ export interface ProviderRowDraft {
   supportsRefresh: boolean | null
   refreshing: boolean
   lastUpdatedAt: string | null
-  lastRefreshError: string | null
+  lastRefreshError: string | ConfigMessageDescriptor | null
 }
 
 export interface ProviderConfigDraft {
@@ -107,7 +109,10 @@ export interface ResolvedRoleTarget {
   model: string | null
 }
 
-export function normalizeFastModel(fastModel: string | null | undefined, model: string): string | null {
+export function normalizeFastModel(
+  fastModel: string | null | undefined,
+  model: string,
+): string | null {
   if (!fastModel) return null
   const trimmed = fastModel.trim()
   if (!trimmed || trimmed === model.trim()) return null
@@ -127,44 +132,54 @@ export function normalizeProxy(proxy: string | null | undefined): string | null 
   return trimmed ? trimmed : null
 }
 
-export function validateProxyUrl(url: string): string | null {
+export function validateProxyUrlMessage(url: string): ConfigMessageDescriptor | null {
   const trimmed = url.trim()
-  if (!trimmed) return 'Proxy URL cannot be empty'
+  if (!trimmed) return { key: 'config.providers.emptyProxyUrl' }
   if (
     !trimmed.startsWith('http://') &&
     !trimmed.startsWith('https://') &&
     !trimmed.startsWith('socks5://') &&
     !trimmed.startsWith('socks5h://')
   ) {
-    return 'Proxy URL must start with http://, https://, or socks5://'
+    return { key: 'config.providers.proxyUrlScheme' }
   }
   return null
 }
 
-export function validateProxyId(
+export function validateProxyIdMessage(
   id: string,
   existingProxies: ProxyItem[],
   currentId?: string,
-): string | null {
+): ConfigMessageDescriptor | null {
   const trimmed = id.trim()
-  if (!trimmed) return 'Proxy ID cannot be empty'
+  if (!trimmed) return { key: 'config.providers.emptyProxyId' }
   if (/[^a-zA-Z0-9_-]/.test(trimmed)) {
-    return 'Proxy ID can only contain letters, numbers, underscores, and dashes'
+    return { key: 'config.providers.proxyIdCharacters' }
   }
-  if (existingProxies.some(p => p.id === trimmed && p.id !== currentId)) {
-    return `Proxy ID "${trimmed}" already exists`
+  if (existingProxies.some((p) => p.id === trimmed && p.id !== currentId)) {
+    return { key: 'config.providers.duplicateProxyId', values: () => ({ id: trimmed }) }
   }
   return null
+}
+
+export function validateProxyUrl(url: string): string | null {
+  const message = validateProxyUrlMessage(url)
+  return message ? translate(message.key, message.values?.(translate)) : null
+}
+
+export function validateProxyId(id: string, existingProxies: ProxyItem[], currentId?: string): string | null {
+  const message = validateProxyIdMessage(id, existingProxies, currentId)
+  return message ? translate(message.key, message.values?.(translate)) : null
 }
 
 export function resolveProxyLabel(
   proxyValue: string | null | undefined,
   proxies: ProxyItem[],
 ): string {
-  if (!proxyValue) return 'no proxy'
+  if (!proxyValue) return translate('config.providers.noProxy')
   const trimmed = proxyValue.trim()
-  if (!trimmed) return 'no proxy'
-  const match = proxies.find(p => p.id === trimmed || p.url === trimmed)
+  if (!trimmed) return translate('config.providers.noProxy')
+  const match = proxies.find((p) => p.id === trimmed || p.url === trimmed)
   if (match) {
     return `${match.id} (${match.url})`
   }
@@ -178,32 +193,40 @@ export function findMatchingProxyId(
   if (!proxyValue) return null
   const trimmed = proxyValue.trim()
   if (!trimmed) return null
-  const match = proxies.find(p => p.id === trimmed || p.url === trimmed)
+  const match = proxies.find((p) => p.id === trimmed || p.url === trimmed)
   return match ? match.id : null
 }
 
 export function fastModelLabel(fastModel: string | null | undefined, model: string): string {
   const norm = normalizeFastModel(fastModel, model)
-  return norm ? norm : 'uses model'
+  return norm ? norm : translate('config.providers.usesModel')
 }
 
 export function secondaryModelLabel(secondaryModel: string | null | undefined): string {
   const norm = normalizeSecondaryModel(secondaryModel)
-  return norm ? norm : 'no secondary model'
+  return norm ? norm : translate('config.providers.noSecondaryModel')
 }
 
-export function envLockDescription(fileValue: string | null, effectiveValue: string | null): string {
-  return `From environment. File: ${fileValue ?? 'unset'}. Effective: ${effectiveValue ?? 'unset'}.`
+export function envLockDescription(
+  fileValue: string | null,
+  effectiveValue: string | null,
+): string {
+  return translate('config.providers.envLock', {
+    file: fileValue ?? translate('config.providers.unset'),
+    effective: effectiveValue ?? translate('config.providers.unset'),
+  })
 }
 
-export function inventoryStatusLabel(status: ProviderInventoryStatus | null | undefined): string | null {
+export function inventoryStatusLabel(
+  status: ProviderInventoryStatus | null | undefined,
+): string | null {
   switch (status) {
     case 'stale':
-      return 'Model list may be stale'
+      return translate('config.providers.staleModels')
     case 'neverFetched':
-      return 'Models have not been fetched'
+      return translate('config.providers.modelsNotFetched')
     case 'unsupported':
-      return 'This provider does not support model refresh'
+      return translate('config.providers.refreshUnsupported')
     default:
       return null
   }
@@ -217,9 +240,11 @@ function emptyModelBuffers(): Record<ProviderRole, Record<string, string | null>
   return { major: {}, secondary: {} }
 }
 
-function copyModels(models: ProviderModelOption[] | null | undefined): ProviderModelOption[] | null {
+function copyModels(
+  models: ProviderModelOption[] | null | undefined,
+): ProviderModelOption[] | null {
   if (!models) return null
-  return models.map(model => ({
+  return models.map((model) => ({
     id: model.id,
     name: model.name,
     ...(model.recommended ? { recommended: true } : {}),
@@ -275,7 +300,9 @@ export function draftFromResponse(resp: ProvidersConfigResponse): ProviderConfig
   const secondaryModel = roleModelDraft(resp.secondaryProviderModel)
   return {
     selectionVersion: resp.selectionVersion === 2 ? 2 : null,
-    majorProvider: resp.majorProvider.fromEnv ? resp.majorProvider.value : resp.majorProvider.fileValue,
+    majorProvider: resp.majorProvider.fromEnv
+      ? resp.majorProvider.value
+      : resp.majorProvider.fileValue,
     secondaryProvider: resp.secondaryProvider.fromEnv
       ? resp.secondaryProvider.value
       : resp.secondaryProvider.fileValue,
@@ -299,7 +326,9 @@ export function draftFromResponse(resp: ProvidersConfigResponse): ProviderConfig
     fastModelFromEnv: resp.fastModelFromEnv,
     secondaryModelFromEnv: resp.secondaryModelFromEnv,
     availableProviders: [...resp.availableProviders],
-    proxies: resp.proxies ? resp.proxies.map(p => ({ id: p.id, url: p.url, description: p.description ?? null })) : [],
+    proxies: resp.proxies
+      ? resp.proxies.map((p) => ({ id: p.id, url: p.url, description: p.description ?? null }))
+      : [],
     providers: resp.providers.map(rowFromDetail),
     modelDraftsByProvider: emptyModelBuffers(),
     dirty: false,
@@ -335,12 +364,12 @@ function blankRow(name: string): ProviderRowDraft {
 }
 
 export function addProvider(draft: ProviderConfigDraft, name: string): ProviderConfigDraft {
-  if (!name || draft.providers.some(p => p.name === name)) {
+  if (!name || draft.providers.some((p) => p.name === name)) {
     return draft
   }
   return {
     ...draft,
-    availableProviders: draft.availableProviders.filter(p => p !== name),
+    availableProviders: draft.availableProviders.filter((p) => p !== name),
     providers: [...draft.providers, blankRow(name)],
     dirty: true,
   }
@@ -348,10 +377,10 @@ export function addProvider(draft: ProviderConfigDraft, name: string): ProviderC
 
 export function removeProvider(draft: ProviderConfigDraft, name: string): ProviderConfigDraft {
   if (name === draft.majorProvider || name === draft.secondaryProvider) return draft
-  if (!draft.providers.some(p => p.name === name)) return draft
+  if (!draft.providers.some((p) => p.name === name)) return draft
   return {
     ...draft,
-    providers: draft.providers.filter(p => p.name !== name),
+    providers: draft.providers.filter((p) => p.name !== name),
     availableProviders: [...draft.availableProviders, name].sort(),
     dirty: true,
   }
@@ -360,13 +389,17 @@ export function removeProvider(draft: ProviderConfigDraft, name: string): Provid
 export function updateProviderRow(
   draft: ProviderConfigDraft,
   index: number,
-  patch: Partial<Pick<ProviderRowDraft, 'enabled' | 'model' | 'fastModel' | 'secondaryModel' | 'proxy'>>,
+  patch: Partial<
+    Pick<ProviderRowDraft, 'enabled' | 'model' | 'fastModel' | 'secondaryModel' | 'proxy'>
+  >,
 ): ProviderConfigDraft {
   const current = draft.providers[index]
   if (!current) return draft
   return {
     ...draft,
-    providers: draft.providers.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)),
+    providers: draft.providers.map((row, rowIndex) =>
+      rowIndex === index ? { ...row, ...patch } : row,
+    ),
     dirty: true,
   }
 }
@@ -389,7 +422,13 @@ function writeRole(
 ): ProviderConfigDraft {
   const modelDraftsByProvider = { ...draft.modelDraftsByProvider, [role]: buffers }
   if (role === 'major') {
-    return { ...draft, majorProvider: provider, majorModel: model, modelDraftsByProvider, dirty: true }
+    return {
+      ...draft,
+      majorProvider: provider,
+      majorModel: model,
+      modelDraftsByProvider,
+      dirty: true,
+    }
   }
   return {
     ...draft,
@@ -405,7 +444,7 @@ export function selectRoleProvider(
   role: ProviderRole,
   nextProvider: string | null,
 ): ProviderConfigDraft {
-  if ((role === 'major' ? draft.majorFromEnv : draft.secondaryFromEnv)) return draft
+  if (role === 'major' ? draft.majorFromEnv : draft.secondaryFromEnv) return draft
   const currentProvider = roleProvider(draft, role)
   const buffers = { ...draft.modelDraftsByProvider[role] }
   if (currentProvider) buffers[currentProvider] = roleExplicitModel(draft, role)
@@ -429,12 +468,15 @@ export function selectRoleModel(
   return writeRole(draft, role, provider, model, buffers)
 }
 
-export function roleProviderOptions(draft: ProviderConfigDraft, role: ProviderRole): ProviderSelectOption[] {
+export function roleProviderOptions(
+  draft: ProviderConfigDraft,
+  role: ProviderRole,
+): ProviderSelectOption[] {
   const selected = roleProvider(draft, role)
   const options = draft.providers
-    .filter(provider => provider.enabled && provider.configured)
-    .map(provider => ({ name: provider.name, eligible: true }))
-  if (selected && !options.some(option => option.name === selected)) {
+    .filter((provider) => provider.enabled && provider.configured)
+    .map((provider) => ({ name: provider.name, eligible: true }))
+  if (selected && !options.some((option) => option.name === selected)) {
     options.push({ name: selected, eligible: false })
   }
   return options
@@ -449,7 +491,7 @@ export function sortModelInventory(models: readonly ProviderModelOption[]): Prov
       if (leftRank !== rightRank) return leftRank - rightRank
       return left.index - right.index
     })
-    .map(item => item.model)
+    .map((item) => item.model)
 }
 
 export function usesFreeTextModelInput(models: ProviderModelOption[] | null | undefined): boolean {
@@ -479,7 +521,7 @@ export function modelChoiceState(input: {
   if (defaultTrimmed) {
     options.push({
       value: '',
-      label: `inherit default (${defaultTrimmed})`,
+      label: translate('config.providers.inheritDefault', { model: defaultTrimmed }),
       recommended: false,
       custom: false,
       inherit: true,
@@ -492,7 +534,9 @@ export function modelChoiceState(input: {
     const recommended = model.recommended === true
     options.push({
       value: model.id,
-      label: recommended ? `${model.name} (recommended)` : model.name,
+      label: recommended
+        ? translate('config.providers.recommendedModel', { name: model.name })
+        : model.name,
       recommended,
       custom: false,
       inherit: false,
@@ -506,7 +550,7 @@ export function modelChoiceState(input: {
     seen.add(id)
     options.push({
       value: id,
-      label: `${id} (custom / not listed)`,
+      label: translate('config.providers.customModel', { id }),
       recommended: false,
       custom: true,
       inherit: false,
@@ -516,7 +560,11 @@ export function modelChoiceState(input: {
     freeText: usesFreeTextModelInput(inventory),
     searchable: (inventory?.length ?? 0) >= MODEL_SEARCH_MIN_COUNT,
     options,
-    selectValue: roleModelSelectValue(input.explicitModel, input.effectiveModel, input.defaultModel),
+    selectValue: roleModelSelectValue(
+      input.explicitModel,
+      input.effectiveModel,
+      input.defaultModel,
+    ),
   }
 }
 
@@ -527,11 +575,12 @@ export function filterModelOptions(
 ): ModelChoiceOption[] {
   const needle = query.trim().toLowerCase()
   if (!needle) return [...options]
-  return options.filter(option =>
-    option.inherit
-    || option.value === selectedValue
-    || option.label.toLowerCase().includes(needle)
-    || option.value.toLowerCase().includes(needle),
+  return options.filter(
+    (option) =>
+      option.inherit ||
+      option.value === selectedValue ||
+      option.label.toLowerCase().includes(needle) ||
+      option.value.toLowerCase().includes(needle),
   )
 }
 
@@ -558,48 +607,75 @@ function submittedRoleModel(draft: ProviderConfigDraft, role: ProviderRole): str
 }
 
 function roleLabel(role: ProviderRole): string {
-  return role === 'major' ? 'major' : 'secondary'
+  return role === 'major'
+    ? 'config.providers.majorRole'
+    : 'config.providers.secondaryRole'
 }
 
-function assertProviderSelectable(draft: ProviderConfigDraft, role: ProviderRole, name: string): ProviderRowDraft {
-  const entry = draft.providers.find(provider => provider.name === name)
+function assertProviderSelectable(
+  draft: ProviderConfigDraft,
+  role: ProviderRole,
+  name: string,
+): ProviderRowDraft {
+  const entry = draft.providers.find((provider) => provider.name === name)
   const label = roleLabel(role)
-  if (!entry) throw new Error(`Selected ${label} provider ${name} not found`)
-  if (!entry.enabled) throw new Error(`Selected ${label} provider ${name} is disabled`)
-  if (!entry.configured) throw new Error(`Selected ${label} provider ${name} is not configured`)
+  if (!entry) throw new ConfigValidationError('config.providers.providerNotFound', t => ({ role: t(label), name }))
+  if (!entry.enabled)
+    throw new ConfigValidationError('config.providers.providerDisabled', t => ({ role: t(label), name }))
+  if (!entry.configured)
+    throw new ConfigValidationError('config.providers.providerNotConfigured', t => ({ role: t(label), name }))
   return entry
 }
 
-function assertRoleResolves(draft: ProviderConfigDraft, role: ProviderRole, name: string, entry: ProviderRowDraft): void {
-  const Label = role === 'major' ? 'Major' : 'Secondary'
+function assertRoleResolves(
+  draft: ProviderConfigDraft,
+  role: ProviderRole,
+  name: string,
+  entry: ProviderRowDraft,
+): void {
+  const Label =
+    role === 'major'
+      ? 'config.providers.majorRoleTitle'
+      : 'config.providers.secondaryRoleTitle'
   const explicit = submittedRoleModel(draft, role)
   if (explicit !== null && !roleModelLocked(draft, role)) {
     if (explicit.trim() === '' || explicit !== explicit.trim()) {
-      throw new Error(`${Label} model cannot be blank or padded`)
+      throw new ConfigValidationError('config.providers.blankModel', t => ({ role: t(Label) }))
     }
     return
   }
   if (explicit !== null) return
   if (entry.model.trim()) return
   const effective = role === 'major' ? draft.majorModelEffective : draft.secondaryModelEffective
-  const effectiveProvider = role === 'major'
-    ? draft.majorModelEffectiveProvider
-    : draft.secondaryModelEffectiveProvider
+  const effectiveProvider =
+    role === 'major' ? draft.majorModelEffectiveProvider : draft.secondaryModelEffectiveProvider
   if (roleModelLocked(draft, role) && effective?.trim()) return
   const loadedFile = role === 'major' ? draft.majorModelFileValue : draft.secondaryModelFileValue
   // A cleared explicit choice must not keep resolving through the previous effective model.
-  if (roleExplicitModel(draft, role) === loadedFile && effectiveProvider === name && effective?.trim()) return
-  throw new Error(`${Label} role must resolve to a non-empty model`)
+  if (
+    roleExplicitModel(draft, role) === loadedFile &&
+    effectiveProvider === name &&
+    effective?.trim()
+  )
+    return
+  throw new ConfigValidationError('config.providers.roleModelRequired', t => ({ role: t(Label) }))
 }
 
 export function validateDraft(draft: ProviderConfigDraft): void {
   for (const role of ['major', 'secondary'] as const) {
     const name = submittedProvider(draft, role)
     const label = roleLabel(role)
-    const Label = role === 'major' ? 'Major' : 'Secondary'
+    const Label =
+      role === 'major'
+        ? 'config.providers.majorRoleTitle'
+        : 'config.providers.secondaryRoleTitle'
     if (!name) {
-      if (draft.selectionVersion === 2 && !roleModelLocked(draft, role) && roleExplicitModel(draft, role) !== null) {
-        throw new Error(`${Label} model must be null when ${label} provider is null`)
+      if (
+        draft.selectionVersion === 2 &&
+        !roleModelLocked(draft, role) &&
+        roleExplicitModel(draft, role) !== null
+      ) {
+        throw new ConfigValidationError('config.providers.modelWithoutProvider', t => ({ roleTitle: t(Label), role: t(label) }))
       }
       continue
     }
@@ -607,15 +683,17 @@ export function validateDraft(draft: ProviderConfigDraft): void {
     if (draft.selectionVersion === 2) {
       assertRoleResolves(draft, role, name, entry)
     } else if (!entry.model.trim()) {
-      throw new Error(`Selected ${label} provider ${name} has an empty model`)
+      throw new ConfigValidationError('config.providers.emptyProviderModel', t => ({ role: t(label), name }))
     }
   }
 }
 
 function legacyProviderItems(draft: ProviderConfigDraft): ProviderConfigPutBody {
-  const providers = draft.providers.map(row => {
-    const isMajorRow = (draft.majorFromEnv ? draft.majorFileValue : draft.majorProvider) === row.name
-    const isSecondaryRow = (draft.secondaryFromEnv ? draft.secondaryFileValue : draft.secondaryProvider) === row.name
+  const providers = draft.providers.map((row) => {
+    const isMajorRow =
+      (draft.majorFromEnv ? draft.majorFileValue : draft.majorProvider) === row.name
+    const isSecondaryRow =
+      (draft.secondaryFromEnv ? draft.secondaryFileValue : draft.secondaryProvider) === row.name
     let model = row.model.trim()
     if (draft.modelFromEnv && isMajorRow) {
       model = row.fileModel.trim()
@@ -644,7 +722,8 @@ function legacyProviderItems(draft: ProviderConfigDraft): ProviderConfigPutBody 
 
 function defaultModelForV2(draft: ProviderConfigDraft, row: ProviderRowDraft): string | undefined {
   const isMajorRow = (draft.majorFromEnv ? draft.majorFileValue : draft.majorProvider) === row.name
-  const isSecondaryRow = (draft.secondaryFromEnv ? draft.secondaryFileValue : draft.secondaryProvider) === row.name
+  const isSecondaryRow =
+    (draft.secondaryFromEnv ? draft.secondaryFileValue : draft.secondaryProvider) === row.name
   let model = row.model.trim()
   if ((draft.modelFromEnv && isMajorRow) || (draft.secondaryModelFromEnv && isSecondaryRow)) {
     model = row.fileModel.trim()
@@ -678,14 +757,17 @@ export function buildPutBody(draft: ProviderConfigDraft): ProviderConfigPutBody 
     majorModel: submittedRoleModel(draft, 'major'),
     secondaryProvider: submittedProvider(draft, 'secondary'),
     secondaryProviderModel: submittedRoleModel(draft, 'secondary'),
-    providers: draft.providers.map(row => v2ProviderItem(draft, row)),
+    providers: draft.providers.map((row) => v2ProviderItem(draft, row)),
   }
 }
 
-export function resolvedRoleTarget(draft: ProviderConfigDraft, role: ProviderRole): ResolvedRoleTarget {
+export function resolvedRoleTarget(
+  draft: ProviderConfigDraft,
+  role: ProviderRole,
+): ResolvedRoleTarget {
   const provider = roleProvider(draft, role)
   if (!provider) return { provider: null, model: null }
-  const row = draft.providers.find(item => item.name === provider)
+  const row = draft.providers.find((item) => item.name === provider)
   if (draft.selectionVersion !== 2) {
     if (!row) return { provider, model: null }
     const envLocked = role === 'major' ? draft.modelFromEnv : draft.secondaryModelFromEnv
@@ -706,9 +788,8 @@ export function resolvedRoleTarget(draft: ProviderConfigDraft, role: ProviderRol
   const fallback = row?.model.trim() || null
   if (fallback) return { provider, model: fallback }
   const effective = role === 'major' ? draft.majorModelEffective : draft.secondaryModelEffective
-  const effectiveProvider = role === 'major'
-    ? draft.majorModelEffectiveProvider
-    : draft.secondaryModelEffectiveProvider
+  const effectiveProvider =
+    role === 'major' ? draft.majorModelEffectiveProvider : draft.secondaryModelEffectiveProvider
   if (effectiveProvider === provider && effective?.trim()) {
     return { provider, model: effective.trim() }
   }
@@ -720,12 +801,15 @@ export function identicalRoleTargetWarning(draft: ProviderConfigDraft): string |
   const secondary = resolvedRoleTarget(draft, 'secondary')
   if (!major.provider || !secondary.provider || !major.model || !secondary.model) return null
   if (major.provider === secondary.provider && major.model === secondary.model) {
-    return IDENTICAL_ROLE_TARGET_WARNING
+    return translate('config.providers.identicalRoleTargetWarning')
   }
   return null
 }
 
-function mergeInventory(row: ProviderRowDraft, fresh: ProvidersConfigResponse['providers'][number]): ProviderRowDraft {
+function mergeInventory(
+  row: ProviderRowDraft,
+  fresh: ProvidersConfigResponse['providers'][number],
+): ProviderRowDraft {
   return {
     ...row,
     models: copyModels(fresh.models),
@@ -744,11 +828,13 @@ export function applyProviderInventory(
   providerId: string,
   response: ProvidersConfigResponse,
 ): ProviderConfigDraft {
-  const fresh = response.providers.find(provider => provider.name === providerId)
+  const fresh = response.providers.find((provider) => provider.name === providerId)
   if (!fresh) return draft
   return {
     ...draft,
-    providers: draft.providers.map(row => (row.name === providerId ? mergeInventory(row, fresh) : row)),
+    providers: draft.providers.map((row) =>
+      row.name === providerId ? mergeInventory(row, fresh) : row,
+    ),
   }
 }
 
@@ -787,23 +873,23 @@ export function markProviderRefreshing(
 ): ProviderConfigDraft {
   return {
     ...draft,
-    providers: draft.providers.map(row => (
+    providers: draft.providers.map((row) =>
       row.name === providerId
         ? { ...row, refreshing, lastRefreshError: refreshing ? null : row.lastRefreshError }
-        : row
-    )),
+        : row,
+    ),
   }
 }
 
 export function markProviderRefreshFailed(
   draft: ProviderConfigDraft,
   providerId: string,
-  message: string,
+  message: string | ConfigMessageDescriptor,
 ): ProviderConfigDraft {
   return {
     ...draft,
-    providers: draft.providers.map(row => (
-      row.name === providerId ? { ...row, refreshing: false, lastRefreshError: message } : row
-    )),
+    providers: draft.providers.map((row) =>
+      row.name === providerId ? { ...row, refreshing: false, lastRefreshError: message } : row,
+    ),
   }
 }

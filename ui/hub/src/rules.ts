@@ -1,3 +1,4 @@
+import { translate } from './i18n/index.ts'
 import type { SourceEntry } from '@openduck/sdk'
 
 export type RuleDraft = {
@@ -131,8 +132,8 @@ export function draftsEqual(a: RuleDraft, b: RuleDraft): boolean {
 
 export function validateRuleName(name: string): string | null {
   const trimmed = name.trim()
-  if (!trimmed) return 'Rule name is required.'
-  if (trimmed.length > 80) return 'Rule name must be at most 80 characters.'
-  if (/[\\/]/.test(trimmed)) return 'Rule name must not contain path separators.'
+  if (!trimmed) return translate('rules.helper.nameRequired')
+  if (trimmed.length > 80) return translate('rules.helper.nameTooLong')
+  if (/[\\/]/.test(trimmed)) return translate('rules.helper.namePathSeparators')
   return null
 }

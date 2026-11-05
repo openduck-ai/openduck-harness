@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { createApi, GitFileChange, GitLogResponse, GitShowResponse } from '@aaif/goose-hub-core'
 import {
@@ -40,6 +41,7 @@ function GitDiffView({
   truncated = false,
   showFileList = true,
 }: GitDiffViewProps) {
+  const { t } = useTranslation()
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
   const parsedFiles = useMemo(() => parseGitDiff(diff), [diff])
 
@@ -64,7 +66,7 @@ function GitDiffView({
           ))}
         </pre>
         {truncated && (
-          <div className="git-diff-truncated-note">Diff is truncated because it exceeds maximum display size.</div>
+          <div className="git-diff-truncated-note">{t('git.page.diffTruncated')}</div>
         )}
       </div>
     )
@@ -84,7 +86,7 @@ function GitDiffView({
           <div className="git-diff-files-header">
             <div className="git-diff-files-title">
               <FileText size={14} />
-              <span>Updated Files ({parsedFiles.length})</span>
+              <span>{t('git.page.updatedFiles', { count: parsedFiles.length })}</span>
             </div>
             <div className="git-diff-totals">
               {totalAdditions > 0 && <span className="stat-add">+{totalAdditions}</span>}
@@ -99,7 +101,7 @@ function GitDiffView({
                 className={`git-diff-all-files-btn ${selectedFilePath === null ? 'active' : ''}`}
                 onClick={() => setSelectedFilePath(null)}
               >
-                All files ({parsedFiles.length})
+                {t('git.page.allFiles', { count: parsedFiles.length })}
               </button>
             )}
             {parsedFiles.map(file => {
@@ -155,11 +157,13 @@ function GitDiffView({
       </div>
 
       {truncated && (
-        <div className="git-diff-truncated-note">Diff is truncated because it exceeds maximum display size.</div>
+        <div className="git-diff-truncated-note">{t('git.page.diffTruncated')}</div>
       )}
     </div>
   )
 }
+
+type GitError = { kind: 'raw'; message: string } | { kind: 'fallback'; key: string }
 
 interface ProjectGitProps {
   api: ReturnType<typeof createApi>
@@ -184,6 +188,7 @@ function statusClass(file: GitFileChange): string {
 }
 
 export function ProjectGit({ api, slug }: ProjectGitProps) {
+  const { t } = useTranslation()
   const [status, setStatus] = useState<Awaited<ReturnType<typeof api.getGitStatus>> | null>(null)
   const [history, setHistory] = useState<GitLogResponse | null>(null)
   const [selectedSha, setSelectedSha] = useState<string | null>(null)
@@ -197,12 +202,12 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
   const [loading, setLoading] = useState(false)
   const [mutating, setMutating] = useState(false)
   const [generating, setGenerating] = useState(false)
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+  const [error, setError] = useState<GitError | null>(null)
+  const [notice, setNotice] = useState<{ sha: string; subject: string } | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
-    setError('')
+    setError(null)
     try {
       const [nextStatus, nextLog] = await Promise.all([
         api.getGitStatus(slug),
@@ -217,7 +222,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     } catch (cause) {
       setStatus(null)
       setHistory(null)
-      setError(cause instanceof Error ? cause.message : 'Unable to load git data')
+      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'git.page.loadFailed' })
     } finally {
       setLoading(false)
     }
@@ -266,7 +271,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
       .catch(cause => {
         if (cancelled) return
         setDiff('')
-        setError(cause instanceof Error ? cause.message : 'Unable to load diff')
+        setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'git.page.diffFailed' })
       })
     return () => {
       cancelled = true
@@ -287,7 +292,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
       })
       .catch(cause => {
         if (cancelled) return
-        setError(cause instanceof Error ? cause.message : 'Unable to load commit')
+        setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'git.page.commitFailed' })
       })
     return () => {
       cancelled = true
@@ -310,13 +315,13 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
   const runMutation = async (work: () => Promise<unknown>) => {
     if (mutating) return
     setMutating(true)
-    setError('')
-    setNotice('')
+    setError(null)
+    setNotice(null)
     try {
       await work()
       await load()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Git operation failed')
+      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'git.page.operationFailed' })
     } finally {
       setMutating(false)
     }
@@ -341,7 +346,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     if (targetPaths.length === 0) return
     if (
       !confirm(
-        `Discard local changes in ${targetPaths.length} file${targetPaths.length === 1 ? '' : 's'}? This cannot be undone.`,
+        t(targetPaths.length === 1 ? 'git.page.discardConfirm_one' : 'git.page.discardConfirm_other', { count: targetPaths.length }),
       )
     ) {
       return
@@ -351,13 +356,13 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
 
   const generateMessage = async () => {
     setGenerating(true)
-    setError('')
+    setError(null)
     try {
       const result = await api.generateGitCommitMessage(slug, targetPaths)
       setMessage(result.message)
       setMessageSource(result.source)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to generate commit message')
+      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'git.page.generateFailed' })
     } finally {
       setGenerating(false)
     }
@@ -369,13 +374,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
       const result = await api.commitGitChanges(slug, message, targetPaths)
       const sha = result.sha.trim()
       const subject = result.subject.trim()
-      setNotice(
-        sha
-          ? `Committed ${sha.slice(0, 7)}${subject ? ` — ${subject}` : ''}`
-          : subject
-            ? `Committed — ${subject}`
-            : 'Committed successfully',
-      )
+      setNotice({ sha: sha.slice(0, 7), subject })
       setMessage('')
       setMessageSource('')
       setSelectedSha(null)
@@ -386,17 +385,17 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
   if (error && !status && !history) {
     return (
       <div className="panel git-panel">
-        <p className="error">{error}</p>
+        <p className="error">{error.kind === 'raw' ? error.message : t(error.key)}</p>
         <button type="button" className="secondary mini-btn" onClick={() => void load()}>
-          Retry
+          {t('git.page.retry')}
         </button>
       </div>
     )
   }
 
   const branchLabel = status?.detached
-    ? 'detached HEAD'
-    : status?.branch ?? history?.branch ?? 'unknown'
+    ? t('git.page.detachedHead')
+    : status?.branch ?? history?.branch ?? t('git.page.unknownBranch')
   const dirtyCount = files.length
 
   return (
@@ -414,7 +413,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
             <span className="git-sync-chip behind">↓ {status.behind}</span>
           )}
           <span className={`git-status-tag ${dirtyCount > 0 ? 'dirty' : 'clean'}`}>
-            {dirtyCount > 0 ? `${dirtyCount} changed` : 'Clean'}
+            {dirtyCount > 0 ? t('git.page.changedCount', { count: dirtyCount }) : t('git.page.clean')}
           </span>
         </div>
         <button
@@ -424,12 +423,16 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
           disabled={loading || mutating}
         >
           <RefreshCw size={13} />
-          Refresh
+          {t('git.page.refresh')}
         </button>
       </div>
 
-      {error && <p className="error">{error}</p>}
-      {notice && <p className="git-notice">{notice}</p>}
+      {error && <p className="error">{error.kind === 'raw' ? error.message : t(error.key)}</p>}
+      {notice && <p className="git-notice">{notice.sha
+        ? t('git.page.committedSha', { sha: notice.sha, subject: notice.subject ? ` — ${notice.subject}` : '' })
+        : notice.subject
+          ? t('git.page.committedSubject', { subject: notice.subject })
+          : t('git.page.committedSuccessfully')}</p>}
 
       <div className="git-body">
         <div className="git-history-pane">
@@ -438,11 +441,11 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
             className={`git-working-tree ${selectedSha === null ? 'selected' : ''}`}
             onClick={() => setSelectedSha(null)}
           >
-            Working tree
-            <small>{dirtyCount > 0 ? `${dirtyCount} changes` : 'No local changes'}</small>
+            {t('git.page.workingTree')}
+            <small>{dirtyCount > 0 ? t('git.page.changesCount', { count: dirtyCount }) : t('git.page.noLocalChanges')}</small>
           </button>
           {loading && !history ? (
-            <p className="muted">Loading history…</p>
+            <p className="muted">{t('git.page.loadingHistory')}</p>
           ) : (
             <GitGraph
               commits={history?.commits ?? []}
@@ -451,7 +454,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
             />
           )}
           {history?.truncated && (
-            <p className="muted git-truncated">Showing the most recent 150 commits.</p>
+            <p className="muted git-truncated">{t('git.page.recentCommits')}</p>
           )}
         </div>
 
@@ -471,19 +474,19 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                 diff={show.diff}
                 truncated={show.truncated}
                 showFileList={true}
-                empty="No diff for this commit."
+                empty={t('git.page.noCommitDiff')}
               />
             </div>
           ) : (
             <>
               <div className="git-changes-header">
-                <h3>Changes</h3>
+                <h3>{t('git.page.changes')}</h3>
                 <div className="git-changes-actions">
                   <button type="button" className="secondary mini-btn" onClick={selectAll} disabled={files.length === 0}>
-                    Select all
+                    {t('git.page.selectAll')}
                   </button>
                   <button type="button" className="secondary mini-btn" onClick={selectNone} disabled={selectedPaths.size === 0}>
-                    Clear
+                    {t('git.page.clear')}
                   </button>
                   <button
                     type="button"
@@ -492,7 +495,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                     disabled={mutating || targetPaths.length === 0}
                   >
                     <Plus size={13} />
-                    Stage
+                    {t('git.page.stage')}
                   </button>
                   <button
                     type="button"
@@ -501,7 +504,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                     disabled={mutating || targetPaths.length === 0}
                   >
                     <Minus size={13} />
-                    Unstage
+                    {t('git.page.unstage')}
                   </button>
                   <button
                     type="button"
@@ -510,13 +513,13 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                     disabled={mutating || targetPaths.length === 0}
                   >
                     <RotateCcw size={13} />
-                    Discard
+                    {t('git.page.discard')}
                   </button>
                 </div>
               </div>
 
               {files.length === 0 ? (
-                <p className="muted">Working tree is clean.</p>
+                <p className="muted">{t('git.page.cleanTree')}</p>
               ) : (
                 <ul className="git-file-list">
                   {files.map(file => (
@@ -546,8 +549,8 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                           {file.path}
                           {file.originalPath ? ` ← ${file.originalPath}` : ''}
                         </span>
-                        {file.staged && <span className="git-staged-tag">staged</span>}
-                        {file.untracked && <span className="git-untracked-tag">untracked</span>}
+                        {file.staged && <span className="git-staged-tag">{t('git.page.staged')}</span>}
+                        {file.untracked && <span className="git-untracked-tag">{t('git.page.untracked')}</span>}
                       </div>
                     </li>
                   ))}
@@ -560,14 +563,14 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                 showFileList={false}
                 empty={
                   activePath
-                    ? 'No textual diff for this file.'
-                    : 'Select a file to view its diff.'
+                    ? t('git.page.noFileDiff')
+                    : t('git.page.selectFile')
                 }
               />
 
               <div className="git-commit-composer">
                 <div className="git-commit-composer-header">
-                  <h3>Commit</h3>
+                  <h3>{t('git.page.commit')}</h3>
                   <button
                     type="button"
                     className="secondary mini-btn"
@@ -575,12 +578,12 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                     disabled={generating || files.length === 0}
                   >
                     <Sparkles size={13} />
-                    {generating ? 'Generating…' : 'Generate message'}
+                    {generating ? t('git.page.generating') : t('git.page.generateMessage')}
                   </button>
                 </div>
                 <textarea
                   className="git-commit-input"
-                  placeholder="Commit message"
+                  placeholder={t('git.page.commitMessage')}
                   value={message}
                   onChange={event => {
                     setMessage(event.target.value)
@@ -591,8 +594,8 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                 {messageSource && (
                   <small className="muted">
                     {messageSource === 'model'
-                      ? 'Generated from the configured model.'
-                      : 'Suggested from changed file names.'}
+                      ? t('git.page.generatedFromModel')
+                      : t('git.page.suggestedFromFiles')}
                   </small>
                 )}
                 <button
@@ -602,7 +605,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                   disabled={mutating || !canCommit}
                 >
                   <Check size={13} />
-                  {mutating ? 'Committing…' : targetPaths.length > 0 ? `Commit ${targetPaths.length} file${targetPaths.length === 1 ? '' : 's'}` : 'Commit staged files'}
+                  {mutating ? t('git.page.committing') : targetPaths.length > 0 ? t(targetPaths.length === 1 ? 'git.page.commitFiles_one' : 'git.page.commitFiles_other', { count: targetPaths.length }) : t('git.page.commitStaged')}
                 </button>
               </div>
             </>

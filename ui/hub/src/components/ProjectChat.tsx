@@ -1,3 +1,4 @@
+import { Trans, useTranslation } from 'react-i18next'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import type { FormEvent } from 'react'
 import {
@@ -71,6 +72,7 @@ export function ProjectChat({
   selectedSessionId,
   currentProviderModel,
 }: ProjectChatProps) {
+  const { t, i18n } = useTranslation()
   const [prompt, setPrompt] = useState('')
   const [copiedSessionId, setCopiedSessionId] = useState(false)
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({})
@@ -86,6 +88,7 @@ export function ProjectChat({
     taskName: string
     status: 'running' | 'success' | 'error'
     message?: string
+    messageKey?: string
   } | null>(null)
 
   const [mentionItems, setMentionItems] = useState<MentionDisplayItem[]>([])
@@ -161,7 +164,7 @@ export function ProjectChat({
     } finally {
       setLoadingMentions(false)
     }
-  }, [api, baseUrl, secret, detail.project.slug, detail.project.path, session.sessionId])
+  }, [api, baseUrl, secret, detail.project.slug, detail.project.path, session.sessionId, i18n.language])
 
   useEffect(() => {
     void loadMentionSources()
@@ -393,10 +396,10 @@ export function ProjectChat({
   }, [api, baseUrl, secret, detail.project.slug, detail.recents])
 
   const suggestedPrompts = [
-    'Explain the structure and main modules of this project',
-    'Check if there are any lint or typecheck errors',
-    'Review recent changes and suggest next steps',
-    'Run the project tests and report results',
+    t('chat.page.suggestStructure'),
+    t('chat.page.suggestLint'),
+    t('chat.page.suggestReview'),
+    t('chat.page.suggestTests'),
   ]
 
   return (
@@ -412,7 +415,7 @@ export function ProjectChat({
           {currentProviderModel && (currentProviderModel.provider || currentProviderModel.model) && (
             <div
               className="chat-model-badge"
-              title={`Active Model: ${currentProviderModel.provider} / ${currentProviderModel.model}`}
+              title={t('chat.page.activeModel', { provider: currentProviderModel.provider, model: currentProviderModel.model })}
             >
               <Cpu size={12} className="chat-model-icon" />
               <span className="chat-model-provider">{currentProviderModel.provider}</span>
@@ -426,9 +429,9 @@ export function ProjectChat({
               type="button"
               className="session-id-pill"
               onClick={copySessionId}
-              title={`Click to copy full Session ID: ${session.sessionId}`}
+              title={t('chat.page.copySessionId', { id: session.sessionId })}
             >
-              <span className="session-id-label">SID:</span>
+              <span className="session-id-label">{t('chat.page.sessionId')}</span>
               <code>{session.sessionId.slice(0, 8)}</code>
               {copiedSessionId ? (
                 <Check size={12} className="text-success" />
@@ -451,10 +454,10 @@ export function ProjectChat({
                     void session.loadSession(e.target.value)
                   }
                 }}
-                title="Switch to a recent session"
+                title={t('chat.page.recentSession')}
               >
                 <option value="" disabled>
-                  History ({recents.length})…
+                  {t('chat.page.history', { count: recents.length })}
                 </option>
                 {recents.map(r => (
                   <option key={r.id} value={r.id}>
@@ -470,24 +473,24 @@ export function ProjectChat({
             type="button"
             className={`secondary mini-btn chat-tasks-btn ${showTasksDrawer ? 'active' : ''}`}
             onClick={() => setShowTasksDrawer(prev => !prev)}
-            title="View, create, edit, and start project tasks"
+            title={t('chat.page.tasksTitle')}
           >
             <ListTodo size={13} />
-            <span>Tasks</span>
+            <span>{t('chat.page.tasks')}</span>
             <span className="tasks-count-pill">{projectTasks.length}</span>
             {projectTasks.some(t => t.currentlyRunning) && (
-              <span className="task-running-pulse-dot" title="A task is currently running" />
+              <span className="task-running-pulse-dot" title={t('chat.page.taskRunning')} />
             )}
           </button>
 
           <button
             type="button"
             className="secondary mini-btn new-chat-btn"
-            title="Start new conversation"
+            title={t('chat.page.newConversation')}
             onClick={() => void session.reset(true)}
           >
             <Plus size={13} />
-            <span>New Chat</span>
+            <span>{t('chat.page.newChat')}</span>
           </button>
         </div>
       </div>
@@ -505,14 +508,16 @@ export function ProjectChat({
             <AlertCircle size={14} className="text-danger" />
           )}
           <span className="task-banner-text">
-            <strong>Task "{activeTaskNotification.taskName}":</strong>{' '}
-            {activeTaskNotification.message || (activeTaskNotification.status === 'running' ? 'Running…' : 'Finished')}
+            <strong>{t('chat.page.taskBanner', { name: activeTaskNotification.taskName })}</strong>{' '}
+            {activeTaskNotification.message || (activeTaskNotification.messageKey
+              ? t(activeTaskNotification.messageKey)
+              : activeTaskNotification.status === 'running' ? t('chat.page.running') : t('chat.page.finished'))}
           </span>
           <button
             type="button"
             className="banner-close-btn"
             onClick={() => setActiveTaskNotification(null)}
-            title="Dismiss notification"
+            title={t('chat.page.dismiss')}
           >
             ✕
           </button>
@@ -526,9 +531,9 @@ export function ProjectChat({
             <div className="welcome-icon-box">
               <Sparkles size={32} />
             </div>
-            <h3>OpenDuck Agent Workspace</h3>
+            <h3>{t('chat.page.workspace')}</h3>
             <p className="muted">
-              I have full access to tools and files in <code>{detail.project.path}</code>. How can I help you today?
+              <Trans t={t} i18nKey="chat.page.welcome" values={{ path: detail.project.path }} components={{ code: <code /> }} />
             </p>
 
             <div className="suggested-prompts-grid">
@@ -561,10 +566,10 @@ export function ProjectChat({
 
               <div className="message-content-box">
                 <div className="message-meta-header">
-                  <span className="author-name">{isUser ? 'You' : 'OpenDuck Agent'}</span>
+                  <span className="author-name">{isUser ? t('chat.page.you') : t('chat.page.agent')}</span>
                   {message.streaming && (
                     <span className="streaming-badge">
-                      <span className="stream-dot" /> Streaming
+                      <span className="stream-dot" />{' '}{t('chat.page.streaming')}
                     </span>
                   )}
                 </div>
@@ -580,7 +585,7 @@ export function ProjectChat({
                   <div className="tool-calls-container">
                     <div className="tool-calls-title">
                       <Wrench size={13} />
-                      <span>Executed Tools ({message.toolCalls.length})</span>
+                      <span>{t('chat.page.executedTools', { count: message.toolCalls.length })}</span>
                     </div>
 
                     <div className="tool-calls-list">
@@ -621,12 +626,12 @@ export function ProjectChat({
                             {isExpanded && (
                               <div className="tool-call-body">
                                 <div className="tool-detail-item">
-                                  <span className="tool-label">Tool ID:</span>
+                                  <span className="tool-label">{t('chat.page.toolId')}</span>
                                   <code>{tool.toolCallId}</code>
                                 </div>
                                 {tool.kind && (
                                   <div className="tool-detail-item">
-                                    <span className="tool-label">Kind:</span>
+                                    <span className="tool-label">{t('chat.page.kind')}</span>
                                     <span>{tool.kind}</span>
                                   </div>
                                 )}
@@ -653,10 +658,10 @@ export function ProjectChat({
                 type="button"
                 className="stop-mini-btn"
                 onClick={() => void session.cancelPrompt()}
-                title="Stop generating (Escape)"
+                title={t('chat.page.stopTitle')}
               >
                 <Square size={11} />
-                <span>Stop</span>
+                <span>{t('chat.page.stop')}</span>
               </button>
             )}
           </div>
@@ -676,10 +681,9 @@ export function ProjectChat({
             <div className="permission-header">
               <ShieldAlert size={18} className="permission-alert-icon" />
               <div>
-                <h4>Permission Required</h4>
+                <h4>{t('chat.page.permission')}</h4>
                 <p>
-                  The agent requests execution permission for{' '}
-                  <strong>{toolTitleFromPermission(session.pendingPermission.request)}</strong> on your host machine.
+                  <Trans t={t} i18nKey="chat.page.permissionHint" values={{ tool: toolTitleFromPermission(session.pendingPermission.request) }} components={{ strong: <strong /> }} />
                 </p>
               </div>
             </div>
@@ -690,21 +694,21 @@ export function ProjectChat({
                 className="btn-primary mini-btn"
                 onClick={() => session.resolvePermission('allow_once')}
               >
-                Allow Once
+                {t('chat.page.allowOnce')}
               </button>
               <button
                 type="button"
                 className="secondary mini-btn"
                 onClick={() => session.resolvePermission('always_allow')}
               >
-                Always Allow for Session
+                {t('chat.page.allowSession')}
               </button>
               <button
                 type="button"
                 className="danger mini-btn"
                 onClick={() => session.resolvePermission('deny_once')}
               >
-                Deny
+                {t('chat.page.deny')}
               </button>
             </div>
           </div>
@@ -757,7 +761,7 @@ export function ProjectChat({
               const cursorPos = e.currentTarget.selectionStart ?? prompt.length
               debouncedCursorMentionUpdate(prompt, cursorPos)
             }}
-            placeholder="Ask your agent or instruct a task (type @ to mention files, rules, agents; Enter to send)…"
+            placeholder={t('chat.page.promptPlaceholder')}
             onKeyDown={handleKeyDown}
             className="chat-textarea"
           />
@@ -765,25 +769,25 @@ export function ProjectChat({
           <div className="chat-input-controls">
             <span className="keyboard-hint">
               {session.isPrompting
-                ? 'Press Escape to stop'
-                : 'Type @ to mention · Shift + Enter for new line'}
+                ? t('chat.page.escapeHint')
+                : t('chat.page.keyboardHint')}
             </span>
             {session.isPrompting ? (
               <button
                 type="button"
                 className="stop-button"
                 onClick={() => void session.cancelPrompt()}
-                title="Stop generating (Escape)"
+                title={t('chat.page.stopTitle')}
               >
                 <Square size={14} className="stop-icon" />
-                <span>Stop</span>
+                <span>{t('chat.page.stop')}</span>
               </button>
             ) : (
               <button
                 type="submit"
                 className="send-button"
                 disabled={!prompt.trim()}
-                title="Send prompt (Enter)"
+                title={t('chat.page.sendTitle')}
               >
                 <Send size={16} />
               </button>
@@ -810,7 +814,7 @@ export function ProjectChat({
             taskId,
             taskName,
             status: 'running',
-            message: 'Task execution started...',
+            messageKey: 'chat.page.taskStarted',
           })
           runPromise
             .then(() => {
@@ -818,7 +822,7 @@ export function ProjectChat({
                 taskId,
                 taskName,
                 status: 'success',
-                message: 'Task completed successfully!',
+                messageKey: 'chat.page.taskCompleted',
               })
               void loadTasks()
             })
@@ -827,7 +831,7 @@ export function ProjectChat({
                 taskId,
                 taskName,
                 status: 'error',
-                message: err instanceof Error ? err.message : 'Task execution failed',
+                ...(err instanceof Error ? { message: err.message } : { messageKey: 'chat.page.taskFailed' }),
               })
             })
         }}

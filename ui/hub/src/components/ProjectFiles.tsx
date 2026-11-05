@@ -2,7 +2,9 @@ import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import type { FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import type { createApi, ProjectFileEntry } from '@aaif/goose-hub-core'
+import { useTranslation } from 'react-i18next'
 import { Eye, Maximize2, Minimize2, Pencil } from 'lucide-react'
+import { formatDate, formatNumber } from '../i18n/format.ts'
 import { isMarkdownPath } from '../markdown'
 import { isImagePath, resolveProjectAssetPath } from '../pathUtils'
 import { formatSelectionExtraPrompt } from '../dynamicPrompt.ts'
@@ -29,9 +31,11 @@ const MarkdownPreview = lazy(() =>
 function formatBytes(bytes?: number): string {
   if (bytes === undefined || bytes === null) return ''
   if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`
+  return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`
 }
+
+type ErrorText = { kind: 'raw'; message: string } | { kind: 'fallback'; key: string }
 
 interface ProjectFilesProps {
   api: ReturnType<typeof createApi>
@@ -40,12 +44,13 @@ interface ProjectFilesProps {
 }
 
 export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
+  const { t } = useTranslation()
   const [currentPath, setCurrentPath] = useState('')
   const [parentPath, setParentPath] = useState<string | null>(null)
   const [entries, setEntries] = useState<ProjectFileEntry[]>([])
   const [filter, setFilter] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<ErrorText | null>(null)
 
   // Editor states
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -150,7 +155,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
         originalContentRef.current = res.content
         setFileContent(res.content)
         setOriginalContent(res.content)
-        flashStatus(force ? 'Reloaded from disk' : 'Updated from disk')
+        flashStatus(force ? t('files.page.reloadedFromDisk') : t('files.page.updatedFromDisk'))
       }
       const sizeChanged = res.size !== fileSizeRef.current
       fileSizeRef.current = res.size
@@ -161,7 +166,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
         setPreviewRevision(revision => revision + 1)
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to read file')
+      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'files.page.errorRead' })
     }
   }
 
@@ -190,7 +195,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
       setCurrentPath(visible.currentPath)
       setParentPath(visible.parentPath ?? null)
       setEntries(visible.entries)
-      setError('')
+      setError(null)
     }
 
     if (!syncOpenFile) return
@@ -218,14 +223,14 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
   const loadDirectory = async (path: string) => {
     const generation = ++loadGeneration.current
     setLoading(true)
-    setError('')
+    setError(null)
     try {
       const res = await api.listFiles(slug, path)
       if (generation !== loadGeneration.current) return
       ingestSnapshots(res, [], true)
     } catch (cause) {
       if (generation !== loadGeneration.current) return
-      setError(cause instanceof Error ? cause.message : 'Unable to list files')
+      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'files.page.errorList' })
     } finally {
       if (generation === loadGeneration.current) setLoading(false)
     }
@@ -315,7 +320,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
     wasMissingRef.current = false
     setDiskNotice(null)
     setLoading(true)
-    setError('')
+    setError(null)
     setSaveStatus('')
     try {
       const res = await api.readFile(slug, entry.path)
@@ -334,7 +339,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
       setViewMode(!res.isBinary && isMarkdownPath(res.path) ? 'preview' : 'edit')
     } catch (cause) {
       if (suspendOpenFileSyncRef.current !== syncToken) return
-      setError(cause instanceof Error ? cause.message : 'Unable to read file')
+      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'files.page.errorRead' })
     } finally {
       if (suspendOpenFileSyncRef.current === syncToken) setLoading(false)
     }
@@ -350,9 +355,9 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
       setOriginalContent(fileContent)
       originalContentRef.current = fileContent
       setDiskNotice(null)
-      flashStatus('Saved successfully!', 3000)
+      flashStatus(t('files.page.savedSuccessfully'), 3000)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to save file')
+      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'files.page.errorSave' })
     } finally {
       mutatingRef.current = false
       setSaving(false)
@@ -370,7 +375,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
       setCreateName('')
       await loadDirectory(currentPath)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to create')
+      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'files.page.errorCreate' })
     } finally {
       mutatingRef.current = false
     }
@@ -392,14 +397,14 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
       }
       await loadDirectory(currentPath)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to rename')
+      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'files.page.errorRename' })
     } finally {
       mutatingRef.current = false
     }
   }
 
   const handleDelete = async (entry: ProjectFileEntry) => {
-    if (!confirm(`Are you sure you want to delete "${entry.name}"?`)) return
+    if (!confirm(t('files.page.confirmDelete', { name: entry.name }))) return
     mutatingRef.current = true
     try {
       await api.deleteFile(slug, entry.path)
@@ -411,7 +416,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
       }
       await loadDirectory(currentPath)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to delete')
+      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'files.page.errorDelete' })
     } finally {
       mutatingRef.current = false
     }
@@ -491,20 +496,20 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
       className={`file-editor-pane ${isFullscreen ? 'is-fullscreen' : ''}`}
       role={isFullscreen ? 'dialog' : undefined}
       aria-modal={isFullscreen ? true : undefined}
-      aria-label={isFullscreen ? `Fullscreen ${showMarkdownPreview ? 'preview' : 'editor'}` : undefined}
+      aria-label={isFullscreen ? (showMarkdownPreview ? t('files.page.fullscreenPreview') : t('files.page.fullscreenEditor')) : undefined}
     >
       <div className="editor-header">
         <div className="editor-title">
           <strong>{selectedFile.split('/').pop()}</strong>
           <small className="muted">{selectedFile}</small>
-          {isMarkdown && !isBinary && <span className="file-kind-badge">Markdown</span>}
-          {isImage && <span className="file-kind-badge">Image</span>}
-          {isDirty && <span className="dirty-badge">● Modified</span>}
+          {isMarkdown && !isBinary && <span className="file-kind-badge">{t('files.page.badgeMarkdown')}</span>}
+          {isImage && <span className="file-kind-badge">{t('files.page.badgeImage')}</span>}
+          {isDirty && <span className="dirty-badge">{t('files.page.badgeModified')}</span>}
           {saveStatus && <span className="save-status">{saveStatus}</span>}
         </div>
         <div className="editor-actions">
           {isMarkdown && !isBinary && (
-            <div className="view-mode-toggle" role="group" aria-label="File view mode">
+            <div className="view-mode-toggle" role="group" aria-label={t('files.page.viewModeAria')}>
               <button
                 type="button"
                 className={viewMode === 'preview' ? 'active' : ''}
@@ -512,7 +517,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
                 onClick={() => setViewMode('preview')}
               >
                 <Eye size={13} />
-                Preview
+                {t('files.page.previewTab')}
               </button>
               <button
                 type="button"
@@ -521,7 +526,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
                 onClick={() => setViewMode('edit')}
               >
                 <Pencil size={13} />
-                Edit
+                {t('files.page.editTab')}
               </button>
             </div>
           )}
@@ -531,7 +536,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
             disabled={!isDirty || saving}
             onClick={() => setFileContent(originalContent)}
           >
-            Discard
+            {t('files.page.discard')}
           </button>
           <button
             type="button"
@@ -539,14 +544,14 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
             disabled={!isDirty || saving || isBinary}
             onClick={() => void saveFile()}
           >
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? t('files.page.saving') : t('files.page.save')}
           </button>
           {((isMarkdown && !isBinary) || isImage) && (
             <button
               type="button"
               className="icon-btn"
-              title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Preview fullscreen'}
-              aria-label={isFullscreen ? 'Exit fullscreen' : 'Preview fullscreen'}
+              title={isFullscreen ? t('files.page.exitFullscreen') : t('files.page.previewFullscreen')}
+              aria-label={isFullscreen ? t('files.page.exitFullscreenAria') : t('files.page.previewFullscreen')}
               onClick={() => {
                 if (isFullscreen) {
                   setIsFullscreen(false)
@@ -562,7 +567,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
           <button
             type="button"
             className="icon-btn"
-            title="Close file viewer"
+            title={t('files.page.closeViewerTitle')}
             onClick={closeFile}
           >
             ×
@@ -574,23 +579,23 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
         <div className="disk-notice" role="status">
           <span>
             {diskNotice === 'missing'
-              ? 'This file was removed from the project.'
-              : 'This file changed on disk.'}
+              ? t('files.page.fileRemovedNotice')
+              : t('files.page.fileChangedNotice')}
           </span>
           <div className="disk-notice-actions">
             {diskNotice === 'modified' && (
               <>
                 <button type="button" className="mini-btn" onClick={() => void reloadFromDisk()}>
-                  Reload
+                  {t('files.page.reload')}
                 </button>
                 <button type="button" className="secondary mini-btn" onClick={keepLocalEdits}>
-                  Keep mine
+                  {t('files.page.keepMine')}
                 </button>
               </>
             )}
             {diskNotice === 'missing' && (
               <button type="button" className="secondary mini-btn" onClick={closeFile}>
-                Close
+                {t('files.page.closeNotice')}
               </button>
             )}
           </div>
@@ -607,7 +612,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
         </div>
       ) : isBinary ? (
         <div className="binary-notice">
-          <p>Binary file ({formatBytes(fileSize)}). Editing is disabled.</p>
+          <p>{t('files.page.binaryNotice', { size: formatBytes(fileSize) })}</p>
         </div>
       ) : (
         <div ref={reviewRef} className="file-review-surface">
@@ -615,7 +620,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
             <Suspense
               fallback={
                 <div className="markdown-preview markdown-preview-empty">
-                  <p className="muted">Loading preview…</p>
+                  <p className="muted">{t('files.page.loadingPreview')}</p>
                 </div>
               }
             >
@@ -678,7 +683,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
         <div className="files-actions">
           <input
             className="filter-input"
-            placeholder="Filter files in directory…"
+            placeholder={t('files.page.filterPlaceholder')}
             value={filter}
             onChange={e => setFilter(e.target.value)}
           />
@@ -690,7 +695,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
               setCreateName('')
             }}
           >
-            ＋ File
+            {t('files.page.newFileBtn')}
           </button>
           <button
             type="button"
@@ -700,24 +705,24 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
               setCreateName('')
             }}
           >
-            ＋ Folder
+            {t('files.page.newFolderBtn')}
           </button>
           <button
             type="button"
             className="secondary mini-btn"
             onClick={() => void loadDirectory(currentPath)}
-            title="Refresh directory"
+            title={t('files.page.refreshDirectoryTitle')}
           >
             🔄
           </button>
         </div>
       </div>
 
-      {error && <p className="error">{error}</p>}
+      {error && <p className="error">{error.kind === 'raw' ? error.message : t(error.key)}</p>}
 
       {createKind && (
         <form className="inline-modal" onSubmit={handleCreate}>
-          <span>New {createKind === 'dir' ? 'folder' : 'file'}:</span>
+          <span>{createKind === 'dir' ? t('files.page.newFolder') : t('files.page.newFile')}</span>
           <input
             autoFocus
             required
@@ -725,40 +730,40 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
             value={createName}
             onChange={e => setCreateName(e.target.value)}
           />
-          <button type="submit">Create</button>
+          <button type="submit">{t('files.page.create')}</button>
           <button type="button" className="secondary" onClick={() => setCreateKind(null)}>
-            Cancel
+            {t('files.page.cancel')}
           </button>
         </form>
       )}
 
       {renamingEntry && (
         <form className="inline-modal" onSubmit={handleRename}>
-          <span>Rename "{renamingEntry.name}" to:</span>
+          <span>{t('files.page.renamePrompt', { name: renamingEntry.name })}</span>
           <input
             autoFocus
             required
             value={renameTarget}
             onChange={e => setRenameTarget(e.target.value)}
           />
-          <button type="submit">Rename</button>
+          <button type="submit">{t('files.page.rename')}</button>
           <button type="button" className="secondary" onClick={() => setRenamingEntry(null)}>
-            Cancel
+            {t('files.page.cancel')}
           </button>
         </form>
       )}
 
       <div className="files-body">
         <div className="file-list-pane">
-          {loading && entries.length === 0 && <p className="muted p-2">Loading directory contents…</p>}
+          {loading && entries.length === 0 && <p className="muted p-2">{t('files.page.loadingContents')}</p>}
 
           <table className="files-table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Size</th>
-                <th>Modified</th>
-                <th className="text-right">Actions</th>
+                <th>{t('files.page.colName')}</th>
+                <th>{t('files.page.colSize')}</th>
+                <th>{t('files.page.colModified')}</th>
+                <th className="text-right">{t('files.page.colActions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -768,7 +773,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
                   onClick={() => void loadDirectory(parentPath)}
                 >
                   <td colSpan={4}>
-                    <span className="file-icon">📁</span> <strong>.. (Parent Directory)</strong>
+                    <span className="file-icon">📁</span> <strong>{t('files.page.parentDirectory')}</strong>
                   </td>
                 </tr>
               )}
@@ -795,13 +800,13 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
                     </td>
                     <td className="muted">{entry.size !== undefined ? formatBytes(entry.size) : '—'}</td>
                     <td className="muted">
-                      {entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleDateString() : '—'}
+                      {entry.modifiedAt ? formatDate(entry.modifiedAt) : '—'}
                     </td>
                     <td className="text-right">
                       <button
                         type="button"
                         className="icon-btn"
-                        title="Rename"
+                        title={t('files.page.renameTitle')}
                         onClick={e => {
                           e.stopPropagation()
                           setRenamingEntry(entry)
@@ -813,7 +818,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
                       <button
                         type="button"
                         className="icon-btn danger-icon"
-                        title="Delete"
+                        title={t('files.page.deleteTitle')}
                         onClick={e => {
                           e.stopPropagation()
                           void handleDelete(entry)
@@ -828,7 +833,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
               {!loading && filteredEntries.length === 0 && (
                 <tr>
                   <td colSpan={4} className="muted text-center p-3">
-                    {filter ? 'No matching files found.' : 'Directory is empty.'}
+                    {filter ? t('files.page.noMatchingFiles') : t('files.page.directoryEmpty')}
                   </td>
                 </tr>
               )}

@@ -1,3 +1,4 @@
+import { Trans, useTranslation } from 'react-i18next'
 import { useState, useEffect } from 'react'
 import { Mail, Check, AlertCircle } from 'lucide-react'
 import type { ProjectDetail, createApi } from '@aaif/goose-hub-core'
@@ -17,9 +18,10 @@ export function ProjectSettings({
   onDelete,
   onReload,
 }: ProjectSettingsProps) {
+  const { t } = useTranslation()
   const [archiving, setArchiving] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<{ message: string } | { key: string } | null>(null)
   const [emailInput, setEmailInput] = useState('')
   const [savingEmail, setSavingEmail] = useState(false)
   const [emailSavedSuccess, setEmailSavedSuccess] = useState(false)
@@ -30,7 +32,7 @@ export function ProjectSettings({
 
   const handleSaveEmailRecipients = async () => {
     setSavingEmail(true)
-    setError('')
+    setError(null)
     setEmailSavedSuccess(false)
     try {
       const list = emailInput
@@ -42,7 +44,7 @@ export function ProjectSettings({
       onReload()
       setTimeout(() => setEmailSavedSuccess(false), 3500)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to update email recipients')
+      setError(cause instanceof Error ? { message: cause.message } : { key: 'projectSettings.page.emailFailed' })
     } finally {
       setSavingEmail(false)
     }
@@ -50,11 +52,11 @@ export function ProjectSettings({
 
   const handleArchiveToggle = async () => {
     setArchiving(true)
-    setError('')
+    setError(null)
     try {
       await onArchive()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to change archive status')
+      setError(cause instanceof Error ? { message: cause.message } : { key: 'projectSettings.page.archiveFailed' })
     } finally {
       setArchiving(false)
     }
@@ -63,21 +65,23 @@ export function ProjectSettings({
   const handleDelete = async () => {
     if (
       !confirm(
-        `Are you sure you want to completely unregister project "${detail.project.title || detail.project.slug}"? This does NOT delete files on disk.`,
+        t('projectSettings.page.confirmUnregister', { name: detail.project.title || detail.project.slug }),
       )
     ) {
       return
     }
     setDeleting(true)
-    setError('')
+    setError(null)
     try {
       await onDelete()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to delete project')
+      setError(cause instanceof Error ? { message: cause.message } : { key: 'projectSettings.page.deleteFailed' })
     } finally {
       setDeleting(false)
     }
   }
+
+  const errorMessage = error ? ('message' in error ? error.message : t(error.key)) : ''
 
   return (
     <div className="project-settings-container">
@@ -85,10 +89,10 @@ export function ProjectSettings({
       <div className="panel form-panel">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
           <Mail size={18} className="text-primary" />
-          <h3 style={{ margin: 0 }}>Project Email Notifications</h3>
+          <h3 style={{ margin: 0 }}>{t('projectSettings.page.emailTitle')}</h3>
         </div>
         <p className="muted">
-          Configure email recipients for this project. When tasks or scheduler jobs finish, execution reports will be automatically dispatched to these addresses.
+          {t('projectSettings.page.emailHint')}
         </p>
 
         {emailSavedSuccess && (
@@ -107,22 +111,22 @@ export function ProjectSettings({
             }}
           >
             <Check size={16} />
-            <span>Email recipients for project "{detail.project.slug}" saved successfully!</span>
+            <span>{t('projectSettings.page.emailSaved', { slug: detail.project.slug })}</span>
           </div>
         )}
 
         <div className="settings-field-group">
           <div className="settings-item">
-            <label>Email Recipients (Comma-separated)</label>
+            <label>{t('projectSettings.page.emailRecipients')}</label>
             <input
               type="text"
               value={emailInput}
               onChange={e => setEmailInput(e.target.value)}
-              placeholder="dev@beiwanai.com, ops@beiwanai.com, zhanghu@beiwanai.com"
+              placeholder={t('projectSettings.page.emailPlaceholder')}
               className="form-input"
             />
             <small className="muted" style={{ display: 'block', marginTop: '0.25rem' }}>
-              Example: <code>team@beiwanai.com, lead@beiwanai.com</code>
+              <Trans t={t} i18nKey="projectSettings.page.emailExample" components={{ code: <code /> }} />
             </small>
           </div>
         </div>
@@ -134,57 +138,57 @@ export function ProjectSettings({
             disabled={savingEmail}
             onClick={() => void handleSaveEmailRecipients()}
           >
-            {savingEmail ? 'Saving…' : 'Save Email Recipients'}
+            {savingEmail ? t('projectSettings.page.saving') : t('projectSettings.page.saveEmail')}
           </button>
         </div>
       </div>
 
       {/* 2. General Project Configuration */}
       <div className="panel form-panel" style={{ marginTop: '1.5rem' }}>
-        <h3>Project Metadata</h3>
-        <p className="muted">Metadata and configuration for this project registered in OpenDuck.</p>
+        <h3>{t('projectSettings.page.metadata')}</h3>
+        <p className="muted">{t('projectSettings.page.metadataHint')}</p>
 
-        {error && (
+        {errorMessage && (
           <div style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: '0.3rem', marginBottom: '1rem' }}>
             <AlertCircle size={16} />
-            <span>{error}</span>
+            <span>{errorMessage}</span>
           </div>
         )}
 
         <div className="settings-field-group">
           <div className="settings-item">
-            <label>Project Slug (ID)</label>
+            <label>{t('projectSettings.page.slug')}</label>
             <input value={detail.project.slug} readOnly className="readonly-input" />
           </div>
 
           <div className="settings-item">
-            <label>Title</label>
+            <label>{t('projectSettings.page.title')}</label>
             <input value={detail.project.title || detail.project.slug} readOnly className="readonly-input" />
           </div>
 
           <div className="settings-item">
-            <label>Root Directory Path</label>
+            <label>{t('projectSettings.page.rootPath')}</label>
             <input value={detail.project.path} readOnly className="readonly-input" />
           </div>
 
           <div className="row">
             <div className="settings-item">
-              <label>Project Kind</label>
+              <label>{t('projectSettings.page.kind')}</label>
               <input value={detail.project.kind} readOnly className="readonly-input" />
             </div>
             <div className="settings-item">
-              <label>Language</label>
-              <input value={detail.project.language || 'Not specified'} readOnly className="readonly-input" />
+              <label>{t('projectSettings.page.language')}</label>
+              <input value={detail.project.language || t('projectSettings.page.notSpecified')} readOnly className="readonly-input" />
             </div>
             <div className="settings-item">
-              <label>Current Status</label>
+              <label>{t('projectSettings.page.currentStatus')}</label>
               <span className={`status ${detail.project.status}`}>{detail.project.status}</span>
             </div>
           </div>
 
           {detail.project.description && (
             <div className="settings-item">
-              <label>Description</label>
+              <label>{t('projectSettings.page.description')}</label>
               <textarea value={detail.project.description} readOnly className="readonly-input" />
             </div>
           )}
@@ -193,19 +197,19 @@ export function ProjectSettings({
 
       {/* 3. Danger Zone */}
       <div className="panel danger-zone-panel" style={{ marginTop: '1.5rem' }}>
-        <h3 className="danger-title">Danger Zone</h3>
-        <p className="muted">Actions that affect the visibility and registration of this project.</p>
+        <h3 className="danger-title">{t('projectSettings.page.danger')}</h3>
+        <p className="muted">{t('projectSettings.page.dangerHint')}</p>
 
         <div className="danger-actions-list">
           <div className="danger-action-row">
             <div>
               <strong>
-                {detail.project.status === 'archived' ? 'Unarchive Project' : 'Archive Project'}
+                {detail.project.status === 'archived' ? t('projectSettings.page.unarchive') : t('projectSettings.page.archive')}
               </strong>
               <p className="muted">
                 {detail.project.status === 'archived'
-                  ? 'Restore this project to active status.'
-                  : 'Hide this project from the default active list.'}
+                  ? t('projectSettings.page.restoreHint')
+                  : t('projectSettings.page.archiveHint')}
               </p>
             </div>
             <button
@@ -215,17 +219,17 @@ export function ProjectSettings({
               onClick={() => void handleArchiveToggle()}
             >
               {archiving
-                ? 'Updating…'
+                ? t('projectSettings.page.updating')
                 : detail.project.status === 'archived'
-                ? 'Restore Project'
-                : 'Archive Project'}
+                ? t('projectSettings.page.restore')
+                : t('projectSettings.page.archive')}
             </button>
           </div>
 
           <div className="danger-action-row">
             <div>
-              <strong>Delete / Unregister Project</strong>
-              <p className="muted">Remove project registration from OpenDuck. Files on disk will remain untouched.</p>
+              <strong>{t('projectSettings.page.unregisterTitle')}</strong>
+              <p className="muted">{t('projectSettings.page.unregisterHint')}</p>
             </div>
             <button
               type="button"
@@ -233,7 +237,7 @@ export function ProjectSettings({
               disabled={deleting}
               onClick={() => void handleDelete()}
             >
-              {deleting ? 'Deleting…' : 'Unregister Project'}
+              {deleting ? t('projectSettings.page.deleting') : t('projectSettings.page.unregister')}
             </button>
           </div>
         </div>

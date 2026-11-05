@@ -1,3 +1,5 @@
+import { formatNumber, formatTime, formatDateTime } from '../i18n/format.ts'
+import { useTranslation } from 'react-i18next'
 import { useEffect, useRef, useState } from 'react'
 import type { createApi, NetworkProbe, NetworkStatus } from '@aaif/goose-hub-core'
 import { Activity, RefreshCw } from 'lucide-react'
@@ -8,11 +10,12 @@ interface Props {
 }
 
 function ProbeValue({ probe }: { probe: NetworkProbe }) {
+  const { t } = useTranslation()
   return (
     <div className={`network-probe network-probe-${probe.status}`} title={probe.detail}>
       <span className={`status-dot ${probe.status === 'reachable' ? 'online' : 'offline'}`} />
       <span>
-        <strong>{probe.latencyMs === null ? probe.status : `${probe.latencyMs.toFixed(1)} ms`}</strong>
+        <strong>{probe.latencyMs === null ? probe.status : t('network.panel.latency', { latency: formatNumber(probe.latencyMs, { minimumFractionDigits: 1, maximumFractionDigits: 1, useGrouping: false }) })}</strong>
         <small className="muted">{probe.detail}</small>
       </span>
     </div>
@@ -20,6 +23,7 @@ function ProbeValue({ probe }: { probe: NetworkProbe }) {
 }
 
 function LatencyHistory({ history, provider }: { history: NetworkStatus[]; provider: string }) {
+  const { t } = useTranslation()
   const samples = history.map(sample => ({
     time: sample.checkedAt,
     probe: sample.endpoints.find(endpoint => endpoint.provider === provider)?.providerHttp,
@@ -28,22 +32,23 @@ function LatencyHistory({ history, provider }: { history: NetworkStatus[]; provi
   const failures = samples.filter(sample => sample.probe && sample.probe.status !== 'reachable').length
   return (
     <div className="network-history">
-      <div className="network-history-bars" aria-label={`${provider} recent HTTP latency samples`}>
+      <div className="network-history-bars" aria-label={t('network.panel.historyLabel', { provider })}>
         {samples.map(sample => (
           <span
             key={sample.time}
             className={sample.probe?.status === 'reachable' ? 'network-history-ok' : 'network-history-failed'}
             style={{ height: `${Math.max(8, ((sample.probe?.latencyMs ?? maximum) / maximum) * 100)}%` }}
-            title={`${new Date(sample.time).toLocaleTimeString()}: ${sample.probe?.detail ?? 'No sample'}${sample.probe?.latencyMs != null ? ` · ${sample.probe.latencyMs.toFixed(1)} ms` : ''}`}
+            title={`${formatTime(sample.time)}: ${sample.probe?.detail ?? t('network.panel.noSample')}${sample.probe?.latencyMs != null ? ` · ${t('network.panel.latency', { latency: formatNumber(sample.probe.latencyMs, { minimumFractionDigits: 1, maximumFractionDigits: 1, useGrouping: false }) })}` : ''}`}
           />
         ))}
       </div>
-      <small className="muted">{samples.length} recent samples · {failures} connection failures</small>
+      <small className="muted">{t('network.panel.historySummary', { samples: samples.length, failures })}</small>
     </div>
   )
 }
 
 export function NetworkStatusPanel({ api, isConnected }: Props) {
+  const { t } = useTranslation()
   const [report, setReport] = useState<NetworkStatus | null>(null)
   const [history, setHistory] = useState<NetworkStatus[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -82,7 +87,7 @@ export function NetworkStatusPanel({ api, isConnected }: Props) {
           : [...previous, next].slice(-20))
       } catch (cause) {
         if (!disposed && !request.signal.aborted) {
-          setError(cause instanceof Error ? cause.message : 'Network monitoring failed')
+          setError(cause instanceof Error ? cause.message : 'network.panel.error')
         }
       } finally {
         running = false
@@ -113,38 +118,38 @@ export function NetworkStatusPanel({ api, isConnected }: Props) {
   return (
     <section className="panel network-panel" aria-labelledby="network-status-title">
       <div className="network-panel-heading">
-        <h3 id="network-status-title"><Activity size={18} /> Network Status</h3>
+        <h3 id="network-status-title"><Activity size={18} /> {t('network.panel.title')}</h3>
         <button
           type="button"
           className="secondary"
           disabled={loading || !isConnected}
           onClick={() => setRefresh(value => value + 1)}
         >
-          <RefreshCw size={14} /> {loading ? 'Checking…' : 'Refresh'}
+          <RefreshCw size={14} /> {loading ? t('network.panel.checking') : t('network.panel.refresh')}
         </button>
       </div>
-      <p className="muted text-sm">Live checks from the OpenDuck server to provider endpoints.</p>
+      <p className="muted text-sm">{t('network.panel.description')}</p>
       <label className="network-auto-refresh">
         <input type="checkbox" checked={autoRefresh} onChange={event => setAutoRefresh(event.target.checked)} />
-        Refresh every 30 seconds while this page is visible
+        {t('network.panel.autoRefresh')}
       </label>
-      {!isConnected && <p role="status" className="muted">Connect to the server to monitor its network. {report && 'Showing the last successful sample.'}</p>}
-      {error && <p role="alert" className="connection-test-result failed">{error} {report && 'Showing the last successful sample.'}</p>}
-      {loading && !report && <p role="status" className="muted">Checking DNS, ping, and proxy connections…</p>}
+      {!isConnected && <p role="status" className="muted">{t('network.panel.connect')}{' '}{report && t('network.panel.lastSample')}</p>}
+      {error && <p role="alert" className="connection-test-result failed">{error === 'network.panel.error' ? t('network.panel.error') : error} {report && t('network.panel.lastSample')}</p>}
+      {loading && !report && <p role="status" className="muted">{t('network.panel.checkingConnections')}</p>}
       {report && <>
         <div className="network-summary" aria-live="polite">
-          <strong>{healthy}/{report.endpoints.length} provider routes reachable</strong>
-          <span className="muted text-sm">Checked {new Date(report.checkedAt).toLocaleString()}</span>
+          <strong>{t('network.panel.reachable', { healthy, total: report.endpoints.length })}</strong>
+          <span className="muted text-sm">{t('network.panel.checked', { time: formatDateTime(report.checkedAt) })}</span>
         </div>
         <div className="network-table-scroll">
           <table className="network-table">
-            <thead><tr><th>Provider / route</th><th>DNS</th><th>ICMP ping</th><th>Direct TCP</th><th>Direct HTTP</th><th>Provider HTTP</th></tr></thead>
+            <thead><tr><th>{t('network.panel.providerRoute')}</th><th>{t('network.panel.dns')}</th><th>{t('network.panel.ping')}</th><th>{t('network.panel.tcp')}</th><th>{t('network.panel.directHttp')}</th><th>{t('network.panel.providerHttp')}</th></tr></thead>
             <tbody>{report.endpoints.map(endpoint => (
               <tr key={endpoint.provider}>
                 <td>
                   <strong>{endpoint.provider}</strong>
                   <small className="muted network-url">{endpoint.url}</small>
-                  <small className="muted network-url">{endpoint.proxy ? `Proxy: ${endpoint.proxy}` : 'System proxy settings'}</small>
+                  <small className="muted network-url">{endpoint.proxy ? t('network.panel.proxy', { proxy: endpoint.proxy }) : t('network.panel.systemProxy')}</small>
                   <LatencyHistory history={history} provider={endpoint.provider} />
                 </td>
                 <td><ProbeValue probe={endpoint.dns} /><small className="muted network-url">{endpoint.addresses.join(', ')}</small></td>
@@ -156,24 +161,24 @@ export function NetworkStatusPanel({ api, isConnected }: Props) {
             ))}</tbody>
           </table>
         </div>
-        <p className="muted text-sm">HTTP latency includes DNS, connection, TLS, and response headers. Any HTTP response confirms reachability; it does not verify API credentials or subscriptions. ICMP may be blocked even when HTTP works.</p>
-        <h4>Proxies</h4>
-        {report.proxies.length === 0 ? <p className="muted text-sm">No named, provider, or environment proxies configured.</p> : (
+        <p className="muted text-sm">{t('network.panel.latencyHint')}</p>
+        <h4>{t('network.panel.proxies')}</h4>
+        {report.proxies.length === 0 ? <p className="muted text-sm">{t('network.panel.noProxies')}</p> : (
           <div className="network-table-scroll">
             <table className="network-table">
-              <thead><tr><th>Source / address</th><th>Proxy TCP</th><th>HTTP through proxy</th></tr></thead>
+              <thead><tr><th>{t('network.panel.sourceAddress')}</th><th>{t('network.panel.proxyTcp')}</th><th>{t('network.panel.proxyHttp')}</th></tr></thead>
               <tbody>{report.proxies.map(proxy => (
                 <tr key={proxy.source}>
                   <td><strong>{proxy.source}</strong><small className="muted network-url">{proxy.url}</small></td>
                   <td><ProbeValue probe={proxy.tcp} /></td>
-                  <td><ProbeValue probe={proxy.tunnel} /><small className="muted network-url">Target: {proxy.target}</small></td>
+                  <td><ProbeValue probe={proxy.tunnel} /><small className="muted network-url">{t('network.panel.target', { target: proxy.target })}</small></td>
                 </tr>
               ))}</tbody>
             </table>
           </div>
         )}
-        {report.noProxy && <p className="muted text-sm network-url">NO_PROXY bypass: {report.noProxy}</p>}
-        <p className="muted text-sm">Samples are shared for 30 seconds. Recent history is retained only while this panel is open. Proxy credentials are hidden.</p>
+        {report.noProxy && <p className="muted text-sm network-url">{t('network.panel.noProxy', { value: report.noProxy })}</p>}
+        <p className="muted text-sm">{t('network.panel.retentionHint')}</p>
       </>}
     </section>
   )

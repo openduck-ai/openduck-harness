@@ -1,3 +1,4 @@
+import { translate } from './i18n/index.ts'
 import type {
   AppConfigDocument,
   ConfigScalar,
@@ -5,39 +6,67 @@ import type {
   JudgeSettingsUpdate,
 } from '@aaif/goose-hub-core'
 
-export const MODE_OPTIONS = [
-  { value: '', label: 'Not set' },
-  { value: 'auto', label: 'Auto — tools run without asking' },
-  { value: 'approve', label: 'Approve — ask before every tool' },
-  { value: 'smart_approve', label: 'Smart approve — ask for sensitive tools' },
-  { value: 'chat', label: 'Chat — no tools' },
-] as const
-
-export const JUDGE_MODES = [
-  { value: 'off', label: 'Off' },
-  { value: 'shadow', label: 'Shadow' },
-  { value: 'active', label: 'Active' },
-] as const
-
-export const JUDGE_POINT_LABELS: Record<string, string> = {
-  'turn.drift': 'Drift',
-  'turn.completion': 'Completion',
-  'context.forget': 'Context forget',
-  'tool.risk': 'Tool risk',
+export interface ConfigMessageDescriptor {
+  key: string
+  values?: (t: typeof translate) => Record<string, string>
 }
 
-const CONFIG_LABELS: Record<string, string> = {
-  GOOSE_TEMPERATURE: 'Temperature',
-  OPENDUCK_TEMPERATURE: 'Temperature',
-  GOOSE_FAST_MODEL: 'Fast model',
-  OPENDUCK_FAST_MODEL: 'Fast model',
-  GOOSE_TELEMETRY_ENABLED: 'Telemetry',
-  OPENDUCK_TELEMETRY_ENABLED: 'Telemetry',
-  OPENAI_HOST: 'OpenAI host',
-  OPENAI_BASE_PATH: 'OpenAI base path',
-  ANTHROPIC_HOST: 'Anthropic host',
-  OLLAMA_HOST: 'Ollama host',
-  GOOSE_MAX_TURNS: 'Max turns',
+export class ConfigValidationError extends Error implements ConfigMessageDescriptor {
+  readonly key: string
+  readonly values?: (t: typeof translate) => Record<string, string>
+
+  constructor(key: string, values?: (t: typeof translate) => Record<string, string>) {
+    super()
+    this.key = key
+    this.values = values
+  }
+
+  override get message(): string {
+    return translate(this.key, this.values?.(translate))
+  }
+}
+
+export function getModeOptions() {
+  return [
+    { value: '', label: translate('config.editor.modeNotSet') },
+    { value: 'auto', label: translate('config.editor.modeAuto') },
+    { value: 'approve', label: translate('config.editor.modeApprove') },
+    { value: 'smart_approve', label: translate('config.editor.modeSmartApprove') },
+    { value: 'chat', label: translate('config.editor.modeChat') },
+  ] as const
+}
+
+export function getJudgeModes() {
+  return [
+    { value: 'off', label: translate('config.editor.judgeOff') },
+    { value: 'shadow', label: translate('config.editor.judgeShadow') },
+    { value: 'active', label: translate('config.editor.judgeActive') },
+  ] as const
+}
+
+export function getJudgePointLabels(): Record<string, string> {
+  return {
+    'turn.drift': translate('config.editor.drift'),
+    'turn.completion': translate('config.editor.completion'),
+    'context.forget': translate('config.editor.contextForget'),
+    'tool.risk': translate('config.editor.toolRisk'),
+  }
+}
+
+function getConfigLabels(): Record<string, string> {
+  return {
+    GOOSE_TEMPERATURE: translate('config.editor.temperature'),
+    OPENDUCK_TEMPERATURE: translate('config.editor.temperature'),
+    GOOSE_FAST_MODEL: translate('config.editor.fastModel'),
+    OPENDUCK_FAST_MODEL: translate('config.editor.fastModel'),
+    GOOSE_TELEMETRY_ENABLED: translate('config.editor.telemetry'),
+    OPENDUCK_TELEMETRY_ENABLED: translate('config.editor.telemetry'),
+    OPENAI_HOST: translate('config.editor.openaiHost'),
+    OPENAI_BASE_PATH: translate('config.editor.openaiBasePath'),
+    ANTHROPIC_HOST: translate('config.editor.anthropicHost'),
+    OLLAMA_HOST: translate('config.editor.ollamaHost'),
+    GOOSE_MAX_TURNS: translate('config.editor.maxTurns'),
+  }
 }
 
 export interface HarnessDraft {
@@ -66,12 +95,12 @@ export interface ConfigDrafts {
 }
 
 export function configLabel(key: string): string {
-  const known = CONFIG_LABELS[key]
+  const known = getConfigLabels()[key]
   if (known) return known
   return key
     .split('_')
     .filter(Boolean)
-    .map(word => word.charAt(0) + word.slice(1).toLowerCase())
+    .map((word) => word.charAt(0) + word.slice(1).toLowerCase())
     .join(' ')
 }
 
@@ -86,24 +115,24 @@ export function parseScalarInput(raw: string, previous: ConfigScalar): ConfigSca
   if (typeof previous === 'number') {
     const trimmed = raw.trim()
     if (!/^-?\d+(\.\d+)?$/.test(trimmed)) {
-      throw new Error('Enter a number')
+      throw new ConfigValidationError('config.editor.enterNumber')
     }
     const value = Number(trimmed)
-    if (!Number.isFinite(value)) throw new Error('Enter a number')
+    if (!Number.isFinite(value)) throw new ConfigValidationError('config.editor.enterNumber')
     return value
   }
   return raw
 }
 
-export function parseOptionalCount(raw: string, label: string): number | null {
+export function parseOptionalCount(raw: string, label: string | { key: string }): number | null {
   const trimmed = raw.trim()
   if (!trimmed) return null
   if (!/^\d+$/.test(trimmed)) {
-    throw new Error(`${label} must be a whole number`)
+    throw new ConfigValidationError('config.editor.wholeNumber', t => ({ label: typeof label === 'string' ? label : t(label.key) }))
   }
   const value = Number(trimmed)
   if (!Number.isInteger(value) || value < 1) {
-    throw new Error(`${label} must be at least 1`)
+    throw new ConfigValidationError('config.editor.minimumCount', t => ({ label: typeof label === 'string' ? label : t(label.key) }))
   }
   return value
 }
@@ -134,11 +163,11 @@ export function isSecretKey(key: string): boolean {
 
 export function validateNewConfigKey(key: string): string {
   const trimmed = key.trim()
-  if (!trimmed) throw new Error('Enter a setting name')
+  if (!trimmed) throw new ConfigValidationError('config.editor.enterSettingName')
   if (trimmed.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(trimmed)) {
-    throw new Error('Use letters, numbers, underscores, dots, or hyphens')
+    throw new ConfigValidationError('config.editor.settingNameCharacters')
   }
-  if (isSecretKey(trimmed)) throw new Error('API keys and tokens are not edited here')
+  if (isSecretKey(trimmed)) throw new ConfigValidationError('config.editor.protectedSecrets')
   return trimmed
 }
 
@@ -172,7 +201,7 @@ export function draftsFromDocument(doc: AppConfigDocument): ConfigDrafts {
       endpoint: doc.judge.endpoint,
       timeoutMs: String(doc.judge.timeoutMs),
       fallbackOnError: doc.judge.fallbackOnError,
-      points: doc.judge.points.map(point => ({ id: point.id, mode: point.mode })),
+      points: doc.judge.points.map((point) => ({ id: point.id, mode: point.mode })),
     },
     entries,
   }
@@ -180,10 +209,19 @@ export function draftsFromDocument(doc: AppConfigDocument): ConfigDrafts {
 
 export function harnessUpdateFromDraft(draft: HarnessDraft): HarnessSettingsUpdate {
   return {
-    maxTurns: parseOptionalCount(draft.maxTurns, 'Max turns'),
-    stagnationThreshold: parseOptionalCount(draft.stagnationThreshold, 'Stagnation threshold'),
-    explorationBudget: parseOptionalCount(draft.explorationBudget, 'Exploration budget'),
-    periodicReviewInterval: parseOptionalCount(draft.periodicReviewInterval, 'Review interval'),
+    maxTurns: parseOptionalCount(draft.maxTurns, { key: 'config.editor.maxTurns' }),
+    stagnationThreshold: parseOptionalCount(
+      draft.stagnationThreshold,
+      { key: 'config.editor.stagnationThreshold' },
+    ),
+    explorationBudget: parseOptionalCount(
+      draft.explorationBudget,
+      { key: 'config.editor.explorationBudget' },
+    ),
+    periodicReviewInterval: parseOptionalCount(
+      draft.periodicReviewInterval,
+      { key: 'config.editor.reviewInterval' },
+    ),
     circuitBreakerEnabled: circuitValue(draft.circuitBreaker),
   }
 }
@@ -196,16 +234,19 @@ export function harnessUpdateForSave(
   return {
     maxTurns: current.maxTurns.fromEnv
       ? current.maxTurns.value
-      : parseOptionalCount(draft.maxTurns, 'Max turns'),
+      : parseOptionalCount(draft.maxTurns, { key: 'config.editor.maxTurns' }),
     stagnationThreshold: current.stagnationThreshold.fromEnv
       ? current.stagnationThreshold.value
-      : parseOptionalCount(draft.stagnationThreshold, 'Stagnation threshold'),
+      : parseOptionalCount(
+          draft.stagnationThreshold,
+          { key: 'config.editor.stagnationThreshold' },
+        ),
     explorationBudget: current.explorationBudget.fromEnv
       ? current.explorationBudget.value
-      : parseOptionalCount(draft.explorationBudget, 'Exploration budget'),
+      : parseOptionalCount(draft.explorationBudget, { key: 'config.editor.explorationBudget' }),
     periodicReviewInterval: current.periodicReviewInterval.fromEnv
       ? current.periodicReviewInterval.value
-      : parseOptionalCount(draft.periodicReviewInterval, 'Review interval'),
+      : parseOptionalCount(draft.periodicReviewInterval, { key: 'config.editor.reviewInterval' }),
     circuitBreakerEnabled: current.circuitBreakerEnabled.fromEnv
       ? current.circuitBreakerEnabled.value
       : circuitValue(draft.circuitBreaker),
@@ -227,20 +268,20 @@ export function harnessDraftUnchanged(doc: AppConfigDocument, draft: HarnessDraf
 export function judgeUpdateFromDraft(draft: JudgeDraft): JudgeSettingsUpdate {
   const provider = draft.provider.trim()
   const endpoint = draft.endpoint.trim()
-  if (!provider) throw new Error('Enter a judge provider')
-  if (!endpoint) throw new Error('Enter a judge endpoint')
-  const timeout = parseOptionalCount(draft.timeoutMs, 'Judge timeout')
-  if (timeout == null) throw new Error('Enter a judge timeout in milliseconds')
+  if (!provider) throw new ConfigValidationError('config.editor.enterJudgeProvider')
+  if (!endpoint) throw new ConfigValidationError('config.editor.enterJudgeEndpoint')
+  const timeout = parseOptionalCount(draft.timeoutMs, { key: 'config.editor.judgeTimeout' })
+  if (timeout == null) throw new ConfigValidationError('config.editor.enterJudgeTimeout')
   const seen = new Set<string>()
-  const points = draft.points.map(point => {
+  const points = draft.points.map((point) => {
     const id = point.id.trim()
     if (!id || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(id)) {
-      throw new Error('Decision point ids use letters, numbers, dots, or hyphens')
+      throw new ConfigValidationError('config.editor.pointIdCharacters')
     }
-    if (seen.has(id)) throw new Error(`Decision point ${id} is listed twice`)
+    if (seen.has(id)) throw new ConfigValidationError('config.editor.duplicatePoint', () => ({ id }))
     seen.add(id)
     if (point.mode !== 'off' && point.mode !== 'shadow' && point.mode !== 'active') {
-      throw new Error('Judge point mode must be off, shadow, or active')
+      throw new ConfigValidationError('config.editor.invalidJudgeMode')
     }
     return { id, mode: point.mode }
   })

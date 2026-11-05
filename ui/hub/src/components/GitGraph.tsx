@@ -1,7 +1,9 @@
+import { useTranslation } from 'react-i18next'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import type { GitCommitEntry } from '@aaif/goose-hub-core'
 import { layoutGitGraph } from '../gitGraph'
+import { formatDateTime } from '../i18n/format.ts'
 
 const ROW_HEIGHT = 36
 const COL_WIDTH = 14
@@ -28,7 +30,7 @@ function laneColor(index: number): string {
 function formatTime(value: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString()
+  return formatDateTime(date)
 }
 
 interface GitGraphProps {
@@ -67,6 +69,7 @@ function GitRefs({
 }
 
 export function GitGraph({ commits, selectedSha, onSelect }: GitGraphProps) {
+  const { t } = useTranslation()
   const rows = layoutGitGraph(commits)
   const maxLanes = Math.max(1, ...rows.map(row => row.laneCount))
   const width = maxLanes * COL_WIDTH + 8
@@ -95,7 +98,7 @@ export function GitGraph({ commits, selectedSha, onSelect }: GitGraphProps) {
   }
 
   if (commits.length === 0) {
-    return <p className="muted git-empty">No commits in this repository yet.</p>
+    return <p className="muted git-empty">{t('git.graph.empty')}</p>
   }
 
   return (
@@ -171,8 +174,8 @@ export function GitGraph({ commits, selectedSha, onSelect }: GitGraphProps) {
               onClick={() => onSelect(commit.sha)}
             >
               <span className="git-log-subject">
-                <span className="git-subject-text" title={commit.subject || '(no subject)'}>
-                  {commit.subject || '(no subject)'}
+                <span className="git-subject-text" title={commit.subject || t('git.graph.noSubject')}>
+                  {commit.subject || t('git.graph.noSubject')}
                 </span>
                 <GitRefs refs={commit.refs} onShowTip={showTip} onHideTip={() => setTip(null)} />
               </span>

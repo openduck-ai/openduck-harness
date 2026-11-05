@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import { useMemo, useState } from 'react'
 import type { HarnessActiveJob, Project } from '@aaif/goose-hub-core'
 import { Activity, FolderOpen, RefreshCw, Search, Square, X } from 'lucide-react'
@@ -44,6 +45,7 @@ export function RunningTasksPage({
   onStopJob,
   onStopChat,
 }: RunningTasksPageProps) {
+  const { t, i18n } = useTranslation()
   const [query, setQuery] = useState('')
   const [projectFilter, setProjectFilter] = useState('')
 
@@ -57,7 +59,7 @@ export function RunningTasksPage({
 
   const projectOptions = useMemo(
     () => runningProjectOptions(jobs, projectTitles),
-    [jobs, projectTitles],
+    [jobs, projectTitles, i18n.language],
   )
   const activeProjectFilter = projectOptions.some(option => option.slug === projectFilter)
     ? projectFilter
@@ -70,7 +72,7 @@ export function RunningTasksPage({
         projectSlug: activeProjectFilter,
         projectTitles,
       }),
-    [jobs, query, activeProjectFilter, projectTitles],
+    [jobs, query, activeProjectFilter, projectTitles, i18n.language],
   )
 
   const activeChats = useMemo(() => {
@@ -83,7 +85,7 @@ export function RunningTasksPage({
           slug,
           project,
           title: project?.title || slug,
-          statusLine: s?.statusLine || 'Generating response…',
+          statusLine: s?.statusLine || t('runningTasks.page.generating'),
         }
       })
       .filter(item => {
@@ -96,24 +98,26 @@ export function RunningTasksPage({
           item.statusLine.toLowerCase().includes(q)
         )
       })
-  }, [allSessionsState, projects, activeProjectFilter, query])
+  }, [allSessionsState, projects, activeProjectFilter, query, i18n.language])
 
   const totalCount = jobs.length + activeChats.length
   const projectCount = new Set([
     ...jobs.map(job => job.projectSlug),
     ...activeChats.map(c => c.slug),
   ].filter(Boolean)).size
-  const projectPhrase =
-    projectCount === 0 ? '' : projectCount === 1 ? ' in 1 project' : ` across ${projectCount} projects`
-  const summary = totalCount === 0 ? 'Nothing is running' : `${totalCount} in progress${projectPhrase}`
+  const summary = totalCount === 0
+    ? t('runningTasks.page.summaryEmpty')
+    : projectCount === 0
+      ? t('runningTasks.page.summaryNoProjects', { count: totalCount })
+      : t(projectCount === 1 ? 'runningTasks.page.summary_one' : 'runningTasks.page.summary_other', { count: totalCount, projects: projectCount })
 
   return (
     <div className="running-tasks-page">
       <div className="running-tasks-header">
         <div>
-          <p className="eyebrow">Project tasks</p>
-          <h2>Running tasks</h2>
-          <p className="muted">{summary}. Status refreshes every few seconds.</p>
+          <p className="eyebrow">{t('runningTasks.page.eyebrow')}</p>
+          <h2>{t('runningTasks.page.title')}</h2>
+          <p className="muted">{t('runningTasks.page.statusRefresh', { summary })}</p>
         </div>
       </div>
 
@@ -124,17 +128,17 @@ export function RunningTasksPage({
             <input
               type="text"
               className="search-input"
-              placeholder="Search by task, project, model, or current action…"
+              placeholder={t('runningTasks.page.searchPlaceholder')}
               value={query}
               onChange={event => setQuery(event.target.value)}
-              aria-label="Search running tasks"
+              aria-label={t('runningTasks.page.searchLabel')}
             />
             {query && (
               <button
                 type="button"
                 className="clear-search-btn"
                 onClick={() => setQuery('')}
-                title="Clear search"
+                title={t('runningTasks.page.clearSearch')}
               >
                 <X size={14} />
               </button>
@@ -146,9 +150,9 @@ export function RunningTasksPage({
                 className="filter-select"
                 value={activeProjectFilter}
                 onChange={event => setProjectFilter(event.target.value)}
-                aria-label="Filter by project"
+                aria-label={t('runningTasks.page.filterProject')}
               >
-                <option value="">All projects</option>
+                <option value="">{t('runningTasks.page.allProjects')}</option>
                 {projectOptions.map(option => (
                   <option key={option.slug} value={option.slug}>
                     {option.label}
@@ -166,7 +170,7 @@ export function RunningTasksPage({
             disabled={refreshing || !isConnected}
           >
             <RefreshCw size={15} className={refreshing ? 'spinning' : ''} />
-            <span>Refresh</span>
+            <span>{t('runningTasks.page.refresh')}</span>
           </button>
         </div>
       </div>
@@ -178,11 +182,11 @@ export function RunningTasksPage({
           <div className="empty-state-icon-box">
             <Activity size={26} />
           </div>
-          <h3>{isConnected ? 'Loading running tasks…' : 'Server offline'}</h3>
+          <h3>{isConnected ? t('runningTasks.page.loading') : t('runningTasks.page.offline')}</h3>
           <p className="muted">
             {isConnected
-              ? 'Checking which project tasks are in progress.'
-              : 'Running tasks show up here once OpenDuck is connected.'}
+              ? t('runningTasks.page.checking')
+              : t('runningTasks.page.connectHint')}
           </p>
         </div>
       ) : totalCount === 0 ? (
@@ -190,15 +194,15 @@ export function RunningTasksPage({
           <div className="empty-state-icon-box">
             <Activity size={26} />
           </div>
-          <h3>No tasks are running</h3>
+          <h3>{t('runningTasks.page.empty')}</h3>
           <p className="muted">
-            Project tasks and chats that are queued or in progress appear here with their current step.
+            {t('runningTasks.page.emptyHint')}
           </p>
         </div>
       ) : visibleJobs.length === 0 && activeChats.length === 0 ? (
         <div className="empty-state-box">
-          <h3>No matching tasks</h3>
-          <p className="muted">Nothing running matches this search.</p>
+          <h3>{t('runningTasks.page.noMatches')}</h3>
+          <p className="muted">{t('runningTasks.page.noMatchesHint')}</p>
         </div>
       ) : (
         <ul className="running-task-list">
@@ -207,13 +211,13 @@ export function RunningTasksPage({
               <div className="running-task-main">
                 <div className="running-task-title-row">
                   <span className="live-dot" />
-                  <span className="running-status is-live">Chatting</span>
-                  <h3 className="running-task-title">{chat.title} — Project Chat</h3>
+                  <span className="running-status is-live">{t('runningTasks.page.chatting')}</span>
+                  <h3 className="running-task-title">{t('runningTasks.page.projectChat', { title: chat.title })}</h3>
                 </div>
                 <p className="running-task-activity">{chat.statusLine}</p>
                 <div className="running-task-meta">
                   <span>{chat.title}</span>
-                  <span>Interactive Chat Session</span>
+                  <span>{t('runningTasks.page.interactiveSession')}</span>
                 </div>
               </div>
               <div className="running-task-actions">
@@ -224,17 +228,17 @@ export function RunningTasksPage({
                     onClick={() => onOpenProject(chat.project!)}
                   >
                     <FolderOpen size={15} />
-                    <span>Open project</span>
+                    <span>{t('runningTasks.page.openProject')}</span>
                   </button>
                 )}
                 <button
                   type="button"
                   className="btn-action stop-btn"
                   onClick={() => onStopChat?.(chat.slug)}
-                  title="Stop running chat"
+                  title={t('runningTasks.page.stopChat')}
                 >
                   <Square size={13} />
-                  <span>Stop</span>
+                  <span>{t('runningTasks.page.stop')}</span>
                 </button>
               </div>
             </li>
@@ -276,7 +280,7 @@ export function RunningTasksPage({
                       onClick={() => onOpenProject(project)}
                     >
                       <FolderOpen size={15} />
-                      <span>Open project</span>
+                      <span>{t('runningTasks.page.openProject')}</span>
                     </button>
                   )}
                   <button
@@ -284,10 +288,10 @@ export function RunningTasksPage({
                     className="btn-action stop-btn"
                     onClick={() => onStopJob(job)}
                     disabled={stopping}
-                    title={kind === 'queued' ? 'Cancel queued task' : 'Stop this running task'}
+                    title={kind === 'queued' ? t('runningTasks.page.cancelQueued') : t('runningTasks.page.stopTask')}
                   >
                     <Square size={13} />
-                    <span>{stopping ? 'Stopping…' : kind === 'queued' ? 'Cancel' : 'Stop'}</span>
+                    <span>{stopping ? t('runningTasks.page.stopping') : kind === 'queued' ? t('runningTasks.page.cancel') : t('runningTasks.page.stop')}</span>
                   </button>
                 </div>
               </li>

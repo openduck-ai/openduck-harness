@@ -1,3 +1,5 @@
+import { Trans, useTranslation } from 'react-i18next'
+import { formatDateTime, formatNumber, formatTime } from '../i18n/format.ts'
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import {
   AlertCircle,
@@ -20,7 +22,6 @@ import {
 } from 'lucide-react'
 import {
   defaultSchedule,
-  describeTaskSchedule,
   parseFriendlySchedule,
   parseTimeInput,
   scheduleToCron,
@@ -64,7 +65,7 @@ import {
   calculateTaskMaxTurnsFromSubtasks,
   recalculateSubtasksTurns,
   shouldReplaceGeneratedTaskId,
-  subtaskSaveError,
+  subtaskSaveErrorDescriptor as subtaskSaveError,
   subtasksForSave,
   taskFormToDraft,
 } from '../taskDraft.ts'
@@ -107,6 +108,15 @@ import {
   type MentionDisplayItem,
   type DismissedMention,
 } from '../mention.ts'
+
+type PageMessage = string | {
+  key: `harness.page.${string}` | `harness.draft.helper.${string}`
+  values?: Record<string, string | number>
+}
+
+function pageMessage(key: `harness.page.${string}`, values?: Record<string, string | number>): PageMessage {
+  return { key, values }
+}
 
 interface ProjectHarnessTabProps {
   api: ReturnType<typeof createApi>
@@ -178,10 +188,37 @@ export function ProjectHarnessTab({
   onInspectTrajectory: _onInspectTrajectory,
   onNavigateToFiles,
 }: ProjectHarnessTabProps) {
+  const { t, i18n } = useTranslation()
+  const locale = i18n.language
+  const renderMessage = (message: PageMessage | null, language = locale): string =>
+    !message ? '' : typeof message === 'string' ? message : t(message.key, { ...message.values, lng: language })
+  const weekdays = [
+    t('harness.page.schedule.days.sunday'),
+    t('harness.page.schedule.days.monday'),
+    t('harness.page.schedule.days.tuesday'),
+    t('harness.page.schedule.days.wednesday'),
+    t('harness.page.schedule.days.thursday'),
+    t('harness.page.schedule.days.friday'),
+    t('harness.page.schedule.days.saturday'),
+  ]
+  const describeLocalizedTaskSchedule = (cron?: string | null, paused = false): string => {
+    if (!cron?.trim()) return ''
+    const parsed = parseFriendlySchedule(cron)
+    const time = formatTime(new Date(1970, 0, 1, parsed.hour, parsed.minute), { hour: 'numeric', minute: '2-digit' })
+    let description: string
+    switch (parsed.kind) {
+      case 'none': description = t('harness.page.schedule.description.manual'); break
+      case 'hourly': description = t('harness.page.schedule.hourly'); break
+      case 'daily': description = t('harness.page.schedule.description.daily', { time }); break
+      case 'weekdays': description = t('harness.page.schedule.description.weekdays', { time }); break
+      case 'weekly': description = t('harness.page.schedule.description.weekly', { day: weekdays[parsed.weekday] ?? weekdays[0], time }); break
+    }
+    return paused ? t('harness.page.schedule.description.paused', { description }) : description
+  }
   const [subTab, setSubTab] = useState<ProjectSubTab>('tasks')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [successMsg, setSuccessMsg] = useState('')
+  const [error, setError] = useState<PageMessage>('')
+  const [successMsg, setSuccessMsg] = useState<PageMessage>('')
 
   // Project data
   const [config, setConfig] = useState<ProjectHarnessConfig | null>(null)
@@ -365,13 +402,13 @@ export function ProjectHarnessTab({
     prompt: string
     extra: string
     loadingPrompt: boolean
-    error: string
+    error: PageMessage
   } | null>(null)
 
   // Loaded sections registry to prevent redundant fetches
   const [loadedSections, setLoadedSections] = useState<Record<string, boolean>>({})
   const [sectionLoading, setSectionLoading] = useState<string | null>(null)
-  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [historyError, setHistoryError] = useState<PageMessage | null>(null)
   const [historyRetryAttempt, setHistoryRetryAttempt] = useState<number>(0)
   const isHistoryLoading =
     loadingHistory || sectionLoading === 'history' || (!loadedSections.history && !historyError)
@@ -432,7 +469,7 @@ export function ProjectHarnessTab({
           }
         } catch (err) {
           if (reqId === historyRequestIdRef.current) {
-            const msg = err instanceof Error ? err.message : 'Failed to load task history'
+            const msg = err instanceof Error ? err.message : pageMessage('harness.page.errors.historyLoad')
             setHistoryError(msg)
             setHistoryRetryAttempt(0)
             if (!silent) setError(msg)
@@ -467,7 +504,7 @@ export function ProjectHarnessTab({
             setHistory(norm.items || [])
             setHistoryPagination(norm.pagination ?? null)
           } catch (err) {
-            setHistoryError(err instanceof Error ? err.message : 'Failed to load task history')
+            setHistoryError(err instanceof Error ? err.message : pageMessage('harness.page.errors.historyLoad'))
           } finally {
             setLoadingHistory(false)
           }
@@ -496,7 +533,7 @@ export function ProjectHarnessTab({
             setHistory(norm.items || [])
             setHistoryPagination(norm.pagination ?? null)
           } catch (err) {
-            setHistoryError(err instanceof Error ? err.message : 'Failed to load task history')
+            setHistoryError(err instanceof Error ? err.message : pageMessage('harness.page.errors.historyLoad'))
           } finally {
             setLoadingHistory(false)
           }
@@ -508,9 +545,9 @@ export function ProjectHarnessTab({
 
   const handleRetryHistory = useCallback(() => {
     if (!selectedProjectSlug) return
-    setError(prev => (prev.toLowerCase().includes('history') ? '' : prev))
+    setError(prev => (renderMessage(prev, 'en').toLowerCase().includes('history') ? '' : prev))
     void loadHistory(selectedProjectSlug, false, true)
-  }, [selectedProjectSlug, loadHistory])
+  }, [selectedProjectSlug, loadHistory, locale])
 
   // 2. Lightweight tasks & active jobs loader (serves default view, fast with no heavy disk scanning)
   const pendingTasksRefreshRef = useRef(false)
@@ -549,7 +586,7 @@ export function ProjectHarnessTab({
         void loadHistory(slug, true, true)
       } catch (err) {
         if (currentReqId === requestIdRef.current && !silent) {
-          setError(err instanceof Error ? err.message : 'Failed to load project tasks')
+          setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.tasksLoad'))
         }
       } finally {
         inFlightTasksRef.current = null
@@ -581,7 +618,7 @@ export function ProjectHarnessTab({
         setReports(reps || [])
         setLoadedSections(prev => ({ ...prev, reports: true }))
       } catch (err) {
-        if (!silent) setError(err instanceof Error ? err.message : 'Failed to load evaluation reports')
+        if (!silent) setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.reportsLoad'))
       } finally {
         inFlightReportsRef.current = null
         setSectionLoading(prev => (prev === 'reports' ? null : prev))
@@ -606,7 +643,7 @@ export function ProjectHarnessTab({
         setCassettes(cass || [])
         setLoadedSections(prev => ({ ...prev, cassettes: true }))
       } catch (err) {
-        if (!silent) setError(err instanceof Error ? err.message : 'Failed to load recorded cassettes')
+        if (!silent) setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.cassettesLoad'))
       } finally {
         inFlightCassettesRef.current = null
         setSectionLoading(prev => (prev === 'cassettes' ? null : prev))
@@ -631,7 +668,7 @@ export function ProjectHarnessTab({
         setConfig(normalizeHarnessConfig(cfg))
         setLoadedSections(prev => ({ ...prev, config: true }))
       } catch (err) {
-        if (!silent) setError(err instanceof Error ? err.message : 'Failed to load harness config')
+        if (!silent) setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.configLoad'))
       } finally {
         inFlightConfigRef.current = null
         setSectionLoading(prev => (prev === 'config' ? null : prev))
@@ -717,8 +754,8 @@ export function ProjectHarnessTab({
         if (event.type === 'task_status_changed') {
           const isRunning = ['running', 'queued'].includes(event.status.toLowerCase())
           setTasks(prev =>
-            prev.map(t =>
-              t.id === event.taskId ? { ...t, currentlyRunning: isRunning } : t,
+            prev.map(task =>
+              task.id === event.taskId ? { ...task, currentlyRunning: isRunning } : task,
             ),
           )
           if (!isRunning) {
@@ -768,7 +805,7 @@ export function ProjectHarnessTab({
       const run = await api.getProjectHistoryDetail(selectedProjectSlug, item.fileName, paging)
       setActiveTrajectoryView(run)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load historical run')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.historicalRun'))
     } finally {
       setLoadingHistoryId(null)
       setLoadingTrajectory(false)
@@ -801,7 +838,7 @@ export function ProjectHarnessTab({
       if (inspectingJobIdRef.current !== job.jobId) return
       stopLiveInspect()
       if (subTab === 'trajectory') setSubTab(effectiveOrigin)
-      setError(err instanceof Error ? err.message : 'Failed to inspect running task')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.inspect'))
     } finally {
       setLoadingTrajectory(false)
     }
@@ -823,13 +860,13 @@ export function ProjectHarnessTab({
     setError('')
     try {
       await api.stopProjectTask(selectedProjectSlug, taskId)
-      setSuccessMsg(`Task "${taskId}" stopped successfully`)
+      setSuccessMsg(pageMessage('harness.page.notices.stopped', { taskId: taskId }))
       if (runningTaskId === taskId) {
         setRunningTaskId(null)
       }
       await loadTasksAndJobs(selectedProjectSlug, true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to stop task')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.stop'))
     } finally {
       setStoppingTaskId(null)
     }
@@ -841,7 +878,7 @@ export function ProjectHarnessTab({
     setError('')
     try {
       await api.stopProjectHarnessJob(selectedProjectSlug, job.jobId)
-      setSuccessMsg(`Task "${job.taskId}" stopped successfully`)
+      setSuccessMsg(pageMessage('harness.page.notices.stopped', { taskId: job.taskId }))
       if (runningTaskId === job.taskId) {
         setRunningTaskId(null)
       }
@@ -850,7 +887,7 @@ export function ProjectHarnessTab({
       }
       await loadTasksAndJobs(selectedProjectSlug, true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to stop task')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.stop'))
     } finally {
       setStoppingTaskId(null)
     }
@@ -1046,7 +1083,7 @@ export function ProjectHarnessTab({
         setTaskTagsInput((res.draft.tags ?? []).join(', '))
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to draft the task')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.draft'))
     } finally {
       setDrafting(false)
     }
@@ -1072,7 +1109,7 @@ export function ProjectHarnessTab({
     } finally {
       setLoadingTaskMentions(false)
     }
-  }, [api, selectedProjectSlug])
+  }, [api, selectedProjectSlug, locale])
 
   useEffect(() => {
     if (isEditingTask) {
@@ -1099,7 +1136,7 @@ export function ProjectHarnessTab({
     return () => {
       cancelled = true
     }
-  }, [api, isEditingTask, selectedProjectSlug, taskForm.id])
+  }, [api, isEditingTask, selectedProjectSlug, taskForm.id, locale])
 
   const pendingAttachmentMentions = useMemo(
     () =>
@@ -1110,7 +1147,7 @@ export function ProjectHarnessTab({
           existingAttachmentMentions.map(item => item.relativePath),
         ),
       ),
-    [taskAttachments, taskForm.id, existingAttachmentMentions],
+    [taskAttachments, taskForm.id, existingAttachmentMentions, locale],
   )
 
   const [serverSearchTaskItems, setServerSearchTaskItems] = useState<MentionDisplayItem[]>([])
@@ -1433,14 +1470,14 @@ export function ProjectHarnessTab({
       setTaskCreatorExpanded(defaultTaskCreateDraftData().ui.expanded)
       setIsEditingTask(true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch task detail')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.taskDetail'))
     }
   }
 
   const handleEstimateBudget = async (feedbackOverride?: string) => {
     if (!selectedProjectSlug) return
     if (!taskForm.prompt.trim()) {
-      setError('Please enter a task prompt first to estimate budget')
+      setError(pageMessage('harness.page.errors.promptForBudget'))
       return
     }
     setEstimatingBudget(true)
@@ -1462,11 +1499,11 @@ export function ProjectHarnessTab({
       }))
       setSuccessMsg(
         feedbackToSend
-          ? `AI Budget refined with feedback: ~${res.suggestedMaxTurns} turns, ${res.suggestedTimeoutSeconds}s (${res.complexity} complexity)`
-          : `AI Budget estimated: ~${res.suggestedMaxTurns} turns, ${res.suggestedTimeoutSeconds}s (${res.complexity} complexity)`,
+          ? pageMessage('harness.page.budget.refined', { turns: res.suggestedMaxTurns, seconds: res.suggestedTimeoutSeconds, complexity: res.complexity })
+          : pageMessage('harness.page.budget.estimated', { turns: res.suggestedMaxTurns, seconds: res.suggestedTimeoutSeconds, complexity: res.complexity }),
       )
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to estimate task budget')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.estimate'))
     } finally {
       setEstimatingBudget(false)
     }
@@ -1486,7 +1523,7 @@ export function ProjectHarnessTab({
       timeoutSeconds: newTimeout,
       subtasks: recalculateSubtasksTurns(prev.subtasks, newTurns, maxTurnsLimit),
     }))
-    setSuccessMsg(`Budget manually adjusted to ${newTurns} turns (${newTimeout}s)`)
+    setSuccessMsg(pageMessage('harness.page.budget.adjusted', { turns: newTurns, seconds: newTimeout }))
   }
 
   const handleAttachFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1495,7 +1532,7 @@ export function ProjectHarnessTab({
     if (accepted.length === 0) {
       e.target.value = ''
       if (selected.length > 0) {
-        setError('Attach Excel, PDF, or image files only')
+        setError(pageMessage('harness.page.errors.attachmentType'))
       }
       return
     }
@@ -1549,11 +1586,11 @@ export function ProjectHarnessTab({
   const handleSaveTask = async () => {
     if (!selectedProjectSlug) return
     if (!taskForm.id.trim()) {
-      setError('Task ID is required')
+      setError(pageMessage('harness.page.errors.taskId'))
       return
     }
     if (!taskForm.prompt.trim()) {
-      setError('Task prompt is required')
+      setError(pageMessage('harness.page.errors.prompt'))
       return
     }
     const subtaskError = subtaskSaveError(taskForm.subtasks)
@@ -1564,7 +1601,7 @@ export function ProjectHarnessTab({
 
     const tags = taskTagsInput
       .split(',')
-      .map(t => t.trim())
+      .map(task => task.trim())
       .filter(Boolean)
 
     let verifierSpec = undefined
@@ -1618,10 +1655,10 @@ export function ProjectHarnessTab({
 
       if (editingTaskId) {
         await api.updateProjectTask(selectedProjectSlug, editingTaskId, payload)
-        setSuccessMsg(`Task ${taskForm.id} updated successfully`)
+        setSuccessMsg(pageMessage('harness.page.notices.updated', { taskId: taskForm.id }))
       } else {
         await api.createProjectTask(selectedProjectSlug, payload)
-        setSuccessMsg(`Task ${taskForm.id} created successfully`)
+        setSuccessMsg(pageMessage('harness.page.notices.created', { taskId: taskForm.id }))
       }
       /* A collapsed create draft survives editing an existing task, so only a successful create
          clears it. */
@@ -1632,7 +1669,7 @@ export function ProjectHarnessTab({
       setIsEditingTask(false)
       void loadTasksAndJobs(selectedProjectSlug, true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save task')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.saveTask'))
     } finally {
       setSavingTask(false)
     }
@@ -1648,27 +1685,27 @@ export function ProjectHarnessTab({
       })
       setSuccessMsg(
         task.schedulePaused
-          ? `Task ${task.id} will run on its schedule again`
-          : `Task ${task.id} will stay saved, but won't run by itself until you turn auto-run back on`,
+          ? pageMessage('harness.page.notices.scheduleResumed', { taskId: task.id })
+          : pageMessage('harness.page.notices.schedulePaused', { taskId: task.id }),
       )
       await loadTasksAndJobs(selectedProjectSlug)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update task schedule')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.schedule'))
     }
   }
 
   const handleDeleteTask = async (taskId: string, taskName?: string) => {
     if (!selectedProjectSlug) return
     const displayName = taskName?.trim() || taskId
-    if (!confirm(`Are you sure you want to delete task "${displayName}"?`)) return
+    if (!confirm(t('harness.page.tasks.deleteConfirm', { name: displayName }))) return
     setError('')
     setSuccessMsg('')
     try {
       await api.deleteProjectTask(selectedProjectSlug, taskId)
-      setSuccessMsg(`Task "${displayName}" deleted`)
+      setSuccessMsg(pageMessage('harness.page.notices.deleted', { name: displayName }))
       await loadTasksAndJobs(selectedProjectSlug)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete task')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.deleteTask'))
     }
   }
 
@@ -1692,7 +1729,7 @@ export function ProjectHarnessTab({
         extraTurns: continueFromRunId ? extraTurns ?? 25 : extraTurns,
         extraPrompt: extraPrompt?.trim() || undefined,
       })
-      setSuccessMsg(`Task ${taskId} completed with status: ${res.status}`)
+      setSuccessMsg(pageMessage('harness.page.notices.completed', { taskId: taskId, status: res.status }))
       await loadTasksAndJobs(selectedProjectSlug, true)
       const historyRes = await api.listProjectHistory(selectedProjectSlug, {
         page: 1,
@@ -1713,7 +1750,7 @@ export function ProjectHarnessTab({
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to run task ${taskId}`)
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.runTask', { taskId: taskId }))
     } finally {
       setRunningTaskId(null)
     }
@@ -1743,7 +1780,7 @@ export function ProjectHarnessTab({
           ? {
               ...prev,
               loadingPrompt: false,
-              error: err instanceof Error ? err.message : 'Failed to load task prompt',
+              error: err instanceof Error ? err.message : pageMessage('harness.page.errors.taskPrompt'),
             }
           : prev,
       )
@@ -1770,7 +1807,7 @@ export function ProjectHarnessTab({
     setContinueModalTask({
       taskId,
       runId,
-      taskName: taskName || tasks.find(t => t.id === taskId)?.name || taskId,
+      taskName: taskName || tasks.find(task => task.id === taskId)?.name || taskId,
       previousSteps,
       progressSummary,
       resumeSubtaskId,
@@ -1809,9 +1846,9 @@ export function ProjectHarnessTab({
     try {
       const saved = await api.updateProjectHarnessConfig(selectedProjectSlug, config)
       setConfig(normalizeHarnessConfig(saved))
-      setSuccessMsg('Project harness configuration saved to .goose/harness.yaml')
+      setSuccessMsg(pageMessage('harness.page.notices.configSaved'))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save harness configuration')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.saveConfig'))
     } finally {
       setSavingConfig(false)
     }
@@ -1819,10 +1856,10 @@ export function ProjectHarnessTab({
 
   const latestByTaskId = useMemo(() => {
     const map = new Map<string, HarnessHistorySummary>()
-    for (const t of tasks) {
-      const latest = latestRunForTask(history, t.id)
+    for (const task of tasks) {
+      const latest = latestRunForTask(history, task.id)
       if (latest) {
-        map.set(t.id, latest)
+        map.set(task.id, latest)
       }
     }
     return map
@@ -1851,11 +1888,11 @@ export function ProjectHarnessTab({
   )
 
   const taskNamesById = useMemo(
-    () => Object.fromEntries(tasks.map(t => [t.id, t.name])),
+    () => Object.fromEntries(tasks.map(task => [task.id, task.name])),
     [tasks],
   )
 
-  const allTags = Array.from(new Set(tasks.flatMap(t => (Array.isArray(t.tags) ? t.tags : []))))
+  const allTags = Array.from(new Set(tasks.flatMap(task => (Array.isArray(task.tags) ? task.tags : []))))
 
   const handleRunProjectEval = async () => {
     if (!selectedProjectSlug) return
@@ -1863,15 +1900,15 @@ export function ProjectHarnessTab({
     setError('')
     setSuccessMsg('')
     try {
-      const taskIds = filteredTasks.map(t => t.id)
+      const taskIds = filteredTasks.map(task => task.id)
       const report = await api.runProjectHarnessEval(selectedProjectSlug, { taskIds })
       setSelectedReportDetail(report)
       setSuccessMsg(
-        `Project eval completed! Pass rate: ${(report.metrics.passRate * 100).toFixed(1)}% (${report.metrics.passedTasks}/${report.metrics.totalTasks})`,
+        pageMessage('harness.page.evaluation.completed', { rate: formatNumber((report.metrics.passRate * 100), { minimumFractionDigits: 1, maximumFractionDigits: 1, useGrouping: false }), passed: report.metrics.passedTasks, total: report.metrics.totalTasks }),
       )
       await loadReports(selectedProjectSlug, true)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Project evaluation failed')
+      setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.evaluation'))
     } finally {
       setRunningEval(false)
     }
@@ -1924,7 +1961,7 @@ export function ProjectHarnessTab({
                 setMoreNavOpen(false)
               }}
             >
-              Tasks ({tasks.length})
+              {t('harness.page.nav.tasks', { count: tasks.length })}
             </button>
             <button
               type="button"
@@ -1934,7 +1971,7 @@ export function ProjectHarnessTab({
                 setMoreNavOpen(false)
               }}
             >
-              History {loadedSections.history ? `(${history.length})` : ''}
+              {t('harness.page.nav.history', { countLabel: loadedSections.history ? `(${history.length})` : '' })}
             </button>
             <div className="subnav-more-container">
               <button
@@ -1943,7 +1980,7 @@ export function ProjectHarnessTab({
                 onClick={() => setMoreNavOpen(prev => !prev)}
                 aria-expanded={moreNavOpen}
               >
-                <span>More</span>
+                <span>{t('harness.page.nav.more')}</span>
                 <ChevronDown size={13} />
               </button>
               {moreNavOpen && (
@@ -1958,7 +1995,7 @@ export function ProjectHarnessTab({
                     }}
                   >
                     <BarChart3 size={14} />
-                    <span>Reports {loadedSections.reports ? `(${reports.length})` : ''}</span>
+                    <span>{t('harness.page.nav.reports', { countLabel: loadedSections.reports ? `(${reports.length})` : '' })}</span>
                   </button>
                   <button
                     type="button"
@@ -1970,7 +2007,7 @@ export function ProjectHarnessTab({
                     }}
                   >
                     <Settings size={14} />
-                    <span>Config</span>
+                    <span>{t('harness.page.nav.config')}</span>
                   </button>
                   <button
                     type="button"
@@ -1982,7 +2019,7 @@ export function ProjectHarnessTab({
                     }}
                   >
                     <Disc size={14} />
-                    <span>Cassettes {loadedSections.cassettes ? `(${cassettes.length})` : ''}</span>
+                    <span>{t('harness.page.nav.cassettes', { countLabel: loadedSections.cassettes ? `(${cassettes.length})` : '' })}</span>
                   </button>
                 </div>
               )}
@@ -1991,8 +2028,8 @@ export function ProjectHarnessTab({
         </div>
       )}
 
-      {error && <div className="error-banner">{error}</div>}
-      {successMsg && <div className="success-banner">{successMsg}</div>}
+      {error && <div className="error-banner">{renderMessage(error)}</div>}
+      {successMsg && <div className="success-banner">{renderMessage(successMsg)}</div>}
 
       {(() => {
         const visibleActiveJobs = activeJobs.filter(
@@ -2004,7 +2041,7 @@ export function ProjectHarnessTab({
           <div className="active-jobs-banner sticky-active-jobs">
             <div className="active-jobs-list">
               {visibleActiveJobs.map(job => {
-                const matchedTask = tasks.find(t => t.id === job.taskId)
+                const matchedTask = tasks.find(task => task.id === job.taskId)
                 const title = matchedTask?.name || job.description || job.taskId
                 const elapsed = formatDurationMs(
                   Math.max(0, now - (Date.parse(job.startedAt) || now)),
@@ -2033,12 +2070,12 @@ export function ProjectHarnessTab({
                         void handleInspectRunningJob(job)
                       }
                     }}
-                    title="Open live agent log"
+                    title={t('harness.page.logs.openLive')}
                   >
                     <span className="live-dot" />
                     <span className="active-job-title">{title}</span>
                     <span className="active-job-elapsed">
-                      {job.currentStatus === 'queued' ? `Queued · ${elapsed}` : elapsed}
+                      {job.currentStatus === 'queued' ? t('harness.page.jobs.queued', { elapsed: elapsed }) : elapsed}
                     </span>
                     {job.model && <span className="active-job-model">{job.model}</span>}
                     {actionText && <span className="active-job-action">{actionText}</span>}
@@ -2050,11 +2087,11 @@ export function ProjectHarnessTab({
                         void handleStopRunningJob(job)
                       }}
                       disabled={stoppingTaskId === job.taskId}
-                      title={job.currentStatus === 'queued' ? 'Cancel queued task' : 'Stop this running job'}
+                      title={job.currentStatus === 'queued' ? t('harness.page.jobs.cancelQueued') : t('harness.page.jobs.stopTitle')}
                     >
                       {stoppingTaskId === job.taskId
-                        ? 'Stopping…'
-                        : job.currentStatus === 'queued' ? 'Cancel' : 'Stop'}
+                        ? t('harness.page.jobs.stopping')
+                        : job.currentStatus === 'queued' ? t('harness.page.actions.cancel') : t('harness.page.actions.stop')}
                     </button>
                   </div>
                 )
@@ -2072,20 +2109,19 @@ export function ProjectHarnessTab({
               <input
                 type="text"
                 className="form-input search-input"
-                placeholder="Search tasks by ID, name, category..."
+                placeholder={t('harness.page.search.placeholder')}
                 value={filterQuery}
                 onChange={e => setFilterQuery(e.target.value)}
               />
               {allTags.length > 0 && (
                 <div className="tags-filter-bar">
-                  <span className="chips-label">Tag:</span>
+                  <span className="chips-label">{t('harness.page.search.tag')}</span>
                   <button
                     type="button"
                     className={`chip-btn ${filterTag === '' ? 'selected' : ''}`}
                     onClick={() => setFilterTag('')}
                   >
-                    All
-                  </button>
+                    {t('harness.page.search.all')}</button>
                   {allTags.map(tag => (
                     <button
                       key={tag}
@@ -2103,10 +2139,10 @@ export function ProjectHarnessTab({
                   className="form-input form-select-sm task-sort-select"
                   value={taskSort}
                   onChange={e => setTaskSort(e.target.value as ProjectTaskSort)}
-                  aria-label="Sort tasks"
+                  aria-label={t('harness.page.search.sort')}
                 >
-                  <option value="activity">Last activity</option>
-                  <option value="created">Created</option>
+                  <option value="activity">{t('harness.page.search.activity')}</option>
+                  <option value="created">{t('harness.page.search.created')}</option>
                 </select>
               </div>
               <button
@@ -2115,15 +2151,14 @@ export function ProjectHarnessTab({
                 onClick={handleRunProjectEval}
                 disabled={runningEval || filteredTasks.length === 0}
               >
-                {runningEval ? 'Running eval…' : `Run these (${filteredTasks.length})`}
+                {runningEval ? t('harness.page.evaluation.running') : t('harness.page.evaluation.runFiltered', { count: filteredTasks.length })}
               </button>
             </div>
 
             <div className="tasks-actions-row">
               {!isEditingTask && (
                 <button type="button" className="btn-primary" onClick={handleOpenCreateTask}>
-                  New Task
-                </button>
+                  {t('harness.page.actions.create')}</button>
               )}
               <button
                 type="button"
@@ -2134,10 +2169,10 @@ export function ProjectHarnessTab({
                   }
                 }}
                 disabled={loading || Boolean(sectionLoading) || runningEval || runningTaskId !== null}
-                title="Refresh project data"
+                title={t('harness.page.actions.refreshTitle')}
               >
                 <RotateCcw size={13} />
-                <span>Refresh</span>
+                <span>{t('harness.page.actions.refresh')}</span>
               </button>
             </div>
           </div>
@@ -2147,7 +2182,7 @@ export function ProjectHarnessTab({
             <section
               ref={taskEditorRef}
               className="inline-task-creator"
-              aria-label={editingTaskId ? 'Task editor' : 'New task creator'}
+              aria-label={editingTaskId ? t('harness.page.editor.label') : t('harness.page.editor.createLabel')}
               onCompositionStart={() => {
                 imeEscapeUntilRef.current = Number.POSITIVE_INFINITY
               }}
@@ -2157,7 +2192,7 @@ export function ProjectHarnessTab({
             >
               <div className="inline-task-creator-header">
                 <h3 className="section-title inline-task-creator-title">
-                  {editingTaskId ? (taskForm.name || editingTaskId) : 'New Project Task'}
+                  {editingTaskId ? (taskForm.name || editingTaskId) : t('harness.page.editor.title')}
                 </h3>
                 <div className="inline-task-creator-actions">
                   {isCreatingTask && (
@@ -2167,8 +2202,7 @@ export function ProjectHarnessTab({
                       onClick={handleDiscardTaskCreatorDraft}
                       disabled={savingTask}
                     >
-                      Discard draft
-                    </button>
+                      {t('harness.page.editor.discard')}</button>
                   )}
                   <button
                     type="button"
@@ -2176,8 +2210,7 @@ export function ProjectHarnessTab({
                     onClick={() => closeTaskCreator({ discardDraft: false })}
                     disabled={savingTask}
                   >
-                    Collapse
-                  </button>
+                    {t('harness.page.editor.collapse')}</button>
                 </div>
               </div>
               {isCreatingTask && taskCreatorRestoredFrom && (
@@ -2189,16 +2222,14 @@ export function ProjectHarnessTab({
                       className="btn-secondary btn-sm"
                       onClick={() => setTaskCreatorRestoredFrom(null)}
                     >
-                      Keep editing
-                    </button>
+                      {t('harness.page.editor.keepEditing')}</button>
                     <button
                       type="button"
                       className="btn-secondary btn-sm"
                       onClick={handleDiscardTaskCreatorDraft}
                       disabled={savingTask}
                     >
-                      Start over
-                    </button>
+                      {t('harness.page.editor.startOver')}</button>
                   </div>
                 </div>
               )}
@@ -2244,53 +2275,53 @@ export function ProjectHarnessTab({
                       size={14}
                       className={taskCreatorExpanded.basics ? 'section-chevron expanded' : 'section-chevron'}
                     />
-                    <span>Basics</span>
+                    <span>{t('harness.page.editor.basics')}</span>
                   </button>
                   {taskCreatorExpanded.basics && (
                     <div className="inline-task-section-body">
                       <div className="form-row-2">
                         <div className="form-group">
-                          <label className="form-label">Task ID (Filename Slug)</label>
+                          <label className="form-label">{t('harness.page.editor.taskId')}</label>
                           <input
                             type="text"
                             className="form-input"
                             value={taskForm.id}
                             onChange={e => setTaskForm({ ...taskForm, id: e.target.value })}
-                            placeholder="e.g. fetch-polymarket-data"
+                            placeholder={t('harness.page.editor.idPlaceholder')}
                             disabled={!!editingTaskId}
                           />
                         </div>
                         <div className="form-group">
-                          <label className="form-label">Task Display Name</label>
+                          <label className="form-label">{t('harness.page.editor.taskName')}</label>
                           <input
                             type="text"
                             className="form-input"
                             value={taskForm.name || ''}
                             onChange={e => setTaskForm({ ...taskForm, name: e.target.value })}
-                            placeholder="e.g. Fetch Polymarket Live Markets"
+                            placeholder={t('harness.page.editor.namePlaceholder')}
                           />
                         </div>
                       </div>
 
                       <div className="form-row-2">
                         <div className="form-group">
-                          <label className="form-label">Category / Suite</label>
+                          <label className="form-label">{t('harness.page.editor.category')}</label>
                           <input
                             type="text"
                             className="form-input"
                             value={taskForm.category || ''}
                             onChange={e => setTaskForm({ ...taskForm, category: e.target.value })}
-                            placeholder="e.g. live-data-api or web3"
+                            placeholder={t('harness.page.editor.categoryPlaceholder')}
                           />
                         </div>
                         <div className="form-group">
-                          <label className="form-label">Tags (Comma Separated)</label>
+                          <label className="form-label">{t('harness.page.editor.tags')}</label>
                           <input
                             type="text"
                             className="form-input"
                             value={taskTagsInput}
                             onChange={e => setTaskTagsInput(e.target.value)}
-                            placeholder="e.g. python, api, regression"
+                            placeholder={t('harness.page.editor.tagsPlaceholder')}
                           />
                         </div>
                       </div>
@@ -2309,12 +2340,12 @@ export function ProjectHarnessTab({
                       size={14}
                       className={taskCreatorExpanded.prompt ? 'section-chevron expanded' : 'section-chevron'}
                     />
-                    <span>Instructions</span>
+                    <span>{t('harness.page.editor.instructions')}</span>
                   </button>
                   {taskCreatorExpanded.prompt && (
                     <div className="inline-task-section-body">
                       <div className="form-group mention-input-group" style={{ position: 'relative' }}>
-                        <label className="form-label">Task Instructions / Prompt</label>
+                        <label className="form-label">{t('harness.page.editor.prompt')}</label>
                         <MentionPopover
                           ref={taskMentionPopoverRef}
                           isOpen={taskMentionPopover.isOpen && taskMentionPopover.field === 'prompt'}
@@ -2357,7 +2388,7 @@ export function ProjectHarnessTab({
                             debouncedTaskCursorMentionUpdate(e.currentTarget.value, cursorPos, 'prompt')
                           }}
                           onKeyDown={handleTaskPromptKeyDown}
-                          placeholder="Instructions for the agent to execute in the project repository workspace (type @ to mention attached files, repo files, rules, or agents)..."
+                          placeholder={t('harness.page.editor.promptPlaceholder')}
                         />
                         <button
                           type="button"
@@ -2369,12 +2400,12 @@ export function ProjectHarnessTab({
                           }
                           disabled={drafting || !taskForm.prompt.trim()}
                         >
-                          {drafting ? 'Drafting…' : 'Split long task'}
+                          {drafting ? t('harness.page.editor.splitting') : t('harness.page.editor.split')}
                         </button>
                       </div>
 
                       <div className="form-group task-attach-row">
-                        <label className="form-label">Attach files (Excel, PDF, images)</label>
+                        <label className="form-label">{t('harness.page.attachments.label')}</label>
                         <input
                           ref={taskAttachInputRef}
                           type="file"
@@ -2390,11 +2421,9 @@ export function ProjectHarnessTab({
                             onClick={() => taskAttachInputRef.current?.click()}
                             disabled={savingTask}
                           >
-                            <Paperclip size={16} /> Attach files
-                          </button>
+                            <Paperclip size={16} />{' '}{t('harness.page.attachments.add')}</button>
                           <span className="form-hint">
-                            Files are saved into the project workspace. Type @ or click a file name to mention it in the prompt.
-                          </span>
+                            {t('harness.page.attachments.help')}</span>
                         </div>
                         {(existingAttachmentMentions.length > 0 || taskAttachments.length > 0) && (
                           <ul className="task-attach-list">
@@ -2406,7 +2435,7 @@ export function ProjectHarnessTab({
                                 <button
                                   type="button"
                                   className="task-attach-mention"
-                                  title={`Mention @${item.relativePath} in the prompt`}
+                                  title={t('harness.page.attachments.mention', { path: item.relativePath })}
                                   onClick={() => handleInsertAttachmentMention(item.relativePath)}
                                 >
                                   {item.name}
@@ -2418,14 +2447,14 @@ export function ProjectHarnessTab({
                                 <button
                                   type="button"
                                   className="task-attach-mention"
-                                  title={`Mention @${item.relativePath} in the prompt`}
+                                  title={t('harness.page.attachments.mention', { path: item.relativePath })}
                                   onClick={() => handleInsertAttachmentMention(item.relativePath)}
                                 >
                                   {item.name}
                                 </button>
                                 <button
                                   type="button"
-                                  aria-label={`Remove ${item.name}`}
+                                  aria-label={t('harness.page.attachments.remove', { name: item.name })}
                                   onClick={() => handleRemoveAttachment(index)}
                                   disabled={savingTask}
                                 >
@@ -2452,12 +2481,12 @@ export function ProjectHarnessTab({
                       size={14}
                       className={taskCreatorExpanded.verifier ? 'section-chevron expanded' : 'section-chevron'}
                     />
-                    <span>Automated verifier</span>
+                    <span>{t('harness.page.verifier.heading')}</span>
                   </button>
                   {taskCreatorExpanded.verifier && (
                     <div className="inline-task-section-body">
                       <div className="verifier-section">
-                        <label className="form-label">Automated Evaluation Verifier</label>
+                        <label className="form-label">{t('harness.page.verifier.label')}</label>
                         <div className="verifier-type-toggle">
                           <label>
                             <input
@@ -2466,8 +2495,7 @@ export function ProjectHarnessTab({
                               checked={verifierType === 'none'}
                               onChange={() => setVerifierType('none')}
                             />{' '}
-                            None (Manual)
-                          </label>
+                            {t('harness.page.verifier.manual')}</label>
                           <label>
                             <input
                               type="radio"
@@ -2475,8 +2503,7 @@ export function ProjectHarnessTab({
                               checked={verifierType === 'command'}
                               onChange={() => setVerifierType('command')}
                             />{' '}
-                            Command Assertion (Shell)
-                          </label>
+                            {t('harness.page.verifier.command')}</label>
                           <label>
                             <input
                               type="radio"
@@ -2484,35 +2511,34 @@ export function ProjectHarnessTab({
                               checked={verifierType === 'diff'}
                               onChange={() => setVerifierType('diff')}
                             />{' '}
-                            File Content Diff (Patch)
-                          </label>
+                            {t('harness.page.verifier.diff')}</label>
                         </div>
 
                         {verifierType === 'command' && (
                           <div className="verifier-subform">
                             <div className="form-group">
-                              <label className="form-label">Test Command</label>
+                              <label className="form-label">{t('harness.page.verifier.testCommand')}</label>
                               <input
                                 type="text"
                                 className="form-input"
                                 value={verifierCommand}
                                 onChange={e => setVerifierCommand(e.target.value)}
-                                placeholder={"e.g. python3 -c 'import json; assert len(json.load(open(\"markets.json\"))) >= 5; print(\"PASS\")'"}
+                                placeholder={t('harness.page.verifier.commandPlaceholder')}
                               />
                             </div>
                             <div className="form-row-2">
                               <div className="form-group">
-                                <label className="form-label">Expected Stdout Substring</label>
+                                <label className="form-label">{t('harness.page.verifier.stdout')}</label>
                                 <input
                                   type="text"
                                   className="form-input"
                                   value={verifierExpectedStdout}
                                   onChange={e => setVerifierExpectedStdout(e.target.value)}
-                                  placeholder="e.g. PASS"
+                                  placeholder={t('harness.page.verifier.stdoutPlaceholder')}
                                 />
                               </div>
                               <div className="form-group">
-                                <label className="form-label">Expected Exit Code</label>
+                                <label className="form-label">{t('harness.page.verifier.exitCode')}</label>
                                 <input
                                   type="number"
                                   className="form-input"
@@ -2527,23 +2553,23 @@ export function ProjectHarnessTab({
                         {verifierType === 'diff' && (
                           <div className="verifier-subform">
                             <div className="form-group">
-                              <label className="form-label">Target File Path</label>
+                              <label className="form-label">{t('harness.page.verifier.filePath')}</label>
                               <input
                                 type="text"
                                 className="form-input"
                                 value={verifierFilePath}
                                 onChange={e => setVerifierFilePath(e.target.value)}
-                                placeholder="e.g. src/index.ts or markets.json"
+                                placeholder={t('harness.page.verifier.pathPlaceholder')}
                               />
                             </div>
                             <div className="form-group">
-                              <label className="form-label">Expected Content Contains</label>
+                              <label className="form-label">{t('harness.page.verifier.content')}</label>
                               <textarea
                                 className="form-textarea"
                                 rows={3}
                                 value={verifierExpectedContent}
                                 onChange={e => setVerifierExpectedContent(e.target.value)}
-                                placeholder="Expected snippet or text in the file"
+                                placeholder={t('harness.page.verifier.contentPlaceholder')}
                               />
                             </div>
                           </div>
@@ -2564,28 +2590,27 @@ export function ProjectHarnessTab({
                       size={14}
                       className={taskCreatorExpanded.subtasks ? 'section-chevron expanded' : 'section-chevron'}
                     />
-                    <span>Budget & subtasks</span>
+                    <span>{t('harness.page.budget.heading')}</span>
                   </button>
                   {taskCreatorExpanded.subtasks && (
                     <div className="inline-task-section-body">
                       <div className="budget-section">
                         <div className="budget-header-flex">
                           <label className="form-label" style={{ marginBottom: 0 }}>
-                            Execution Budget
-                          </label>
+                            {t('harness.page.budget.label')}</label>
                           <div className="budget-header-actions">
                             <button
                               type="button"
                               className="btn btn-xs btn-outline budget-estimate-btn"
                               onClick={() => handleEstimateBudget()}
                               disabled={estimatingBudget || !taskForm.prompt.trim()}
-                              title="Analyze prompt using AI to estimate max turns and timeout"
+                              title={t('harness.page.budget.analyze')}
                             >
                               {estimatingBudget
-                                ? '⏳ Estimating...'
+                                ? t('harness.page.budget.estimating')
                                 : estimateInfo
-                                ? '🔄 Re-estimate'
-                                : '🪄 AI Estimate Budget'}
+                                ? t('harness.page.budget.reestimate')
+                                : t('harness.page.budget.estimate')}
                             </button>
                           </div>
                         </div>
@@ -2594,10 +2619,10 @@ export function ProjectHarnessTab({
                             <div className="budget-badge-top">
                               <span className="complexity-tag">{estimateInfo.complexity.toUpperCase()}</span>
                               <span className="budget-source-tag">
-                                {estimateInfo.source.includes('model') ? '⚡ AI Model' : '📋 Heuristic'}
+                                {estimateInfo.source.includes('model') ? t('harness.page.budget.model') : t('harness.page.budget.heuristic')}
                               </span>
                               <span className="budget-turns-tag">
-                                ~{estimateInfo.suggestedMaxTurns} turns ({estimateInfo.suggestedTimeoutSeconds}s)
+                                {t('harness.page.budget.summary', { turns: estimateInfo.suggestedMaxTurns, seconds: estimateInfo.suggestedTimeoutSeconds })}
                               </span>
                             </div>
                             <div className="budget-reasoning">{estimateInfo.reasoning}</div>
@@ -2605,15 +2630,14 @@ export function ProjectHarnessTab({
                             <div className="budget-correction-card">
                               <div className="budget-correction-header">
                                 <span className="budget-correction-title">
-                                  💬 Comment & Correct Estimation
-                                </span>
+                                  {t('harness.page.budget.correct')}</span>
                                 <div className="budget-quick-adjust-group">
-                                  <span className="quick-adjust-label">Quick adjust:</span>
+                                  <span className="quick-adjust-label">{t('harness.page.budget.quickAdjust')}</span>
                                   <button
                                     type="button"
                                     className="quick-adjust-btn"
                                     onClick={() => handleAdjustBudgetMultiplier(0.75)}
-                                    title="Decrease max turns by 25%"
+                                    title={t('harness.page.budget.decrease')}
                                   >
                                     −25%
                                   </button>
@@ -2621,7 +2645,7 @@ export function ProjectHarnessTab({
                                     type="button"
                                     className="quick-adjust-btn"
                                     onClick={() => handleAdjustBudgetMultiplier(1.25)}
-                                    title="Increase max turns by 25%"
+                                    title={t('harness.page.budget.increaseQuarter')}
                                   >
                                     +25%
                                   </button>
@@ -2629,7 +2653,7 @@ export function ProjectHarnessTab({
                                     type="button"
                                     className="quick-adjust-btn"
                                     onClick={() => handleAdjustBudgetMultiplier(1.5)}
-                                    title="Increase max turns by 50%"
+                                    title={t('harness.page.budget.increaseHalf')}
                                   >
                                     +50%
                                   </button>
@@ -2637,10 +2661,9 @@ export function ProjectHarnessTab({
                                     type="button"
                                     className="quick-adjust-btn"
                                     onClick={() => handleAdjustBudgetMultiplier(2.0)}
-                                    title="Double max turns (2x)"
+                                    title={t('harness.page.budget.doubleTitle')}
                                   >
-                                    2x
-                                  </button>
+                                    {t('harness.page.budget.double')}</button>
                                 </div>
                               </div>
                               <div className="budget-feedback-row">
@@ -2649,7 +2672,7 @@ export function ProjectHarnessTab({
                                   className="form-input budget-feedback-input"
                                   value={estimateFeedback}
                                   onChange={e => setEstimateFeedback(e.target.value)}
-                                  placeholder="Comment or correction (e.g. 'Single file change, reduce turns', 'Slow tests, need 100 turns')..."
+                                  placeholder={t('harness.page.budget.feedbackPlaceholder')}
                                   onKeyDown={e => {
                                     if (e.key === 'Enter' && !estimatingBudget && estimateFeedback.trim()) {
                                       e.preventDefault()
@@ -2662,9 +2685,9 @@ export function ProjectHarnessTab({
                                   className="btn btn-xs btn-primary budget-refine-btn"
                                   onClick={() => handleEstimateBudget()}
                                   disabled={estimatingBudget || !estimateFeedback.trim()}
-                                  title="Recalibrate budget with your comments/feedback"
+                                  title={t('harness.page.budget.refineTitle')}
                                 >
-                                  {estimatingBudget ? '⏳ Calibrating...' : '✨ Apply Feedback'}
+                                  {estimatingBudget ? t('harness.page.budget.calibrating') : t('harness.page.budget.applyFeedback')}
                                 </button>
                               </div>
                             </div>
@@ -2674,7 +2697,7 @@ export function ProjectHarnessTab({
 
                   <div className="form-row-2">
                     <div className="form-group">
-                      <label className="form-label">Max Turns</label>
+                      <label className="form-label">{t('harness.page.budget.maxTurns')}</label>
                       <input
                         type="number"
                         min={1}
@@ -2692,7 +2715,7 @@ export function ProjectHarnessTab({
                       />
                     </div>
                     <div className="form-group">
-                      <label className="form-label">Timeout (Seconds)</label>
+                      <label className="form-label">{t('harness.page.budget.timeout')}</label>
                       <input
                         type="number"
                         min={10}
@@ -2724,13 +2747,9 @@ export function ProjectHarnessTab({
                       />
                       <div>
                         <div style={{ fontWeight: 600, fontSize: '0.875rem' }}>
-                          Accept a dynamic prompt before each run
-                        </div>
+                          {t('harness.page.dynamic.enable')}</div>
                         <div style={{ fontSize: '0.75rem', opacity: 0.75, marginTop: '0.15rem', lineHeight: '1.35' }}>
-                          Run and Record open a dialog with this prompt plus an extra-instructions field.
-                          Those instructions apply to that run only. In file review, a selected passage can
-                          be sent as the extra prompt from a context menu.
-                        </div>
+                          {t('harness.page.dynamic.help')}</div>
                       </div>
                     </label>
                   </div>
@@ -2790,12 +2809,12 @@ export function ProjectHarnessTab({
                       size={14}
                       className={taskCreatorExpanded.schedule ? 'section-chevron expanded' : 'section-chevron'}
                     />
-                    <span>Schedule</span>
+                    <span>{t('harness.page.schedule.heading')}</span>
                   </button>
                   {taskCreatorExpanded.schedule && (
                     <div className="inline-task-section-body">
                       <div className="form-group">
-                        <label className="form-label">Run automatically</label>
+                        <label className="form-label">{t('harness.page.schedule.automatic')}</label>
                         <select
                           className="form-input"
                           value={schedule.kind}
@@ -2806,17 +2825,17 @@ export function ProjectHarnessTab({
                             })
                           }
                         >
-                          <option value="none">No, only when I click Run</option>
-                          <option value="hourly">Every hour</option>
-                          <option value="daily">Every day</option>
-                          <option value="weekdays">Weekdays (Monday–Friday)</option>
-                          <option value="weekly">Once a week</option>
+                          <option value="none">{t('harness.page.schedule.manualOption')}</option>
+                          <option value="hourly">{t('harness.page.schedule.hourly')}</option>
+                          <option value="daily">{t('harness.page.schedule.dailyOption')}</option>
+                          <option value="weekdays">{t('harness.page.schedule.weekdaysOption')}</option>
+                          <option value="weekly">{t('harness.page.schedule.weeklyOption')}</option>
                         </select>
                         {schedule.kind !== 'none' && schedule.kind !== 'hourly' && (
                           <div className="schedule-fields">
                             {schedule.kind === 'weekly' && (
                               <label className="form-group">
-                                <span className="form-label">On</span>
+                                <span className="form-label">{t('harness.page.schedule.dayLabel')}</span>
                                 <select
                                   className="form-input"
                                   value={schedule.weekday}
@@ -2829,14 +2848,14 @@ export function ProjectHarnessTab({
                                 >
                                   {WEEKDAYS.map((day, index) => (
                                     <option key={day} value={index}>
-                                      {day}
+                                      {weekdays[index]}
                                     </option>
                                   ))}
                                 </select>
                               </label>
                             )}
                             <label className="form-group">
-                              <span className="form-label">At</span>
+                              <span className="form-label">{t('harness.page.schedule.timeLabel')}</span>
                               <input
                                 type="time"
                                 className="form-input"
@@ -2864,8 +2883,8 @@ export function ProjectHarnessTab({
                   disabled={savingTask}
                 >
                   {savingTask
-                    ? 'Saving…'
-                    : `Save Task (.goose/tasks/${taskForm.id}.yaml)`}
+                    ? t('harness.page.editor.saving')
+                    : t('harness.page.editor.save', { taskId: taskForm.id })}
                 </button>
                 <button
                   type="button"
@@ -2873,8 +2892,7 @@ export function ProjectHarnessTab({
                   onClick={() => closeTaskCreator({ discardDraft: true })}
                   disabled={savingTask}
                 >
-                  Cancel
-                </button>
+                  {t('harness.page.actions.cancel')}</button>
               </div>
               </div>
             </section>
@@ -2891,21 +2909,20 @@ export function ProjectHarnessTab({
               if (isEditingTask) return null
               return (
                 <div className="empty-tasks-card">
-                  <p className="empty-text">No tasks found in this project.</p>
+                  <p className="empty-text">{t('harness.page.tasks.empty')}</p>
                   <button
                     type="button"
                     className="btn-primary"
                     onClick={handleOpenCreateTask}
                   >
-                    Create your first Task
-                  </button>
+                    {t('harness.page.tasks.createFirst')}</button>
                 </div>
               )
             }
             if (emptyState === 'no-match') {
               return (
                 <div className="empty-tasks-card">
-                  <p className="empty-text">No tasks match your filter criteria.</p>
+                  <p className="empty-text">{t('harness.page.tasks.noMatch')}</p>
                   <button
                     type="button"
                     className="btn-secondary"
@@ -2914,15 +2931,14 @@ export function ProjectHarnessTab({
                       setFilterTag('')
                     }}
                   >
-                    Clear filters
-                  </button>
+                    {t('harness.page.tasks.clearFilters')}</button>
                 </div>
               )
             }
             return (
               <div className="tasks-grid">
-                {filteredTasks.map(t => {
-                  const runningJob = activeJobs.find(job => job.taskId === t.id)
+                {filteredTasks.map(task => {
+                  const runningJob = activeJobs.find(job => job.taskId === task.id)
                   const runningSnapshot =
                     runningJob && inspectingJobId === runningJob.jobId && liveInspect
                       ? activeTrajectoryView
@@ -2938,7 +2954,7 @@ export function ProjectHarnessTab({
                         stepCount,
                       }
                     : undefined
-                  const latestRun = latestByTaskId.get(t.id)
+                  const latestRun = latestByTaskId.get(task.id)
 
                   const lastRunPres = presentLastRun({
                     historyLoaded: Boolean(loadedSections.history),
@@ -2949,33 +2965,33 @@ export function ProjectHarnessTab({
                   })
 
                   return (
-                    <div key={t.id} className="task-card">
+                    <div key={task.id} className="task-card">
                       <div className="task-card-header">
                         <div>
-                          <h4 className="task-card-title">{t.name}</h4>
-                          <code className="task-card-id">{t.id}</code>
+                          <h4 className="task-card-title">{task.name}</h4>
+                          <code className="task-card-id">{task.id}</code>
                         </div>
                         <div className="task-badges">
-                          {t.category && <span className="badge category-badge">{t.category}</span>}
-                          {t.hasVerifier && (
-                            <span className="badge verifier-badge">✓ Verifier</span>
+                          {task.category && <span className="badge category-badge">{task.category}</span>}
+                          {task.hasVerifier && (
+                            <span className="badge verifier-badge">{t('harness.page.tasks.verifier')}</span>
                           )}
-                          {t.cron && (
-                            t.schedulePaused ? (
-                              <span className="badge schedule-paused-badge">Auto-run off</span>
+                          {task.cron && (
+                            task.schedulePaused ? (
+                              <span className="badge schedule-paused-badge">{t('harness.page.tasks.autoRunOff')}</span>
                             ) : (
-                              <span className="badge schedule-badge">Auto-runs</span>
+                              <span className="badge schedule-badge">{t('harness.page.tasks.autoRuns')}</span>
                             )
                           )}
-                          {t.dynamicPrompt && (
-                            <span className="badge dynamic-prompt-badge">Dynamic prompt</span>
+                          {task.dynamicPrompt && (
+                            <span className="badge dynamic-prompt-badge">{t('harness.page.tasks.dynamicPrompt')}</span>
                           )}
                         </div>
                       </div>
 
-                      {t.tags.length > 0 && (
+                      {task.tags.length > 0 && (
                         <div className="task-card-tags">
-                          {t.tags.map(tag => (
+                          {task.tags.map(tag => (
                             <span key={tag} className="tag-pill">
                               #{tag}
                             </span>
@@ -2983,29 +2999,28 @@ export function ProjectHarnessTab({
                         </div>
                       )}
 
-                      {t.promptPreview && (
-                        <div className="task-card-prompt-preview">{t.promptPreview}</div>
+                      {task.promptPreview && (
+                        <div className="task-card-prompt-preview">{task.promptPreview}</div>
                       )}
 
                       <div className="task-card-status">
                         {lastRunPres.kind === 'loading' && (
-                          <div className="task-card-status-skeleton" aria-label="Loading last run status" />
+                          <div className="task-card-status-skeleton" aria-label={t('harness.page.tasks.loadingStatus')} />
                         )}
                         {lastRunPres.kind === 'unavailable' && (
                           <div className="task-card-status-error">
-                            <span>Couldn't load the last run</span>
+                            <span>{t('harness.page.tasks.lastRunError')}</span>
                             <button
                               type="button"
                               className="btn-retry-inline"
                               onClick={() => void handleRetryHistory()}
                             >
-                              Retry
-                            </button>
+                              {t('harness.page.actions.retry')}</button>
                           </div>
                         )}
                         {lastRunPres.kind === 'none' && (
                           <div className="task-card-status-empty">
-                            <span>No runs yet</span>
+                            <span>{t('harness.page.tasks.noRuns')}</span>
                           </div>
                         )}
                         {lastRunPres.kind === 'running' && (
@@ -3030,7 +3045,7 @@ export function ProjectHarnessTab({
                                 }
                               }
                             }}
-                            title="Focus running job in banner"
+                            title={t('harness.page.tasks.focusJob')}
                           >
                             <span className="task-status-text">{lastRunPres.text}</span>
                           </div>
@@ -3045,7 +3060,7 @@ export function ProjectHarnessTab({
                                 void handleSelectHistory(summary, 'tasks')
                               }
                             }}
-                            title="Open agent log for this run"
+                            title={t('harness.page.logs.openRun')}
                           >
                             <div className="task-status-line">{lastRunPres.text}</div>
                             {lastRunPres.detail && (
@@ -3055,24 +3070,24 @@ export function ProjectHarnessTab({
                         )}
                       </div>
 
-                      {t.cron && (
+                      {task.cron && (
                         <div className="task-card-schedule">
-                          <span>{describeTaskSchedule(t.cron, t.schedulePaused)}</span>
-                          {!t.schedulePaused && t.nextRunAt && (
-                            <span>Next run {new Date(t.nextRunAt).toLocaleString()}</span>
+                          <span>{describeLocalizedTaskSchedule(task.cron, task.schedulePaused)}</span>
+                          {!task.schedulePaused && task.nextRunAt && (
+                            <span>{t('harness.page.tasks.nextRun', { date: formatDateTime(new Date(task.nextRunAt)) })}</span>
                           )}
                         </div>
                       )}
 
                       {(() => {
-                        const latest = latestRunForTask(history, t.id)
+                        const latest = latestRunForTask(history, task.id)
                         const canContinue = Boolean(
                           latest &&
                             (latest.continuable || isContinuableStatus(String(latest.status))),
                         )
                         const isTaskBusy =
-                          runningTaskId === t.id || activeJobs.some(job => job.taskId === t.id)
-                        const isMenuOpen = openMenuTaskId === t.id
+                          runningTaskId === task.id || activeJobs.some(job => job.taskId === task.id)
+                        const isMenuOpen = openMenuTaskId === task.id
 
                         return (
                           <div className="task-card-actions">
@@ -3084,9 +3099,9 @@ export function ProjectHarnessTab({
                                     className="btn-action continue-btn continue-btn-primary"
                                     onClick={() =>
                                       handleOpenContinueModal(
-                                        t.id,
+                                        task.id,
                                         latest.stepCount || 25,
-                                        t.name,
+                                        task.name,
                                         latest.id,
                                         latest.progressSummary ?? undefined,
                                         latest.resumeSubtaskId ?? undefined,
@@ -3095,13 +3110,13 @@ export function ProjectHarnessTab({
                                       )
                                     }
                                     disabled={isTaskBusy}
-                                    title="Continue task seeded with progress from previous run"
+                                    title={t('harness.page.continue.open')}
                                   >
                                     <FastForward size={13} fill="currentColor" />
                                     <span>
                                       {latest.resumeSubtaskTitle
-                                        ? `Resume: ${latest.resumeSubtaskTitle}`
-                                        : 'Continue'}
+                                        ? t('harness.page.continue.resume', { title: latest.resumeSubtaskTitle })
+                                        : t('harness.page.continue.action')}
                                     </span>
                                   </button>
                                   {isHistoryFollowUpStatus(String(latest.status)) && (
@@ -3110,31 +3125,31 @@ export function ProjectHarnessTab({
                                       className="btn-action continue-btn"
                                       onClick={() => void handleSelectHistory(latest, 'tasks')}
                                       disabled={isTaskBusy}
-                                      title="Open this run and continue it with its history and a new prompt"
+                                      title={t('harness.page.continue.followUpTitle')}
                                     >
                                       <FastForward size={13} />
-                                      <span>Follow up</span>
+                                      <span>{t('harness.page.continue.followUp')}</span>
                                     </button>
                                   )}
                                   <button
                                     type="button"
                                     className="btn-action run-btn run-btn-outline"
                                     onClick={() => {
-                                      if (t.dynamicPrompt) {
-                                        void openDynamicRun(t, false)
+                                      if (task.dynamicPrompt) {
+                                        void openDynamicRun(task, false)
                                       } else {
-                                        void handleRunTask(t.id, false)
+                                        void handleRunTask(task.id, false)
                                       }
                                     }}
                                     disabled={isTaskBusy}
                                     title={
-                                      t.dynamicPrompt
-                                        ? 'Review prompt and run fresh'
-                                        : 'Run fresh from start'
+                                      task.dynamicPrompt
+                                        ? t('harness.page.run.reviewFresh')
+                                        : t('harness.page.run.fresh')
                                     }
                                   >
                                     <Play size={13} />
-                                    <span>Run</span>
+                                    <span>{t('harness.page.actions.run')}</span>
                                   </button>
                                 </>
                               ) : (
@@ -3145,40 +3160,40 @@ export function ProjectHarnessTab({
                                     className="btn-action continue-btn"
                                     onClick={() => void handleSelectHistory(latest, 'tasks')}
                                     disabled={isTaskBusy}
-                                    title="Open this run and continue it with its history and a new prompt"
+                                    title={t('harness.page.continue.followUpTitle')}
                                   >
                                     <FastForward size={13} />
-                                    <span>Follow up</span>
+                                    <span>{t('harness.page.continue.followUp')}</span>
                                   </button>
                                 )}
                                 <button
                                   type="button"
                                   className="btn-action run-btn run-btn-filled"
                                   onClick={() => {
-                                    if (t.dynamicPrompt) {
-                                      void openDynamicRun(t, false)
+                                    if (task.dynamicPrompt) {
+                                      void openDynamicRun(task, false)
                                     } else {
-                                      void handleRunTask(t.id, false)
+                                      void handleRunTask(task.id, false)
                                     }
                                   }}
                                   disabled={isTaskBusy}
                                   title={
                                     isTaskBusy
-                                      ? 'Task is currently running'
-                                      : t.dynamicPrompt
-                                        ? 'Review the current prompt and add extra instructions for this run'
-                                        : 'Run this task'
+                                      ? t('harness.page.run.busy')
+                                      : task.dynamicPrompt
+                                        ? t('harness.page.run.reviewExtra')
+                                        : t('harness.page.run.title')
                                   }
                                 >
                                   {isTaskBusy ? (
                                     <>
                                       <Loader2 size={13} className="spinning" />
-                                      <span>Running...</span>
+                                      <span>{t('harness.page.run.running')}</span>
                                     </>
                                   ) : (
                                     <>
                                       <Play size={13} fill="currentColor" />
-                                      <span>Run</span>
+                                      <span>{t('harness.page.actions.run')}</span>
                                     </>
                                   )}
                                 </button>
@@ -3193,10 +3208,10 @@ export function ProjectHarnessTab({
                                   className={`btn-action task-menu-btn ${isMenuOpen ? 'is-active' : ''}`}
                                   onClick={e => {
                                     e.stopPropagation()
-                                    setOpenMenuTaskId(isMenuOpen ? null : t.id)
+                                    setOpenMenuTaskId(isMenuOpen ? null : task.id)
                                   }}
-                                  title="Task actions"
-                                  aria-label="More task actions"
+                                  title={t('harness.page.actions.taskMenu')}
+                                  aria-label={t('harness.page.actions.moreTasks')}
                                   aria-expanded={isMenuOpen}
                                 >
                                   <MoreHorizontal size={15} />
@@ -3213,17 +3228,17 @@ export function ProjectHarnessTab({
                                       role="menuitem"
                                       onClick={() => {
                                         setOpenMenuTaskId(null)
-                                        if (t.dynamicPrompt) {
-                                          void openDynamicRun(t, true)
+                                        if (task.dynamicPrompt) {
+                                          void openDynamicRun(task, true)
                                         } else {
-                                          void handleRunTask(t.id, true)
+                                          void handleRunTask(task.id, true)
                                         }
                                       }}
                                       disabled={isTaskBusy}
-                                      title="Run and record cassette for offline deterministic replay"
+                                      title={t('harness.page.record.title')}
                                     >
                                       <CircleDot size={13} />
-                                      <span>Record</span>
+                                      <span>{t('harness.page.actions.record')}</span>
                                     </button>
                                     <button
                                       type="button"
@@ -3231,25 +3246,25 @@ export function ProjectHarnessTab({
                                       role="menuitem"
                                       onClick={() => {
                                         setOpenMenuTaskId(null)
-                                        handleOpenEditTask(t.id)
+                                        handleOpenEditTask(task.id)
                                       }}
                                     >
                                       <Pencil size={13} />
-                                      <span>Edit</span>
+                                      <span>{t('harness.page.actions.edit')}</span>
                                     </button>
-                                    {t.cron && (
+                                    {task.cron && (
                                       <button
                                         type="button"
                                         className="task-overflow-item"
                                         role="menuitem"
                                         onClick={() => {
                                           setOpenMenuTaskId(null)
-                                          void handleToggleSchedulePause(t)
+                                          void handleToggleSchedulePause(task)
                                         }}
                                       >
                                         <Clock size={13} />
                                         <span>
-                                          {t.schedulePaused ? 'Resume auto-runs' : 'Pause auto-runs'}
+                                          {task.schedulePaused ? t('harness.page.schedule.resume') : t('harness.page.schedule.pause')}
                                         </span>
                                       </button>
                                     )}
@@ -3259,12 +3274,12 @@ export function ProjectHarnessTab({
                                       role="menuitem"
                                       onClick={() => {
                                         setOpenMenuTaskId(null)
-                                        setHistoryTaskFilter(t.id)
+                                        setHistoryTaskFilter(task.id)
                                         setSubTab('history')
                                       }}
                                     >
                                       <History size={13} />
-                                      <span>All runs</span>
+                                      <span>{t('harness.page.actions.allRuns')}</span>
                                     </button>
                                     <div className="task-overflow-divider" />
                                     <button
@@ -3273,11 +3288,11 @@ export function ProjectHarnessTab({
                                       role="menuitem"
                                       onClick={() => {
                                         setOpenMenuTaskId(null)
-                                        void handleDeleteTask(t.id, t.name)
+                                        void handleDeleteTask(task.id, task.name)
                                       }}
                                     >
                                       <Trash2 size={13} />
-                                      <span>Delete</span>
+                                      <span>{t('harness.page.actions.delete')}</span>
                                     </button>
                                   </div>
                                 )}
@@ -3299,7 +3314,7 @@ export function ProjectHarnessTab({
       {subTab === 'config' && (
         sectionLoading === 'config' && !config ? (
           <div className="harness-card project-config-card">
-            <h3 className="section-title">⚙️ Project Harness Configuration</h3>
+            <h3 className="section-title">{t('harness.page.config.heading')}</h3>
             <div className="tab-skeleton-container mt-3">
               <SkeletonBox height="40px" borderRadius="var(--radius-sm)" />
               <SkeletonBox height="180px" className="mt-3" borderRadius="var(--radius-md)" />
@@ -3307,16 +3322,16 @@ export function ProjectHarnessTab({
           </div>
         ) : config ? (
           <div className="harness-card project-config-card">
-            <h3 className="section-title">⚙️ Project Harness Configuration</h3>
+            <h3 className="section-title">{t('harness.page.config.heading')}</h3>
           <p className="section-desc">
-            Project-level execution defaults stored in <code>.goose/harness.yaml</code>.
+            <Trans t={t} i18nKey="harness.page.config.storage" values={{ path: '.goose/harness.yaml' }} components={{ path: <code /> }} />
           </p>
 
           <div className="form-grid">
-            <h4 className="sub-section-title">🤖 Model & Agent Policy Override</h4>
+            <h4 className="sub-section-title">{t('harness.page.config.policy')}</h4>
             <div className="form-row-2">
               <div className="form-group">
-                <label className="form-label">Default Provider Override</label>
+                <label className="form-label">{t('harness.page.config.provider')}</label>
                 <input
                   type="text"
                   className="form-input"
@@ -3327,11 +3342,11 @@ export function ProjectHarnessTab({
                       policy: { ...(config.policy || {}), provider: e.target.value || undefined },
                     })
                   }
-                  placeholder="e.g. anthropic or openai (blank to use global default)"
+                  placeholder={t('harness.page.config.providerPlaceholder')}
                 />
               </div>
               <div className="form-group">
-                <label className="form-label">Default Model Override</label>
+                <label className="form-label">{t('harness.page.config.model')}</label>
                 <input
                   type="text"
                   className="form-input"
@@ -3342,13 +3357,13 @@ export function ProjectHarnessTab({
                       policy: { ...(config.policy || {}), model: e.target.value || undefined },
                     })
                   }
-                  placeholder="e.g. claude-3-7-sonnet (blank to use global default)"
+                  placeholder={t('harness.page.config.modelPlaceholder')}
                 />
               </div>
             </div>
 
             <div className="form-group">
-              <label className="form-label">Project Custom System Prompt</label>
+              <label className="form-label">{t('harness.page.config.systemPrompt')}</label>
               <textarea
                 className="form-textarea"
                 rows={3}
@@ -3359,14 +3374,14 @@ export function ProjectHarnessTab({
                     policy: { ...(config.policy || {}), systemPrompt: e.target.value || undefined },
                   })
                 }
-                placeholder="Custom agent prompt instructions tailored to this repository..."
+                placeholder={t('harness.page.config.promptPlaceholder')}
               />
             </div>
 
-            <h4 className="sub-section-title">📦 Sandbox & Execution Environment</h4>
+            <h4 className="sub-section-title">{t('harness.page.config.environment')}</h4>
             <div className="form-row-2">
               <div className="form-group">
-                <label className="form-label">Sandbox Kind</label>
+                <label className="form-label">{t('harness.page.config.sandboxKind')}</label>
                 <select
                   className="form-input"
                   value={config.sandbox?.kind || 'local'}
@@ -3377,18 +3392,17 @@ export function ProjectHarnessTab({
                     })
                   }
                 >
-                  <option value="local">Local (Host Process Sandbox)</option>
-                  <option value="worktree">Git Worktree (Isolated Branch)</option>
-                  <option value="container">Container (Docker / OCI)</option>
+                  <option value="local">{t('harness.page.config.local')}</option>
+                  <option value="worktree">{t('harness.page.config.worktree')}</option>
+                  <option value="container">{t('harness.page.config.container')}</option>
                 </select>
                 {config.sandbox?.kind === 'worktree' && (
                   <div style={{ marginTop: 4, fontSize: '0.8rem', color: 'var(--text-muted, #888)' }}>
-                    Tasks run in an isolated Git worktree branch without altering your active workspace.
-                  </div>
+                    {t('harness.page.config.worktreeHelp')}</div>
                 )}
               </div>
               <div className="form-group">
-                <label className="form-label">Container Image (When Container Sandbox)</label>
+                <label className="form-label">{t('harness.page.config.image')}</label>
                 <input
                   type="text"
                   className="form-input"
@@ -3399,14 +3413,14 @@ export function ProjectHarnessTab({
                       sandbox: { ...(config.sandbox || { kind: 'local', setupCommands: [], envVars: {} }), containerImage: e.target.value || undefined },
                     })
                   }
-                  placeholder="e.g. ubuntu:24.04 or rust:latest"
+                  placeholder={t('harness.page.config.imagePlaceholder')}
                   disabled={config.sandbox?.kind !== 'container'}
                 />
               </div>
             </div>
 
             <div className="form-group">
-              <label className="form-label">Setup Commands (One per line)</label>
+              <label className="form-label">{t('harness.page.config.setup')}</label>
               <textarea
                 className="form-textarea"
                 rows={3}
@@ -3420,11 +3434,11 @@ export function ProjectHarnessTab({
                     },
                   })
                 }
-                placeholder="e.g. source bin/activate-hermit || true"
+                placeholder={t('harness.page.config.setupPlaceholder')}
               />
             </div>
 
-            <h4 className="sub-section-title">⏱️ Execution Limits & Paths</h4>
+            <h4 className="sub-section-title">{t('harness.page.config.limits')}</h4>
             <div className="form-group">
               <label className="form-label">
                 <input
@@ -3435,16 +3449,13 @@ export function ProjectHarnessTab({
                     execution: { ...config.execution, autoCommit: e.target.checked },
                   })}
                 />{' '}
-                Automatically commit completed tasks
-              </label>
+                {t('harness.page.config.autoCommit')}</label>
               <span className="form-hint">
-                Commit task changes in Git projects with a generated message and OpenDuck attribution.
-                Files already changed before the task are excluded.
-              </span>
+                {t('harness.page.config.autoCommitHelp')}</span>
             </div>
             <div className="form-row-3">
               <div className="form-group">
-                <label className="form-label">Max Turns</label>
+                <label className="form-label">{t('harness.page.budget.maxTurns')}</label>
                 <input
                   type="number"
                   min={1}
@@ -3462,11 +3473,11 @@ export function ProjectHarnessTab({
                   }
                 />
                 <span className="form-hint">
-                  Uses the global max turns setting when this file does not set one. Cap {maxTurnsLimit}.
+                  {t('harness.page.config.turnsHelp', { limit: maxTurnsLimit })}
                 </span>
               </div>
               <div className="form-group">
-                <label className="form-label">Timeout (Seconds)</label>
+                <label className="form-label">{t('harness.page.budget.timeout')}</label>
                 <input
                   type="number"
                   min={10}
@@ -3485,7 +3496,7 @@ export function ProjectHarnessTab({
                 />
               </div>
               <div className="form-group">
-                <label className="form-label">Eval Concurrency</label>
+                <label className="form-label">{t('harness.page.config.concurrency')}</label>
                 <input
                   type="number"
                   min={1}
@@ -3507,7 +3518,7 @@ export function ProjectHarnessTab({
 
             <div className="form-row-3">
               <div className="form-group">
-                <label className="form-label">Tasks Directory</label>
+                <label className="form-label">{t('harness.page.config.tasksDir')}</label>
                 <input
                   type="text"
                   className="form-input"
@@ -3521,7 +3532,7 @@ export function ProjectHarnessTab({
                 />
               </div>
               <div className="form-group">
-                <label className="form-label">Results Directory</label>
+                <label className="form-label">{t('harness.page.config.resultsDir')}</label>
                 <input
                   type="text"
                   className="form-input"
@@ -3535,7 +3546,7 @@ export function ProjectHarnessTab({
                 />
               </div>
               <div className="form-group">
-                <label className="form-label">Cassettes Directory</label>
+                <label className="form-label">{t('harness.page.config.cassettesDir')}</label>
                 <input
                   type="text"
                   className="form-input"
@@ -3557,7 +3568,7 @@ export function ProjectHarnessTab({
                 onClick={handleSaveConfig}
                 disabled={savingConfig}
               >
-                {savingConfig ? '⏳ Saving...' : '💾 Save Project Configuration'}
+                {savingConfig ? t('harness.page.config.saving') : t('harness.page.config.save')}
               </button>
             </div>
           </div>
@@ -3567,9 +3578,9 @@ export function ProjectHarnessTab({
       {/* ================= SUBTAB: REPORTS ================= */}
       {subTab === 'reports' && (
         <div className="harness-card project-reports-card">
-          <h3 className="section-title">📊 Project Evaluation Reports</h3>
+          <h3 className="section-title">{t('harness.page.reports.heading')}</h3>
           <p className="section-desc">
-            Benchmark run histories stored in <code>{config?.paths.resultsDir || '.goose/harness_results'}</code>.
+            <Trans t={t} i18nKey="harness.page.reports.storage" values={{ path: config?.paths.resultsDir || '.goose/harness_results' }} components={{ path: <code /> }} />
           </p>
 
           {sectionLoading === 'reports' && !loadedSections.reports ? (
@@ -3582,19 +3593,19 @@ export function ProjectHarnessTab({
               </div>
             </div>
           ) : reports.length === 0 ? (
-            <p className="empty-text">No evaluation reports generated for this project yet.</p>
+            <p className="empty-text">{t('harness.page.reports.empty')}</p>
           ) : (
             <div className="reports-table-wrap">
               <table className="harness-table">
                 <thead>
                   <tr>
-                    <th>Report ID / Timestamp</th>
-                    <th>Suite</th>
-                    <th>Pass Rate</th>
-                    <th>Passed / Total</th>
-                    <th>Avg Duration</th>
-                    <th>Tool Calls</th>
-                    <th>Action</th>
+                    <th>{t('harness.page.reports.id')}</th>
+                    <th>{t('harness.page.reports.suite')}</th>
+                    <th>{t('harness.page.reports.passRate')}</th>
+                    <th>{t('harness.page.reports.passedTotal')}</th>
+                    <th>{t('harness.page.reports.averageDuration')}</th>
+                    <th>{t('harness.page.reports.toolCalls')}</th>
+                    <th>{t('harness.page.reports.action')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3602,20 +3613,20 @@ export function ProjectHarnessTab({
                     <tr key={r.id}>
                       <td>
                         <strong>{r.id}</strong>
-                        <div className="sub-timestamp">{new Date(r.timestamp).toLocaleString()}</div>
+                        <div className="sub-timestamp">{formatDateTime(new Date(r.timestamp))}</div>
                       </td>
                       <td>{r.suiteName}</td>
                       <td>
                         <span
                           className={`pass-rate-badge ${r.passRate >= 0.8 ? 'good' : r.passRate >= 0.5 ? 'warn' : 'bad'}`}
                         >
-                          {(r.passRate * 100).toFixed(1)}%
+                          {formatNumber((r.passRate * 100), { minimumFractionDigits: 1, maximumFractionDigits: 1, useGrouping: false })}%
                         </span>
                       </td>
                       <td>
                         {r.passedTasks} / {r.totalTasks}
                       </td>
-                      <td>{(r.avgDurationMs / 1000).toFixed(2)}s</td>
+                      <td>{t('harness.page.reports.seconds', { seconds: formatNumber((r.avgDurationMs / 1000), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }) })}</td>
                       <td>{r.totalToolCalls}</td>
                       <td>
                         <button
@@ -3627,12 +3638,11 @@ export function ProjectHarnessTab({
                               const rep = await api.getProjectReport(selectedProjectSlug, r.id)
                               setSelectedReportDetail(rep)
                             } catch (err) {
-                              setError(err instanceof Error ? err.message : 'Failed to load report')
+                              setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.reportDetail'))
                             }
                           }}
                         >
-                          View Detail
-                        </button>
+                          {t('harness.page.reports.detail')}</button>
                       </td>
                     </tr>
                   ))}
@@ -3644,8 +3654,7 @@ export function ProjectHarnessTab({
           {selectedReportDetail && (
             <div className="report-detail-modal">
               <h4 className="sub-section-title">
-                Report: {selectedReportDetail.suiteName} (
-                {(selectedReportDetail.metrics.passRate * 100).toFixed(1)}% Passed)
+                {t('harness.page.reports.summary', { suite: selectedReportDetail.suiteName, rate: formatNumber((selectedReportDetail.metrics.passRate * 100), { minimumFractionDigits: 1, maximumFractionDigits: 1, useGrouping: false }) })}
               </h4>
               <div className="task-results-list">
                 {selectedReportDetail.taskResults.map(tr => (
@@ -3656,17 +3665,17 @@ export function ProjectHarnessTab({
                     <div className="result-header">
                       <strong>{tr.taskId}</strong>
                       <span className={`result-tag ${tr.passed ? 'tag-pass' : 'tag-fail'}`}>
-                        {tr.passed ? 'PASSED' : 'FAILED'}
+                        {tr.passed ? t('harness.page.reports.passed') : t('harness.page.reports.failed')}
                       </span>
                     </div>
                     <div className="result-meta">
-                      <span>Steps: {tr.stepCount}</span>
-                      <span>Tool Calls: {tr.toolCallsCount}</span>
-                      <span>Duration: {(tr.durationMs / 1000).toFixed(2)}s</span>
+                      <span>{t('harness.page.reports.steps', { count: tr.stepCount })}</span>
+                      <span>{t('harness.page.reports.calls', { count: tr.toolCallsCount })}</span>
+                      <span>{t('harness.page.reports.duration', { seconds: formatNumber((tr.durationMs / 1000), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }) })}</span>
                     </div>
                     {tr.verification && (
                       <div className="result-logs">
-                        <pre>{tr.verification.stdout || tr.verification.stderr || 'No logs'}</pre>
+                        <pre>{tr.verification.stdout || tr.verification.stderr || t('harness.page.reports.noLogs')}</pre>
                       </div>
                     )}
                   </div>
@@ -3680,9 +3689,9 @@ export function ProjectHarnessTab({
       {/* ================= SUBTAB: CASSETTES ================= */}
       {subTab === 'cassettes' && (
         <div className="harness-card project-cassettes-card">
-          <h3 className="section-title">📼 Project Replay Cassettes</h3>
+          <h3 className="section-title">{t('harness.page.cassettes.heading')}</h3>
           <p className="section-desc">
-            Recorded deterministic cassettes in <code>{config?.paths.cassettesDir || '.goose/cassettes'}</code>.
+            <Trans t={t} i18nKey="harness.page.cassettes.storage" values={{ path: config?.paths.cassettesDir || '.goose/cassettes' }} components={{ path: <code /> }} />
           </p>
 
           {sectionLoading === 'cassettes' && !loadedSections.cassettes ? (
@@ -3694,20 +3703,20 @@ export function ProjectHarnessTab({
               </div>
             </div>
           ) : cassettes.length === 0 ? (
-            <p className="empty-text">No recorded cassettes found in this project.</p>
+            <p className="empty-text">{t('harness.page.cassettes.empty')}</p>
           ) : (
             <div className="cassettes-grid">
               {cassettes.map(c => (
                 <div key={c.fileName} className="cassette-card">
                   <div className="cassette-header">
                     <h4>{c.name}</h4>
-                    <span className="badge frame-badge">{c.frameCount} frames</span>
+                    <span className="badge frame-badge">{t('harness.page.cassettes.frames', { count: c.frameCount })}</span>
                   </div>
                   <div className="cassette-meta">
-                    <div>File: {c.fileName}</div>
-                    <div>Recorded: {new Date(c.createdAt).toLocaleString()}</div>
+                    <div>{t('harness.page.cassettes.file', { name: c.fileName })}</div>
+                    <div>{t('harness.page.cassettes.recorded', { date: formatDateTime(new Date(c.createdAt)) })}</div>
                     {c.problemStatement && (
-                      <div className="cassette-prompt">Prompt: {c.problemStatement}</div>
+                      <div className="cassette-prompt">{t('harness.page.cassettes.prompt', { prompt: c.problemStatement })}</div>
                     )}
                   </div>
                 </div>
@@ -3723,13 +3732,13 @@ export function ProjectHarnessTab({
           <div className="history-card-header">
             <div>
               <h3 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span>📜 Project Task History</span>
+                <span>{t('harness.page.history.heading')}</span>
                 {isHistoryLoading && (
                   <span
                     title={
                       historyRetryAttempt > 0
-                        ? `Retrying project task history (attempt ${historyRetryAttempt}/2)…`
-                        : 'Loading project task history…'
+                        ? t('harness.page.history.retrying', { attempt: historyRetryAttempt })
+                        : t('harness.page.history.loading')
                     }
                     style={{ display: 'inline-flex', alignItems: 'center' }}
                   >
@@ -3741,17 +3750,16 @@ export function ProjectHarnessTab({
                     type="button"
                     className="btn-action retry-btn"
                     onClick={() => void handleRetryHistory()}
-                    title="Retry loading project task history"
+                    title={t('harness.page.history.retryTitle')}
                     style={{ padding: '2px 8px', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                   >
                     <RotateCcw size={12} />
-                    <span>Retry</span>
+                    <span>{t('harness.page.actions.retry')}</span>
                   </button>
                 )}
               </h3>
               <p className="section-desc">
-                All previous project harness executions. Inspect a run to reload its full trajectory.
-              </p>
+                {t('harness.page.history.help')}</p>
             </div>
           </div>
 
@@ -3768,7 +3776,7 @@ export function ProjectHarnessTab({
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <AlertCircle size={16} />
-                <span>Failed to refresh project task history: {historyError}</span>
+                <span>{t('harness.page.history.refreshError', { error: renderMessage(historyError) })}</span>
               </div>
               <button
                 type="button"
@@ -3777,7 +3785,7 @@ export function ProjectHarnessTab({
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
               >
                 <RotateCcw size={12} />
-                <span>Retry</span>
+                <span>{t('harness.page.actions.retry')}</span>
               </button>
             </div>
           )}
@@ -3787,18 +3795,18 @@ export function ProjectHarnessTab({
               <Loader2 size={28} className="spinning" />
               <span>
                 {historyRetryAttempt > 0
-                  ? `Loading project task history… (retry ${historyRetryAttempt}/2)`
-                  : 'Loading project task history…'}
+                  ? t('harness.page.history.loadingRetry', { attempt: historyRetryAttempt })
+                  : t('harness.page.history.loading')}
               </span>
             </div>
           ) : historyError && history.length === 0 ? (
             <div className="history-loading-spinner-box history-error-box">
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <AlertCircle size={20} className="history-error-icon" />
-                <span className="history-error-title">Failed to load project task history</span>
+                <span className="history-error-title">{t('harness.page.history.failed')}</span>
               </div>
               <p style={{ margin: 0, fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: '420px' }}>
-                {historyError}
+                {renderMessage(historyError)}
               </p>
               <button
                 type="button"
@@ -3807,7 +3815,7 @@ export function ProjectHarnessTab({
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.5rem' }}
               >
                 <RotateCcw size={14} />
-                <span>Retry</span>
+                <span>{t('harness.page.actions.retry')}</span>
               </button>
             </div>
           ) : (
@@ -3823,7 +3831,7 @@ export function ProjectHarnessTab({
               onPageChange={handleHistoryPageChange}
               onPageSizeChange={handleHistoryPageSizeChange}
               isLoading={isHistoryLoading}
-              emptyText="No historical project task runs yet. Run a task to populate this list."
+              emptyText={t('harness.page.history.empty')}
               onInspect={item => void handleSelectHistory(item, 'history')}
               onContinue={item =>
                 handleOpenContinueModal(
@@ -3849,11 +3857,9 @@ export function ProjectHarnessTab({
             <Loader2 size={36} className="spinning" />
             <div className="trajectory-loading-text">
               <strong style={{ display: 'block', fontSize: '1.05rem', color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
-                Loading Agent Log…
-              </strong>
+                {t('harness.page.logs.loading')}</strong>
               <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-                Fetching execution trajectory and step details
-              </span>
+                {t('harness.page.logs.fetching')}</span>
             </div>
           </div>
         ) : activeTrajectoryView ? (
@@ -3873,7 +3879,7 @@ export function ProjectHarnessTab({
             onStopTask={handleStopTask}
             onStopJob={handleStopRunningJob}
             onBackToTasks={handleBackFromTrajectory}
-            backLabel={logOrigin ? `Back to ${logOrigin}` : 'Back to tasks'}
+            backLabel={logOrigin ? t('harness.page.logs.back', { origin: ({ tasks: t('harness.page.logs.origin.tasks'), history: t('harness.page.logs.origin.history'), reports: t('harness.page.logs.origin.reports'), config: t('harness.page.logs.origin.config'), cassettes: t('harness.page.logs.origin.cassettes') })[logOrigin] }) : t('harness.page.logs.backTasks')}
             onPageChange={async (page: number, pageSize: number) => {
               if (!selectedProjectSlug) return
               const paging = pageSize > 0 ? { page, limit: pageSize } : undefined
@@ -3909,7 +3915,7 @@ export function ProjectHarnessTab({
           />
         ) : (
           <div className="harness-card">
-            <p className="empty-text">No agent log selected. Select a task run from history to view its log.</p>
+            <p className="empty-text">{t('harness.page.logs.empty')}</p>
           </div>
         )
       )}
@@ -3924,11 +3930,9 @@ export function ProjectHarnessTab({
                   <div className="modal-icon-badge continue-icon-badge">⏩</div>
                   <div>
                     <h3 className="section-title" style={{ margin: 0 }}>
-                      Continue Unfinished Task
-                    </h3>
+                      {t('harness.page.continue.heading')}</h3>
                     <span className="form-hint">
-                      New run seeded with the saved progress summary from the previous run
-                    </span>
+                      {t('harness.page.continue.help')}</span>
                   </div>
                 </div>
                 <button type="button" className="close-btn" onClick={handleCloseContinueModal}>
@@ -3938,39 +3942,38 @@ export function ProjectHarnessTab({
 
               <div className="continue-modal-info-card">
                 <div className="continue-modal-info-row">
-                  <span className="info-label">Task ID:</span>
+                  <span className="info-label">{t('harness.page.continue.taskId')}</span>
                   <strong className="info-value code-font">{continueModalTask.taskId}</strong>
                 </div>
                 {continueModalTask.taskName && (
                   <div className="continue-modal-info-row">
-                    <span className="info-label">Task Name:</span>
+                    <span className="info-label">{t('harness.page.continue.taskName')}</span>
                     <span className="info-value">{continueModalTask.taskName}</span>
                   </div>
                 )}
                 <div className="continue-modal-info-row">
-                  <span className="info-label">Previous Run:</span>
+                  <span className="info-label">{t('harness.page.continue.previousRun')}</span>
                   <span className="info-value">
                     <span className="status-badge cancelled" style={{ marginRight: 6 }}>
-                      INCOMPLETE
-                    </span>
-                    Stopped after <strong>{continueModalTask.previousSteps}</strong> steps
+                      {t('harness.page.continue.incomplete')}</span>
+                    <Trans t={t} i18nKey="harness.page.continue.stopped" values={{ count: continueModalTask.previousSteps }} components={{ steps: <strong /> }} />
                     {continueModalTask.runId ? (
                       <>
                         {' '}
-                        • Run <code>{continueModalTask.runId}</code>
+                        <Trans t={t} i18nKey="harness.page.continue.runId" values={{ runId: continueModalTask.runId }} components={{ id: <code /> }} />
                       </>
                     ) : null}
                   </span>
                 </div>
                 {continueModalTask.failureReason && (
                   <div className="continue-modal-info-row" style={{ color: '#f87171' }}>
-                    <span className="info-label" style={{ color: '#f87171' }}>Failure Reason:</span>
+                    <span className="info-label" style={{ color: '#f87171' }}>{t('harness.page.continue.failure')}</span>
                     <span className="info-value" style={{ fontWeight: 500 }}>{continueModalTask.failureReason}</span>
                   </div>
                 )}
                 {continueModalTask.resumeSubtaskTitle && (
                   <div className="continue-modal-info-row" style={{ background: 'rgba(37, 99, 235, 0.12)', padding: '6px 10px', borderRadius: 6, border: '1px solid rgba(59, 130, 246, 0.3)' }}>
-                    <span className="info-label" style={{ color: '#60a5fa' }}>Resume Subtask:</span>
+                    <span className="info-label" style={{ color: '#60a5fa' }}>{t('harness.page.continue.resumeSubtask')}</span>
                     <span className="info-value" style={{ fontWeight: 600, color: '#93c5fd' }}>
                       {continueModalTask.resumeSubtaskTitle} {continueModalTask.resumeSubtaskId ? `(${continueModalTask.resumeSubtaskId})` : ''}
                     </span>
@@ -3984,7 +3987,7 @@ export function ProjectHarnessTab({
               </div>
 
               <div className="continue-mode-selector">
-                <label className="form-label">Turn Budget Mode</label>
+                <label className="form-label">{t('harness.page.continue.budgetMode')}</label>
                 <div className="verifier-type-toggle">
                   <label>
                     <input
@@ -3996,8 +3999,7 @@ export function ProjectHarnessTab({
                         setContinueTurnsInput(25)
                       }}
                     />{' '}
-                    Add Additional Turns (+N)
-                  </label>
+                    {t('harness.page.continue.additionalMode')}</label>
                   <label>
                     <input
                       type="radio"
@@ -4008,16 +4010,15 @@ export function ProjectHarnessTab({
                         setContinueTurnsInput(continueModalTask.previousSteps + 25)
                       }}
                     />{' '}
-                    Set Total Max Turns (Total = N)
-                  </label>
+                    {t('harness.page.continue.totalMode')}</label>
                 </div>
               </div>
 
               <div className="continue-turns-section">
                 <label className="form-label">
                   {continueTurnsMode === 'additional'
-                    ? 'Additional Turns to Add'
-                    : 'Total Max Turn Limit'}
+                    ? t('harness.page.continue.additionalLabel')
+                    : t('harness.page.continue.totalLabel')}
                 </label>
 
                 <div className="continue-preset-chips">
@@ -4030,7 +4031,7 @@ export function ProjectHarnessTab({
                           className={`preset-chip ${continueTurnsInput === n ? 'active' : ''}`}
                           onClick={() => setContinueTurnsInput(n)}
                         >
-                          +{n} Turns
+                          {t('harness.page.continue.presetAdditional', { count: n })}
                         </button>
                       ))}
                     </>
@@ -4047,7 +4048,7 @@ export function ProjectHarnessTab({
                             }`}
                             onClick={() => setContinueTurnsInput(total)}
                           >
-                            {total} Turns (+{extra})
+                            {t('harness.page.continue.presetTotal', { total, extra })}
                           </button>
                         )
                       })}
@@ -4098,14 +4099,14 @@ export function ProjectHarnessTab({
               </div>
 
               <div className="continue-budget-preview-box">
-                <div className="preview-label">Budget Calculation</div>
+                <div className="preview-label">{t('harness.page.continue.calculation')}</div>
                 <div className="preview-calc">
                   <span>
-                    Previous: <strong>{continueModalTask.previousSteps}</strong> steps
+                    <Trans t={t} i18nKey="harness.page.continue.previousSteps" values={{ count: continueModalTask.previousSteps }} components={{ steps: <strong /> }} />
                   </span>
                   <span className="calc-arrow">→</span>
                   <span>
-                    Target Max Turns:{' '}
+                    {t('harness.page.continue.target')}{' '}
                     <strong className="calc-highlight">
                       {continueTurnsMode === 'additional'
                         ? continueModalTask.previousSteps + Math.max(1, continueTurnsInput)
@@ -4115,12 +4116,10 @@ export function ProjectHarnessTab({
                   <span className="calc-diff">
                     (
                     {continueTurnsMode === 'additional'
-                      ? `+${Math.max(1, continueTurnsInput)} turns`
-                      : `${
-                          Math.max(1, continueTurnsInput) >= continueModalTask.previousSteps
+                      ? t('harness.page.continue.addTurns', { turns: Math.max(1, continueTurnsInput) })
+                      : t('harness.page.continue.turnsDifference', { sign: Math.max(1, continueTurnsInput) >= continueModalTask.previousSteps
                             ? '+'
-                            : ''
-                        }${Math.max(1, continueTurnsInput) - continueModalTask.previousSteps} turns`}
+                            : '', turns: Math.max(1, continueTurnsInput) - continueModalTask.previousSteps })}
                     )
                   </span>
                 </div>
@@ -4133,14 +4132,13 @@ export function ProjectHarnessTab({
                     checked={continueRecord}
                     onChange={e => setContinueRecord(e.target.checked)}
                   />
-                  <span>📼 Record cassette for offline deterministic replay</span>
+                  <span>{t('harness.page.continue.record')}</span>
                 </label>
               </div>
 
               <div className="modal-actions-row">
                 <button type="button" className="btn-secondary" onClick={handleCloseContinueModal}>
-                  Cancel
-                </button>
+                  {t('harness.page.actions.cancel')}</button>
                 <button
                   type="button"
                   className="btn-primary continue-confirm-btn"
@@ -4148,19 +4146,15 @@ export function ProjectHarnessTab({
                   disabled={runningTaskId === continueModalTask.taskId}
                 >
                   {runningTaskId === continueModalTask.taskId ? (
-                    '⏳ Launching…'
+                    t('harness.page.continue.launching')
                   ) : continueModalTask.resumeSubtaskTitle ? (
-                    `⏩ Resume Subtask: ${continueModalTask.resumeSubtaskTitle} (+${
-                      continueTurnsMode === 'additional'
+                    t('harness.page.continue.confirmSubtask', { title: continueModalTask.resumeSubtaskTitle, turns: continueTurnsMode === 'additional'
                         ? Math.max(1, continueTurnsInput)
-                        : Math.max(1, continueTurnsInput - continueModalTask.previousSteps)
-                    } Turns)`
+                        : Math.max(1, continueTurnsInput - continueModalTask.previousSteps) })
                   ) : (
-                    `⏩ Continue Task (${
-                      continueTurnsMode === 'additional'
+                    t('harness.page.continue.confirmTask', { turns: continueTurnsMode === 'additional'
                         ? continueModalTask.previousSteps + Math.max(1, continueTurnsInput)
-                        : Math.max(1, continueTurnsInput)
-                    } Turns)`
+                        : Math.max(1, continueTurnsInput) })
                   )}
                 </button>
               </div>
@@ -4184,10 +4178,10 @@ export function ProjectHarnessTab({
                   <div className="modal-icon-badge dynamic-prompt-icon-badge">✎</div>
                   <div>
                     <h3 id="dynamic-prompt-title" className="section-title" style={{ margin: 0 }}>
-                      {dynamicRun.record ? 'Record with extra prompt' : 'Run with extra prompt'}
+                      {dynamicRun.record ? t('harness.page.dynamic.record') : t('harness.page.dynamic.run')}
                     </h3>
                     <span className="form-hint">
-                      {dynamicRun.taskName} · extra instructions are not saved to the task
+                      {t('harness.page.dynamic.taskHint', { name: dynamicRun.taskName })}
                     </span>
                   </div>
                 </div>
@@ -4197,12 +4191,11 @@ export function ProjectHarnessTab({
               </div>
 
               <label className="form-label" htmlFor="dynamic-prompt-current">
-                Current prompt
-              </label>
+                {t('harness.page.dynamic.current')}</label>
               {dynamicRun.loadingPrompt ? (
-                <p className="muted">Loading prompt…</p>
+                <p className="muted">{t('harness.page.dynamic.loading')}</p>
               ) : dynamicRun.error ? (
-                <p className="dynamic-prompt-error">{dynamicRun.error}</p>
+                <p className="dynamic-prompt-error">{renderMessage(dynamicRun.error)}</p>
               ) : (
                 <pre id="dynamic-prompt-current" className="dynamic-prompt-current">
                   {dynamicRun.prompt}
@@ -4210,15 +4203,14 @@ export function ProjectHarnessTab({
               )}
 
               <label className="form-label" htmlFor="dynamic-prompt-extra">
-                Additional prompt
-              </label>
+                {t('harness.page.dynamic.additional')}</label>
               <textarea
                 id="dynamic-prompt-extra"
                 className="form-textarea"
                 rows={5}
                 autoFocus
                 value={dynamicRun.extra}
-                placeholder="Optional instructions for this run"
+                placeholder={t('harness.page.dynamic.placeholder')}
                 onChange={e =>
                   setDynamicRun(prev => (prev ? { ...prev, extra: e.target.value } : prev))
                 }
@@ -4231,11 +4223,10 @@ export function ProjectHarnessTab({
                   disabled={dynamicRun.loadingPrompt || Boolean(dynamicRun.error) || runningTaskId === dynamicRun.taskId}
                   onClick={() => void confirmDynamicRun()}
                 >
-                  {dynamicRun.record ? 'Record' : 'Run'}
+                  {dynamicRun.record ? t('harness.page.actions.record') : t('harness.page.actions.run')}
                 </button>
                 <button type="button" className="btn-secondary" onClick={() => setDynamicRun(null)}>
-                  Cancel
-                </button>
+                  {t('harness.page.actions.cancel')}</button>
               </div>
             </div>
           </div>

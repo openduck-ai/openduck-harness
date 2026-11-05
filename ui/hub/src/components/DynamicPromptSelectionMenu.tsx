@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Loader2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { createApi } from '@aaif/goose-hub-core'
 import {
   clampMenuPosition,
@@ -10,9 +11,12 @@ import {
 
 export type { DynamicPromptTaskOption }
 
-export interface SelectionRunNotice {
+type NoticeText =
+  | { kind: 'raw'; message: string }
+  | { kind: 'fallback'; key: string; values?: Record<string, string> }
+
+export type SelectionRunNotice = NoticeText & {
   tone: 'running' | 'done' | 'error'
-  message: string
 }
 
 export function useDynamicPromptTasks(
@@ -63,19 +67,29 @@ export function useSelectionTaskRun(
       setRunning(true)
       setNotice({
         tone: 'running',
-        message: `Running “${task.name}” with the selected text…`,
+        kind: 'fallback',
+        key: 'dynamicPrompt.menu.runningNotice',
+        values: { name: task.name },
       })
       try {
         const res = await api.runProjectTask(projectSlug, task.id, { extraPrompt: trimmed })
         setNotice({
           tone: 'done',
-          message: `“${task.name}” finished with status ${res.status}.`,
+          kind: 'fallback',
+          key: 'dynamicPrompt.menu.doneNotice',
+          values: { name: task.name, status: res.status },
         })
       } catch (err) {
-        setNotice({
-          tone: 'error',
-          message: err instanceof Error ? err.message : `Failed to run ${task.name}`,
-        })
+        setNotice(
+          err instanceof Error
+            ? { tone: 'error', kind: 'raw', message: err.message }
+            : {
+                tone: 'error',
+                kind: 'fallback',
+                key: 'dynamicPrompt.menu.runFailed',
+                values: { name: task.name },
+              },
+        )
       } finally {
         runningRef.current = false
         setRunning(false)
@@ -88,11 +102,12 @@ export function useSelectionTaskRun(
 }
 
 export function DynamicPromptRunNotice({ notice }: { notice: SelectionRunNotice | null }) {
+  const { t } = useTranslation()
   if (!notice) return null
   return (
     <div className={`dynamic-prompt-run-notice is-${notice.tone}`} role="status">
       {notice.tone === 'running' && <Loader2 size={14} className="spinning" />}
-      <span>{notice.message}</span>
+      <span>{notice.kind === 'raw' ? notice.message : t(notice.key, notice.values)}</span>
     </div>
   )
 }
@@ -139,7 +154,7 @@ interface PendingDynamicRun {
   basePrompt: string
   dynamicPrompt: string
   loading: boolean
-  error: string
+  error: NoticeText | null
 }
 
 export function DynamicPromptSelectionMenu({
@@ -159,6 +174,7 @@ export function DynamicPromptSelectionMenu({
   projectSlug?: string | null
   onSelect: (task: DynamicPromptTaskOption, selectedText: string) => void
 }) {
+  const { t } = useTranslation()
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [pending, setPending] = useState<PendingDynamicRun | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
@@ -176,14 +192,14 @@ export function DynamicPromptSelectionMenu({
       basePrompt: '',
       dynamicPrompt: selectedText,
       loading: true,
-      error: '',
+      error: null,
     })
     const currentApi = apiRef.current
     const slug = projectSlugRef.current
     if (!currentApi || !slug) {
       setPending(prev =>
         prev && prev.task.id === task.id
-          ? { ...prev, loading: false, error: 'Project is not available' }
+          ? { ...prev, loading: false, error: { kind: 'fallback', key: 'dynamicPrompt.menu.projectUnavailable' } }
           : prev,
       )
       return
@@ -203,7 +219,10 @@ export function DynamicPromptSelectionMenu({
             ? {
                 ...prev,
                 loading: false,
-                error: err instanceof Error ? err.message : 'Failed to load task prompt',
+                error:
+                  err instanceof Error
+                    ? { kind: 'raw', message: err.message }
+                    : { kind: 'fallback', key: 'dynamicPrompt.menu.loadFailed' },
               }
             : prev,
         )
@@ -336,15 +355,15 @@ export function DynamicPromptSelectionMenu({
       data-dynamic-prompt-menu
       className="dynamic-prompt-menu"
       role="menu"
-      aria-label="Run a dynamic prompt task with the selection"
+      aria-label={t('dynamicPrompt.menu.ariaLabel')}
       style={{ left: menu.x, top: menu.y }}
       onMouseDown={event => event.preventDefault()}
       onContextMenu={event => event.preventDefault()}
     >
-      <div className="dynamic-prompt-menu-title">Run with selection</div>
+      <div className="dynamic-prompt-menu-title">{t('dynamicPrompt.menu.title')}</div>
       <div className="dynamic-prompt-menu-list">
         {tasks.length === 0 ? (
-          <div className="dynamic-prompt-menu-empty">No tasks accept a dynamic prompt.</div>
+          <div className="dynamic-prompt-menu-empty">{t('dynamicPrompt.menu.empty')}</div>
         ) : null}
         {tasks.map(task => (
           <button
@@ -391,25 +410,30 @@ export function DynamicPromptSelectionMenu({
                   <div className="modal-icon-badge dynamic-prompt-icon-badge">✎</div>
                   <div>
                     <h3 id="dynamic-prompt-confirm-title" className="section-title" style={{ margin: 0 }}>
-                      Confirm prompt
+                      {t('dynamicPrompt.menu.confirmTitle')}
                     </h3>
                     <span className="form-hint">
-                      {pending.task.name} · extra instructions are not saved to the task
+                      {t('dynamicPrompt.menu.confirmHint', { name: pending.task.name })}
                     </span>
                   </div>
                 </div>
-                <button type="button" className="close-btn" onClick={() => setPending(null)} aria-label="Cancel">
+                <button
+                  type="button"
+                  className="close-btn"
+                  onClick={() => setPending(null)}
+                  aria-label={t('dynamicPrompt.menu.cancel')}
+                >
                   ✕
                 </button>
               </div>
 
               <label className="form-label" htmlFor="dynamic-prompt-confirm-current">
-                Current prompt
+                {t('dynamicPrompt.menu.currentPrompt')}
               </label>
               {pending.loading ? (
-                <p className="muted">Loading prompt…</p>
+                <p className="muted">{t('dynamicPrompt.menu.loadingPrompt')}</p>
               ) : pending.error ? (
-                <p className="dynamic-prompt-error">{pending.error}</p>
+                <p className="dynamic-prompt-error">{pending.error.kind === 'raw' ? pending.error.message : t(pending.error.key, pending.error.values)}</p>
               ) : (
                 <pre id="dynamic-prompt-confirm-current" className="dynamic-prompt-current">
                   {pending.basePrompt}
@@ -417,7 +441,7 @@ export function DynamicPromptSelectionMenu({
               )}
 
               <label className="form-label" htmlFor="dynamic-prompt-confirm-extra">
-                Dynamic prompt
+                {t('dynamicPrompt.menu.dynamicPrompt')}
               </label>
               <textarea
                 id="dynamic-prompt-confirm-extra"
@@ -436,10 +460,10 @@ export function DynamicPromptSelectionMenu({
                   disabled={pending.loading || Boolean(pending.error)}
                   onClick={confirmPending}
                 >
-                  Confirm
+                  {t('dynamicPrompt.menu.confirm')}
                 </button>
                 <button type="button" className="btn-secondary" onClick={() => setPending(null)}>
-                  Cancel
+                  {t('dynamicPrompt.menu.cancel')}
                 </button>
               </div>
             </div>

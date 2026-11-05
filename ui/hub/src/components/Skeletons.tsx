@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { ProjectSubTab } from '../lazyTabs'
 
 interface SkeletonBoxProps {
@@ -56,18 +57,19 @@ export function SkeletonCircle({
 }
 
 export function ProjectListSkeleton({ viewMode = 'grid' }: { viewMode?: 'grid' | 'table' }) {
+  const { t } = useTranslation()
   if (viewMode === 'table') {
     return (
       <div className="panel table-panel skeleton-table-panel">
         <table className="management-table">
           <thead>
             <tr>
-              <th>Project Name</th>
-              <th>Type & Stack</th>
-              <th>Directory Path</th>
-              <th>Status</th>
-              <th>Last Active</th>
-              <th className="text-right">Action</th>
+              <th>{t('skeletons.projectName')}</th>
+              <th>{t('skeletons.typeStack')}</th>
+              <th>{t('skeletons.directoryPath')}</th>
+              <th>{t('skeletons.status')}</th>
+              <th>{t('skeletons.lastActive')}</th>
+              <th className="text-right">{t('skeletons.action')}</th>
             </tr>
           </thead>
           <tbody>

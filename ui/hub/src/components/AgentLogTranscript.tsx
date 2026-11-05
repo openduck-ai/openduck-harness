@@ -1,3 +1,5 @@
+import { Trans, useTranslation } from 'react-i18next'
+import { formatNumber } from '../i18n/format.ts'
 import { Fragment, useEffect, useRef, useState, type RefObject } from 'react'
 import type { createApi } from '@aaif/goose-hub-core'
 import {
@@ -143,6 +145,7 @@ export function AgentLogTranscript({
   finalAnswer,
   failureReason,
 }: AgentLogTranscriptProps) {
+  const { t } = useTranslation()
   const finalProseRef = useRef<HTMLDivElement>(null)
   const [thinkingChoice, setThinkingChoice] = useState<Record<string, ThinkingOpenChoice>>({})
   const [detailsOpen, setDetailsOpen] = useState<Record<string, boolean>>({})
@@ -176,7 +179,7 @@ export function AgentLogTranscript({
             />
           )}
           {turns.length === 0 ? (
-            <div className="empty-card">No log entries match filter / search criteria.</div>
+            <div className="empty-card">{t('trajectory.log.empty')}</div>
           ) : (
             turns.map(turn => {
               if (turn.role === 'user') {
@@ -259,7 +262,7 @@ export function AgentLogTranscript({
           {pagination && pagination.totalPages > 1 && onPageChange && (
             <div className="agent-log-bottom-pagination">
               <div className="agent-log-bottom-pagination-info">
-                Showing turns <strong>{pagination.startIndex + 1}–{pagination.endIndex}</strong> of <strong>{pagination.totalTurns}</strong>
+                <Trans t={t} i18nKey="trajectory.log.showingTurns" values={{ start: pagination.startIndex + 1, end: pagination.endIndex, total: pagination.totalTurns }} components={{ strong: <strong /> }} />
               </div>
               <div className="agent-log-bottom-pagination-nav">
                 <button
@@ -267,39 +270,39 @@ export function AgentLogTranscript({
                   className="agent-page-btn"
                   onClick={() => onPageChange(1)}
                   disabled={pagination.page <= 1}
-                  title="First page"
+                  title={t('trajectory.log.firstPage')}
                 >
-                  « First
+                  {t('trajectory.log.first')}
                 </button>
                 <button
                   type="button"
                   className="agent-page-btn"
                   onClick={() => onPageChange(pagination.page - 1)}
                   disabled={pagination.page <= 1}
-                  title="Previous page"
+                  title={t('trajectory.log.previousPage')}
                 >
-                  <ChevronLeft size={14} /> Previous
+                  <ChevronLeft size={14} />{' '}{t('trajectory.log.previous')}
                 </button>
                 <span className="agent-page-indicator">
-                  Page {pagination.page} of {pagination.totalPages}
+                  {t('trajectory.log.page', { page: pagination.page, total: pagination.totalPages })}
                 </span>
                 <button
                   type="button"
                   className="agent-page-btn"
                   onClick={() => onPageChange(pagination.page + 1)}
                   disabled={pagination.page >= pagination.totalPages}
-                  title="Next page"
+                  title={t('trajectory.log.nextPage')}
                 >
-                  Next <ChevronRight size={14} />
+                  {t('trajectory.log.next')}{' '}<ChevronRight size={14} />
                 </button>
                 <button
                   type="button"
                   className="agent-page-btn"
                   onClick={() => onPageChange(pagination.totalPages)}
                   disabled={pagination.page >= pagination.totalPages}
-                  title="Last page"
+                  title={t('trajectory.log.lastPage')}
                 >
-                  Last »
+                  {t('trajectory.log.last')}
                 </button>
               </div>
             </div>
@@ -336,8 +339,8 @@ export function AgentLogTranscript({
                   }}
                 >
                   {status.toLowerCase() === 'cancelled'
-                    ? '⚠️ Task Incomplete / Cancelled'
-                    : '❌ Task Failed'}
+                    ? t('trajectory.log.cancelled')
+                    : t('trajectory.log.failedTitle')}
                 </span>
                 {failureReason && (
                   <span
@@ -347,7 +350,7 @@ export function AgentLogTranscript({
                       fontWeight: 500,
                     }}
                   >
-                    Failure Reason: {failureReason}
+                    {t('trajectory.log.failureReason', { reason: failureReason })}
                   </span>
                 )}
               </div>
@@ -365,7 +368,7 @@ export function AgentLogTranscript({
         </div>
         {showLatest && (
           <button type="button" className="agent-latest" onClick={onLatest}>
-            ↓ Latest
+            {t('trajectory.log.latest')}
           </button>
         )}
       </div>
@@ -389,10 +392,11 @@ function UserTurn({
   onOpenFile: (path: string) => void
   resolveImageUrl?: (src: string) => string
 }) {
+  const { t } = useTranslation()
   if (!turn.text) return null
   return (
     <section className="agent-user">
-      <div className="agent-user-label">You</div>
+      <div className="agent-user-label">{t('trajectory.log.you')}</div>
       <MarkdownPreview content={turn.text} onOpenFile={onOpenFile} resolveImageUrl={resolveImageUrl} />
     </section>
   )
@@ -411,6 +415,7 @@ export function CompletedSubtasksSection({
   copiedId: string | null
   onCopyText: (id: string, text: string) => void
 }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(true)
   const [openItems, setOpenItems] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {}
@@ -437,9 +442,9 @@ export function CompletedSubtasksSection({
         >
           <div className="agent-subtasks-header-left">
             <CheckCircle2 size={15} className="agent-subtasks-icon" />
-            <span className="agent-subtasks-title">Completed Subtasks ({subtasks.length})</span>
+            <span className="agent-subtasks-title">{t('trajectory.log.completedSubtasks', { count: subtasks.length })}</span>
             <span className="agent-subtasks-badge">
-              {successCount}/{subtasks.length} {successCount === subtasks.length ? 'Passed' : 'Completed'}
+              {successCount}/{subtasks.length} {successCount === subtasks.length ? t('trajectory.log.passed') : t('trajectory.log.completed')}
             </span>
           </div>
           <span className="agent-subtasks-toggle-arrow">
@@ -474,19 +479,19 @@ export function CompletedSubtasksSection({
                   <div className="agent-subtask-card-title-group">
                     <span className={`agent-subtask-status-pill ${isSuccess ? 'passed' : 'failed'}`}>
                       {isSuccess ? <Check size={12} /> : <AlertCircle size={12} />}
-                      {isSuccess ? 'Completed' : 'Failed'}
+                      {isSuccess ? t('trajectory.log.completed') : t('trajectory.log.failed')}
                     </span>
                     <span className="agent-subtask-name">
-                      {subtask.title || `Subtask ${index + 1}`}
+                      {subtask.title || t('trajectory.log.subtask', { n: index + 1 })}
                     </span>
                     <span className="agent-subtask-id-badge">{subtask.subtaskId}</span>
                     {subtask.stepsTaken ? (
                       <span className="agent-subtask-steps-badge">
-                        {subtask.stepsTaken} steps
+                        {t('trajectory.log.steps', { count: subtask.stepsTaken })}
                       </span>
                     ) : subtask.stepCount !== undefined ? (
                       <span className="agent-subtask-steps-badge">
-                        step {subtask.stepCount}
+                        {t('trajectory.log.step', { n: subtask.stepCount })}
                       </span>
                     ) : null}
                   </div>
@@ -498,7 +503,7 @@ export function CompletedSubtasksSection({
                         e.stopPropagation()
                         onCopyText(copyId, subtask.summary)
                       }}
-                      title="Copy subtask conclusion"
+                      title={t('trajectory.log.copyConclusion')}
                     >
                       {copiedId === copyId ? <Check size={12} /> : <Copy size={12} />}
                     </button>
@@ -512,7 +517,7 @@ export function CompletedSubtasksSection({
                   <div className="agent-subtask-card-body">
                     {subtask.modifiedFiles && subtask.modifiedFiles.length > 0 && (
                       <div className="agent-subtask-files">
-                        <span className="agent-subtask-files-label">Modified files:</span>
+                        <span className="agent-subtask-files-label">{t('trajectory.log.modifiedFiles')}</span>
                         <div className="agent-subtask-files-chips">
                           {subtask.modifiedFiles.map(file => (
                             <button
@@ -520,7 +525,7 @@ export function CompletedSubtasksSection({
                               type="button"
                               className="mentioned-file-chip"
                               onClick={() => onOpenFile(file)}
-                              title={`Preview ${file}`}
+                              title={t('trajectory.log.preview', { file })}
                             >
                               <span className="file-chip-icon">{getFileIcon(file)}</span>
                               <span className="file-chip-name">{file.split('/').pop() || file}</span>
@@ -532,13 +537,13 @@ export function CompletedSubtasksSection({
 
                     {subtask.outputCheck && (
                       <div className="agent-subtask-check-report">
-                        <span className="agent-subtask-check-label">Output Check:</span>
+                        <span className="agent-subtask-check-label">{t('trajectory.log.outputCheck')}</span>
                         <span className="agent-subtask-check-text">{subtask.outputCheck}</span>
                       </div>
                     )}
 
                     <div className="agent-subtask-conclusion">
-                      <div className="agent-subtask-conclusion-label">Conclusion:</div>
+                      <div className="agent-subtask-conclusion-label">{t('trajectory.log.conclusion')}</div>
                       <div className="agent-subtask-conclusion-text">
                         <MarkdownPreview
                           content={sanitizeSubtaskSummary(subtask.summary)}
@@ -571,6 +576,7 @@ export function SubtaskOutcomeTurn({
   onCopyText: (id: string, text: string) => void
   copiedId: string | null
 }) {
+  const { t } = useTranslation()
   const isSuccess = outcome.status.toLowerCase() === 'success'
   const copyId = `inline-subtask-${outcome.subtaskId}`
 
@@ -581,17 +587,17 @@ export function SubtaskOutcomeTurn({
           <div className="agent-subtask-milestone-title-group">
             <span className={`agent-subtask-status-pill ${isSuccess ? 'passed' : 'failed'}`}>
               {isSuccess ? <Check size={12} /> : <AlertCircle size={12} />}
-              {isSuccess ? 'Subtask Completed' : 'Subtask Failed'}
+              {isSuccess ? t('trajectory.log.subtaskCompleted') : t('trajectory.log.subtaskFailed')}
             </span>
             <span className="agent-subtask-milestone-name">{outcome.title}</span>
             <span className="agent-subtask-id-badge">{outcome.subtaskId}</span>
             {outcome.stepsTaken ? (
               <span className="agent-subtask-steps-badge">
-                {outcome.stepsTaken} steps
+                {t('trajectory.log.steps', { count: outcome.stepsTaken })}
               </span>
             ) : outcome.stepCount !== undefined ? (
               <span className="agent-subtask-steps-badge">
-                step {outcome.stepCount}
+                {t('trajectory.log.step', { n: outcome.stepCount })}
               </span>
             ) : null}
           </div>
@@ -599,7 +605,7 @@ export function SubtaskOutcomeTurn({
             type="button"
             className="mini-copy-btn"
             onClick={() => onCopyText(copyId, outcome.summary)}
-            title="Copy subtask conclusion"
+            title={t('trajectory.log.copyConclusion')}
           >
             {copiedId === copyId ? <Check size={12} /> : <Copy size={12} />}
           </button>
@@ -607,7 +613,7 @@ export function SubtaskOutcomeTurn({
 
         {outcome.modifiedFiles && outcome.modifiedFiles.length > 0 && (
           <div className="agent-subtask-files">
-            <span className="agent-subtask-files-label">Modified files:</span>
+            <span className="agent-subtask-files-label">{t('trajectory.log.modifiedFiles')}</span>
             <div className="agent-subtask-files-chips">
               {outcome.modifiedFiles.map(file => (
                 <button
@@ -615,7 +621,7 @@ export function SubtaskOutcomeTurn({
                   type="button"
                   className="mentioned-file-chip"
                   onClick={() => onOpenFile(file)}
-                  title={`Preview ${file}`}
+                  title={t('trajectory.log.preview', { file })}
                 >
                   <span className="file-chip-icon">{getFileIcon(file)}</span>
                   <span className="file-chip-name">{file.split('/').pop() || file}</span>
@@ -627,13 +633,13 @@ export function SubtaskOutcomeTurn({
 
         {outcome.outputCheck && (
           <div className="agent-subtask-check-report">
-            <span className="agent-subtask-check-label">Output Check:</span>
+            <span className="agent-subtask-check-label">{t('trajectory.log.outputCheck')}</span>
             <span className="agent-subtask-check-text">{outcome.outputCheck}</span>
           </div>
         )}
 
         <div className="agent-subtask-milestone-conclusion">
-          <div className="agent-subtask-conclusion-label">Conclusion:</div>
+          <div className="agent-subtask-conclusion-label">{t('trajectory.log.conclusion')}</div>
           <div className="agent-subtask-conclusion-text">
             <MarkdownPreview
               content={sanitizeSubtaskSummary(outcome.summary)}
@@ -696,6 +702,7 @@ function AssistantTurn({
   projectSlug?: string | null
   onSelectDynamicTask: (task: DynamicPromptTaskOption, text: string) => void
 }) {
+  const { t } = useTranslation()
   const detailMessages = (turn.promptMessages ?? []).filter(message => !isToolResultMessage(message))
   const triggered = (turn.judgments ?? []).filter(judgment => judgment.verdict?.triggered)
   const hasDetails =
@@ -711,8 +718,8 @@ function AssistantTurn({
           <button type="button" className="agent-thinking-toggle" onClick={onToggleThinking} aria-expanded={thinkingOpen}>
             <span>
               {thinkingCurrent
-                ? 'Thinking…'
-                : `Thought · ${thoughtLines} ${thoughtLines === 1 ? 'line' : 'lines'}`}
+                ? t('trajectory.log.thinking')
+                : t('trajectory.log.thought', { count: thoughtLines })}
             </span>
             {thinkingOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           </button>
@@ -736,7 +743,7 @@ function AssistantTurn({
           {isFinal && mentionedFiles.length > 0 && (
             <div className="final-answer-mentioned-files">
               <div className="mentioned-files-label">
-                <span>Mentioned files ({mentionedFiles.length})</span>
+                <span>{t('trajectory.log.mentionedFiles', { count: mentionedFiles.length })}</span>
               </div>
               <div className="mentioned-files-chips">
                 {mentionedFiles.map(file => {
@@ -747,7 +754,7 @@ function AssistantTurn({
                       type="button"
                       className="mentioned-file-chip"
                       onClick={() => onOpenFile(file)}
-                      title={`Preview ${file}`}
+                      title={t('trajectory.log.preview', { file })}
                     >
                       <span className="file-chip-icon">{getFileIcon(file)}</span>
                       <span className="file-chip-name">{fileName}</span>
@@ -797,7 +804,7 @@ function AssistantTurn({
       {hasDetails && (
         <div className={`agent-details${detailsOpen ? ' open' : ''}`}>
           <button type="button" className="agent-details-toggle" onClick={onToggleDetails} aria-expanded={detailsOpen}>
-            <span>Details</span>
+            <span>{t('trajectory.log.details')}</span>
             {triggered.map(judgment => (
               <span key={judgment.point} className="agent-verdict-chip" title={judgment.point}>
                 <span className="agent-amber-dot" />
@@ -823,8 +830,8 @@ function AssistantTurn({
                     <li key={`${call.provider}-${call.model}-${index}`}>
                       <span>{call.provider}</span>
                       {call.model && <span>{call.model}</span>}
-                      <span>{call.latencyMs.toLocaleString()} ms</span>
-                      <span>{call.success ? 'ok' : call.error || 'failed'}</span>
+                      <span>{t('trajectory.log.milliseconds', { value: formatNumber(call.latencyMs) })}</span>
+                      <span>{call.success ? t('trajectory.log.ok') : call.error || t('trajectory.log.failedLower')}</span>
                     </li>
                   ))}
                 </ul>
@@ -854,6 +861,7 @@ function ToolRow({
   onOpenFile: (path: string) => void
   copyPrefix: string
 }) {
+  const { t } = useTranslation()
   const presented = presentToolCall(tool)
   const tuiStatuses = tuiStatusesForTool(tool)
   const failed = Boolean(tool.isError)
@@ -916,7 +924,7 @@ function ToolRow({
           <div className="agent-tool-raw-name">{tool.name}</div>
           {presented.argsText && (
             <ClampedBlock
-              label="Arguments"
+              label={t('trajectory.log.arguments')}
               text={presented.argsText}
               diff={argsAreDiff}
               copyId={`${copyPrefix}-args`}
@@ -926,7 +934,7 @@ function ToolRow({
           )}
           {presented.outputText && !outputSameAsArgs && (
             <ClampedBlock
-              label={failed ? 'Error output' : outputIsDiff ? 'Diff' : 'Output'}
+              label={failed ? t('trajectory.log.errorOutput') : outputIsDiff ? t('trajectory.log.diff') : t('trajectory.log.output')}
               text={presented.outputText}
               diff={outputIsDiff}
               copyId={`${copyPrefix}-out`}
@@ -955,6 +963,7 @@ function ClampedBlock({
   copiedId: string | null
   onCopy: (id: string, text: string) => void
 }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const lines = text.split('\n')
   const clamped = !expanded && lines.length > CLAMP_LINES
@@ -964,7 +973,7 @@ function ClampedBlock({
     <div className="agent-tool-section">
       <div className="agent-tool-section-head">
         <span>{label}</span>
-        <button type="button" className="mini-copy-btn" onClick={() => onCopy(copyId, text)} title={`Copy ${label.toLowerCase()}`}>
+        <button type="button" className="mini-copy-btn" onClick={() => onCopy(copyId, text)} title={t('trajectory.log.copy', { label: label.toLowerCase() })}>
           {copiedId === copyId ? <Check size={11} /> : <Copy size={11} />}
         </button>
       </div>
@@ -981,7 +990,7 @@ function ClampedBlock({
       )}
       {lines.length > CLAMP_LINES && (
         <button type="button" className="agent-show-more" onClick={() => setExpanded(value => !value)}>
-          {expanded ? 'Show less' : 'Show more'}
+          {expanded ? t('trajectory.log.showLess') : t('trajectory.log.showMore')}
         </button>
       )}
     </div>
@@ -1001,6 +1010,7 @@ function AgentLogDock({
   sessionKey: string
   continueRequest?: AgentLogContinueRequest
 }) {
+  const { t } = useTranslation()
   const [draft, setDraft] = useState('')
   const [extraTurns, setExtraTurns] = useState<number>(25)
   const [noteOpen, setNoteOpen] = useState(true)
@@ -1024,9 +1034,9 @@ function AgentLogDock({
         {historyFollowUp && noteOpen && (
           <div className="agent-continue-note">
             <div className="agent-continue-note-head">
-              <p>A follow-up starts a new run with this conversation and your prompt.</p>
+              <p>{t('trajectory.log.followUpNote')}</p>
               <button type="button" className="agent-note-dismiss" onClick={() => setNoteOpen(false)}>
-                Dismiss
+                {t('trajectory.log.dismiss')}
               </button>
             </div>
           </div>
@@ -1035,15 +1045,15 @@ function AgentLogDock({
           <div className="agent-continue-note" style={{ borderLeft: '3px solid #f87171' }}>
             <div className="agent-continue-note-head">
               <p style={{ color: '#f87171', fontWeight: 600 }}>
-                {continueRequest.failureReason ? `⚠️ ${continueRequest.failureReason}` : '⚠️ Incomplete Run'}
+                {continueRequest.failureReason ? `⚠️ ${continueRequest.failureReason}` : t('trajectory.log.incompleteRun')}
               </p>
               <button type="button" className="agent-note-dismiss" onClick={() => setNoteOpen(false)}>
-                Dismiss
+                {t('trajectory.log.dismiss')}
               </button>
             </div>
             {continueRequest.resumeSubtaskTitle && (
               <p style={{ fontSize: '0.85rem', color: '#93c5fa', marginTop: 4 }}>
-                Target Subtask to Resume: <strong>{continueRequest.resumeSubtaskTitle}</strong> {continueRequest.resumeSubtaskId ? `(${continueRequest.resumeSubtaskId})` : ''}
+                <Trans t={t} i18nKey="trajectory.log.resumeTarget" values={{ title: continueRequest.resumeSubtaskTitle, id: continueRequest.resumeSubtaskId ? `(${continueRequest.resumeSubtaskId})` : '' }} components={{ strong: <strong /> }} />
               </p>
             )}
           </div>
@@ -1051,9 +1061,9 @@ function AgentLogDock({
         {!historyFollowUp && summary && noteOpen && !continueRequest.failureReason && !continueRequest.resumeSubtaskTitle && (
           <div className="agent-continue-note">
             <div className="agent-continue-note-head">
-              <p>This run stopped before completion. A follow-up starts a new run from the saved summary.</p>
+              <p>{t('trajectory.log.summaryNote')}</p>
               <button type="button" className="agent-note-dismiss" onClick={() => setNoteOpen(false)}>
-                Dismiss
+                {t('trajectory.log.dismiss')}
               </button>
             </div>
             <div className="continuation-summary-panel">
@@ -1073,10 +1083,10 @@ function AgentLogDock({
             onChange={event => setDraft(event.target.value)}
             placeholder={
               historyFollowUp
-                ? 'Continue with a new prompt'
+                ? t('trajectory.log.continuePrompt')
                 : continueRequest.resumeSubtaskTitle
-                  ? `Optional prompt before resuming "${continueRequest.resumeSubtaskTitle}"`
-                  : 'Optional prompt / notes before resuming'
+                  ? t('trajectory.log.resumeNamedPrompt', { title: continueRequest.resumeSubtaskTitle })
+                  : t('trajectory.log.resumePrompt')
             }
             rows={2}
             disabled={continueRequest.busy}
@@ -1087,14 +1097,14 @@ function AgentLogDock({
             }}
           />
           <div className="agent-composer-actions">
-            <div className="agent-turn-choices" role="group" aria-label="Extra turns">
+            <div className="agent-turn-choices" role="group" aria-label={t('trajectory.log.extraTurns')}>
               {CONTINUE_TURN_CHOICES.map(choice => (
                 <button
                   key={choice}
                   type="button"
                   className={choice === extraTurns ? 'active' : ''}
                   onClick={() => setExtraTurns(choice)}
-                  title={`Continue with +${choice} turns`}
+                  title={t('trajectory.log.continueTurnsTooltip', { count: choice })}
                 >
                   {choice}
                 </button>
@@ -1107,7 +1117,7 @@ function AgentLogDock({
                 onClick={continueRequest.onSpecifiedTurns}
                 disabled={continueRequest.busy}
               >
-                Specified turns
+                {t('trajectory.log.specifiedTurns')}
               </button>
             )}
             {continueRequest.resumeSubtaskTitle && (
@@ -1117,9 +1127,9 @@ function AgentLogDock({
                 style={{ background: '#2563eb', color: '#fff', fontWeight: 600 }}
                 onClick={() => void continueRequest.onContinue(extraTurns, draft.trim() || undefined)}
                 disabled={continueRequest.busy}
-                title={`Resume subtask "${continueRequest.resumeSubtaskTitle}" with +${extraTurns} turns`}
+                title={t('trajectory.log.resumeSubtaskTooltip', { title: continueRequest.resumeSubtaskTitle, count: extraTurns })}
               >
-                ⏩ Resume Subtask: {continueRequest.resumeSubtaskTitle} (+{extraTurns})
+                {t('trajectory.log.resumeSubtask', { title: continueRequest.resumeSubtaskTitle, count: extraTurns })}
               </button>
             )}
             <button
@@ -1127,7 +1137,7 @@ function AgentLogDock({
               className="agent-continue-btn"
               disabled={continueRequest.busy || (historyFollowUp && draft.trim().length === 0)}
             >
-              {historyFollowUp ? 'Send' : continueRequest.resumeSubtaskTitle ? `Continue (+${extraTurns})` : `Resume (+${extraTurns})`}
+              {historyFollowUp ? t('trajectory.log.send') : continueRequest.resumeSubtaskTitle ? t('trajectory.log.continueTurns', { count: extraTurns }) : t('trajectory.log.resumeTurns', { count: extraTurns })}
             </button>
           </div>
         </form>
@@ -1146,13 +1156,14 @@ function AgentLogDock({
 }
 
 function AgentLogJudgmentDetailCard({ judgment }: { judgment: HarnessJudgmentRecord }) {
+  const { t } = useTranslation()
   const triggered = Boolean(judgment.verdict?.triggered)
-  const verdictKind = judgment.verdict?.kind || 'unknown'
-  const scoreVal = judgment.verdict?.value !== undefined ? judgment.verdict.value.toFixed(4) : undefined
+  const verdictKind = judgment.verdict?.kind || t('trajectory.log.unknown')
+  const scoreVal = judgment.verdict?.value !== undefined ? formatNumber(judgment.verdict.value, { minimumFractionDigits: 4, maximumFractionDigits: 4, useGrouping: false }) : undefined
   const thresholdVal =
-    judgment.verdict?.threshold !== undefined ? judgment.verdict.threshold.toFixed(2) : undefined
+    judgment.verdict?.threshold !== undefined ? formatNumber(judgment.verdict.threshold, { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }) : undefined
   const confPercent =
-    judgment.confidence !== undefined ? `${(judgment.confidence * 100).toFixed(1)}%` : undefined
+    judgment.confidence !== undefined ? `${formatNumber(judgment.confidence * 100, { minimumFractionDigits: 1, maximumFractionDigits: 1, useGrouping: false })}%` : undefined
 
   return (
     <div className={`agent-log-judgment-card ${triggered ? 'is-triggered' : 'is-ok'}`}>
@@ -1160,45 +1171,45 @@ function AgentLogJudgmentDetailCard({ judgment }: { judgment: HarnessJudgmentRec
         <div className="judgment-card-point">
           <span className="judgment-point-name">{judgment.point}</span>
           <span className={`judgment-mode-badge mode-${judgment.mode}`}>{judgment.mode}</span>
-          <span className="judgment-latency-badge">{judgment.latencyMs} ms</span>
+          <span className="judgment-latency-badge">{t('trajectory.log.milliseconds', { value: judgment.latencyMs })}</span>
         </div>
         <span className={`judgment-verdict-badge ${triggered ? 'triggered' : 'ok'}`}>
-          {triggered ? 'Triggered' : 'Passed'}
+          {triggered ? t('trajectory.log.triggered') : t('trajectory.log.passed')}
         </span>
       </div>
       <div className="judgment-card-metrics">
         <div className="judgment-metric">
-          <span className="metric-label">Type:</span>
+          <span className="metric-label">{t('trajectory.log.type')}</span>
           <span className="metric-val">{judgment.questionType || verdictKind}</span>
         </div>
         {scoreVal !== undefined && (
           <div className="judgment-metric">
-            <span className="metric-label">Score / Prob:</span>
+            <span className="metric-label">{t('trajectory.log.score')}</span>
             <span className="metric-val font-mono">{scoreVal}</span>
           </div>
         )}
         {thresholdVal !== undefined && (
           <div className="judgment-metric">
-            <span className="metric-label">Threshold:</span>
+            <span className="metric-label">{t('trajectory.log.threshold')}</span>
             <span className="metric-val font-mono">{thresholdVal}</span>
           </div>
         )}
         {confPercent && (
           <div className="judgment-metric">
-            <span className="metric-label">Confidence:</span>
+            <span className="metric-label">{t('trajectory.log.confidence')}</span>
             <span className="metric-val font-mono">{confPercent}</span>
           </div>
         )}
         {judgment.verdict?.selected && (
           <div className="judgment-metric">
-            <span className="metric-label">Choice:</span>
+            <span className="metric-label">{t('trajectory.log.choice')}</span>
             <span className="metric-val font-mono">{judgment.verdict.selected}</span>
           </div>
         )}
       </div>
       {judgment.stateDigest && (
         <div className="judgment-card-digest">
-          <span className="digest-label">State Digest:</span>
+          <span className="digest-label">{t('trajectory.log.stateDigest')}</span>
           <pre className="digest-pre">{judgment.stateDigest}</pre>
         </div>
       )}

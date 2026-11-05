@@ -1,3 +1,5 @@
+import { translate } from './i18n/index.ts'
+
 export type ProjectSubTab =
   | 'harness'
   | 'chat'
@@ -47,20 +49,20 @@ export function getTabModulePath(tab: ProjectSubTab): string {
 export function getTabLabel(tab: ProjectSubTab): string {
   switch (tab) {
     case 'harness':
-      return 'Harness'
+      return translate('tabs.harness')
     case 'chat':
-      return 'Chat'
+      return translate('tabs.chat')
     case 'git':
-      return 'Git'
+      return translate('tabs.git')
     case 'files':
-      return 'Files'
+      return translate('tabs.files')
     case 'rules':
-      return 'Rules'
+      return translate('tabs.rules')
     case 'terminal':
-      return 'Terminal'
+      return translate('tabs.terminal')
     case 'insights':
-      return 'Insights'
+      return translate('tabs.insights')
     case 'settings':
-      return 'Settings'
+      return translate('tabs.settings')
   }
 }

@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import { useState } from 'react'
 import type { createApi } from '@aaif/goose-hub-core'
 import { Sun, Moon, Laptop } from 'lucide-react'
@@ -27,6 +28,7 @@ export function ServerSettings({
   totalProjects,
   activeSessionsCount,
 }: ServerSettingsProps) {
+  const { t } = useTranslation()
   const { themePreference, setThemePreference, resolvedTheme } = useTheme()
   const projectRoots = useProjectRoots(api)
   const [inputUrl, setInputUrl] = useState(baseUrl)
@@ -53,7 +55,7 @@ export function ServerSettings({
   })
   const [testing, setTesting] = useState(false)
   const [pingLatency, setPingLatency] = useState<number | null>(null)
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null)
   const [savedSuccess, setSavedSuccess] = useState(false)
 
   const handleSave = () => {
@@ -77,12 +79,11 @@ export function ServerSettings({
       setPingLatency(latency)
       setTestResult({
         success: true,
-        message: `Successfully connected to Goose server (${latency}ms latency).`,
       })
     } catch (cause) {
       setTestResult({
         success: false,
-        message: cause instanceof Error ? cause.message : 'Connection test failed',
+        error: cause instanceof Error ? cause.message : undefined,
       })
     } finally {
       setTesting(false)
@@ -93,10 +94,10 @@ export function ServerSettings({
     <div className="management-page-container">
       <div className="management-page-header">
         <div>
-          <p className="eyebrow">SYSTEM CONFIGURATION</p>
-          <h2>Server & Settings</h2>
+          <p className="eyebrow">{t('settings.server.eyebrow')}</p>
+          <h2>{t('settings.server.title')}</h2>
           <p className="muted">
-            Configure the OpenDuck config file, connection, appearance, and project roots.
+            {t('settings.server.description')}
           </p>
         </div>
       </div>
@@ -104,64 +105,64 @@ export function ServerSettings({
       <div className="columns settings-layout">
         <div className="panel-column">
           <div className="panel form-panel">
-            <h3>Goose Server Connection</h3>
+            <h3>{t('settings.server.connectionTitle')}</h3>
             <p className="muted">
-              Specify the address and authentication key for your running Goose background daemon.
+              {t('settings.server.connectionHint')}
             </p>
 
             <div className="settings-field-group">
               <label>
-                Server URL
+                {t('settings.server.serverUrl')}
                 <input
                   value={inputUrl}
                   onChange={e => setInputUrl(e.target.value)}
-                  placeholder="Leave empty for local proxy (current origin)"
+                  placeholder={t('settings.server.serverUrlPlaceholder')}
                 />
-                <small className="muted">Default: empty (uses Vite proxy / current origin)</small>
+                <small className="muted">{t('settings.server.serverUrlDefault')}</small>
               </label>
 
               <label>
-                Secret Key
+                {t('settings.server.secretKey')}
                 <input
                   type="password"
                   value={inputSecret}
                   onChange={e => setInputSecret(e.target.value)}
-                  placeholder="Optional (if configured on server via GOOSE_SERVER__SECRET_KEY)"
+                  placeholder={t('settings.server.secretPlaceholder')}
                 />
               </label>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '0.25rem' }}>
                 <label>
-                  Request Timeout (seconds)
+                  {t('settings.server.requestTimeout')}
                   <input
                     type="number"
                     min={0}
                     max={300}
                     value={requestTimeoutSecs}
                     onChange={e => setRequestTimeoutSecs(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                    placeholder="12 (0 for unlimited)"
+                    placeholder={t('settings.server.requestTimeoutPlaceholder')}
                   />
-                  <small className="muted">Default: 12s. Set 0 for no timeout.</small>
+                  <small className="muted">{t('settings.server.requestTimeoutHint')}</small>
                 </label>
                 <label>
-                  History Timeout (seconds)
+                  {t('settings.server.historyTimeout')}
                   <input
                     type="number"
                     min={0}
                     max={600}
                     value={historyTimeoutSecs}
                     onChange={e => setHistoryTimeoutSecs(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                    placeholder="60 (0 for unlimited)"
+                    placeholder={t('settings.server.historyTimeoutPlaceholder')}
                   />
-                  <small className="muted">Default: 60s. For project task history.</small>
+                  <small className="muted">{t('settings.server.historyTimeoutHint')}</small>
                 </label>
               </div>
 
-              {savedSuccess && <div className="toast-inline">✓ Connection settings saved!</div>}
+              {savedSuccess && <div className="toast-inline">{t('settings.server.saved')}</div>}
 
               <div className="settings-actions-row">
                 <button type="button" className="btn-primary" onClick={handleSave}>
-                  Save Connection
+                  {t('settings.server.save')}
                 </button>
                 <button
                   type="button"
@@ -169,23 +170,24 @@ export function ServerSettings({
                   disabled={testing}
                   onClick={() => void handleTestConnection()}
                 >
-                  {testing ? 'Testing…' : '⚡ Test Connection / Ping'}
+                  {testing ? t('settings.server.testing') : t('settings.server.test')}
                 </button>
               </div>
 
               {testResult && (
                 <div className={`connection-test-result ${testResult.success ? 'success' : 'failed'}`}>
-                  {testResult.success ? '✓ ' : '✕ '} {testResult.message}
+                  {testResult.success ? '✓ ' : '✕ '} {testResult.success
+                    ? t('settings.server.testSuccess', { latency: pingLatency ?? 0 })
+                    : testResult.error ?? t('settings.server.testFailed')}
                 </div>
               )}
             </div>
           </div>
 
           <div className="panel">
-            <h3>Project Root Directories</h3>
+            <h3>{t('settings.server.rootsTitle')}</h3>
             <p className="muted">
-              New projects can only be registered as a folder inside one of these roots. Add the
-              parent directories where your projects live.
+              {t('settings.server.rootsHint')}
             </p>
             <ProjectRootsEditor
               roots={projectRoots.roots}
@@ -198,9 +200,9 @@ export function ServerSettings({
           </div>
 
           <div className="panel">
-            <h3>Appearance & Theme</h3>
+            <h3>{t('settings.server.appearance')}</h3>
             <p className="muted text-sm">
-              Choose your interface color scheme. You can switch between Light, Dark, or System mode.
+              {t('settings.server.appearanceHint')}
             </p>
             <div className="theme-options-grid">
               <button
@@ -210,8 +212,8 @@ export function ServerSettings({
               >
                 <Laptop size={20} className="theme-option-icon" />
                 <div className="theme-option-text">
-                  <strong>System</strong>
-                  <span className="muted text-xs">Auto ({resolvedTheme})</span>
+                  <strong>{t('settings.server.system')}</strong>
+                  <span className="muted text-xs">{t('settings.server.autoTheme', { theme: resolvedTheme === 'light' ? t('settings.server.themeLight') : t('settings.server.themeDark') })}</span>
                 </div>
               </button>
               <button
@@ -221,8 +223,8 @@ export function ServerSettings({
               >
                 <Sun size={20} className="theme-option-icon" />
                 <div className="theme-option-text">
-                  <strong>Light</strong>
-                  <span className="muted text-xs">Daylight theme</span>
+                  <strong>{t('settings.server.light')}</strong>
+                  <span className="muted text-xs">{t('settings.server.daylight')}</span>
                 </div>
               </button>
               <button
@@ -232,8 +234,8 @@ export function ServerSettings({
               >
                 <Moon size={20} className="theme-option-icon" />
                 <div className="theme-option-text">
-                  <strong>Dark</strong>
-                  <span className="muted text-xs">Obsidian dark</span>
+                  <strong>{t('settings.server.dark')}</strong>
+                  <span className="muted text-xs">{t('settings.server.obsidian')}</span>
                 </div>
               </button>
             </div>
@@ -242,32 +244,32 @@ export function ServerSettings({
 
         <div className="panel-column">
           <div className="panel">
-            <h3>System Status & Diagnostics</h3>
+            <h3>{t('settings.server.diagnostics')}</h3>
             <div className="diagnostics-grid">
               <div className="diagnostic-item">
-                <span className="muted text-sm">Server Health</span>
+                <span className="muted text-sm">{t('settings.server.health')}</span>
                 <div className="diagnostic-value">
                   <span className={`status-dot ${isConnected ? 'online' : 'offline'}`} />
-                  <strong>{isConnected ? 'Connected & Ready' : 'Disconnected'}</strong>
+                  <strong>{isConnected ? t('settings.server.connected') : t('settings.server.disconnected')}</strong>
                 </div>
               </div>
 
               <div className="diagnostic-item">
-                <span className="muted text-sm">Browser → Hub HTTP latency</span>
+                <span className="muted text-sm">{t('settings.server.latencyLabel')}</span>
                 <div className="diagnostic-value">
-                  <strong>{pingLatency !== null ? `${pingLatency} ms` : isConnected ? 'Active' : '—'}</strong>
+                  <strong>{pingLatency !== null ? t('settings.server.latency', { latency: pingLatency }) : isConnected ? t('settings.server.active') : '—'}</strong>
                 </div>
               </div>
 
               <div className="diagnostic-item">
-                <span className="muted text-sm">Registered Projects</span>
+                <span className="muted text-sm">{t('settings.server.projects')}</span>
                 <div className="diagnostic-value">
                   <strong>{totalProjects}</strong>
                 </div>
               </div>
 
               <div className="diagnostic-item">
-                <span className="muted text-sm">Active Live Sessions</span>
+                <span className="muted text-sm">{t('settings.server.sessions')}</span>
                 <div className="diagnostic-value">
                   <strong>{activeSessionsCount}</strong>
                 </div>
@@ -276,17 +278,15 @@ export function ServerSettings({
           </div>
 
           <div className="panel">
-            <h3>About OpenDuck Hub</h3>
+            <h3>{t('settings.server.about')}</h3>
             <div className="about-details">
               <p className="muted text-sm">
-                OpenDuck Hub is a project-first enterprise agent management interface for Goose. It
-                enables managing projects, monitoring scheduled automation recipes, executing shell
-                commands, and coordinating parallel agent sessions.
+                {t('settings.server.aboutDescription')}
               </p>
               <div className="tags">
-                <span>UI v0.1.0</span>
-                <span>ACP Protocol v0.19</span>
-                <span>Vite + React 19</span>
+                <span>{t('settings.server.uiVersion')}</span>
+                <span>{t('settings.server.acpVersion')}</span>
+                <span>{t('settings.server.stack')}</span>
               </div>
             </div>
           </div>

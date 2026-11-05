@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+import { translate } from './i18n/index.ts'
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import {
   stopProjectChat,
@@ -41,6 +43,7 @@ const TuiAgentsPage = lazy(() =>
 )
 
 export default function App() {
+  const { t } = useTranslation()
   const [initialNav] = useState(() =>
     typeof window !== 'undefined'
       ? parseUrlNav(window.location.search)
@@ -80,7 +83,7 @@ export default function App() {
       setProjects(res.projects)
       setIsConnected(true)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to connect to Goose server')
+      setError(cause instanceof Error ? cause.message : 'app.shell.connectError')
       setIsConnected(false)
     } finally {
       setBusy(false)
@@ -133,7 +136,7 @@ export default function App() {
           current.map(p => (p.project.slug === project.slug ? detail : p)),
         )
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : 'Unable to load project details')
+        setError(cause instanceof Error ? cause.message : 'app.shell.detailsError')
       }
     },
     [activeTab, api, openProjects, splitSlug],
@@ -177,7 +180,7 @@ export default function App() {
         }
       } catch (cause) {
         if (!ignore) {
-          setError(cause instanceof Error ? cause.message : 'Unable to connect to Goose server')
+          setError(cause instanceof Error ? cause.message : 'app.shell.connectError')
           setIsConnected(false)
         }
       } finally {
@@ -234,7 +237,7 @@ export default function App() {
     } catch (cause) {
       if (requestId !== runningRequestRef.current) return
       setRunningJobsError(
-        cause instanceof Error ? cause.message : 'Unable to load running tasks',
+        cause instanceof Error ? cause.message : 'app.shell.runningError',
       )
     } finally {
       if (requestId === runningRequestRef.current) {
@@ -274,7 +277,7 @@ export default function App() {
       await api.stopHarnessJob(job.jobId)
       await refreshRunningJobs()
     } catch (cause) {
-      setRunningJobsError(cause instanceof Error ? cause.message : 'Unable to stop task')
+      setRunningJobsError(cause instanceof Error ? cause.message : 'app.shell.stopError')
     } finally {
       setStoppingJobId(null)
     }
@@ -358,7 +361,7 @@ export default function App() {
       />
 
       <main className="app-main-content">
-        {error && <p className="error global-error">{error}</p>}
+        {error && <p className="error global-error">{error === 'app.shell.connectError' ? translate('app.shell.connectError') : error === 'app.shell.detailsError' ? translate('app.shell.detailsError') : error}</p>}
 
         {currentPage === 'projects' && (
           <div className="page-view projects-page-view">
@@ -373,7 +376,7 @@ export default function App() {
                   }}
                 >
                   <LayoutDashboard size={14} />
-                  <span>All Projects</span>
+                  <span>{t('app.shell.allProjects')}</span>
                 </button>
                 {openProjects.map(p => {
                   const slug = p.project.slug
@@ -405,25 +408,25 @@ export default function App() {
                         <button
                           type="button"
                           className="tab-stop-btn mini-badge"
-                          title="Agent is working in chat. Click to stop."
+                          title={t('app.shell.workingTitle')}
                           onClick={e => {
                             e.stopPropagation()
                             void stopProjectChat(slug)
                           }}
                         >
                           <Square size={10} />
-                          <span>Stop</span>
+                          <span>{t('app.shell.stop')}</span>
                         </button>
                       )}
                       {hasPermission && (
-                        <span className="badge permission-action-badge mini-badge" title="Permission required">
+                        <span className="badge permission-action-badge mini-badge" title={t('app.shell.permissionRequired')}>
                           <ShieldAlert size={11} />
                         </span>
                       )}
                       <button
                         type="button"
                         className="tab-close"
-                        title="Close tab"
+                        title={t('app.shell.closeTab')}
                         onClick={e => closeTab(slug, e)}
                       >
                         <X size={12} />
@@ -448,14 +451,14 @@ export default function App() {
                             split: nextSplit,
                           })
                         }}
-                        title="Split View side-by-side with another project"
+                        title={t('app.shell.splitTitle')}
                       >
-                        <option value="">No Split</option>
+                        <option value="">{t('app.shell.noSplit')}</option>
                         {openProjects
                           .filter(p => p.project.slug !== activeSlug)
                           .map(p => (
                             <option key={p.project.slug} value={p.project.slug}>
-                              Split with: {p.project.title || p.project.slug}
+                              {t('app.shell.splitWith', { title: p.project.title || p.project.slug })}
                             </option>
                           ))}
                       </select>
@@ -572,7 +575,7 @@ export default function App() {
               projects={projects}
               loaded={runningJobsLoaded}
               isConnected={isConnected}
-              error={runningJobsError}
+              error={runningJobsError === 'app.shell.runningError' ? translate('app.shell.runningError') : runningJobsError === 'app.shell.stopError' ? translate('app.shell.stopError') : runningJobsError}
               now={now}
               refreshing={runningJobsRefreshing}
               stoppingJobId={stoppingJobId}

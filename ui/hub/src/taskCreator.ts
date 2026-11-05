@@ -1,4 +1,5 @@
 import type { FriendlySchedule, ProjectTaskDefinition } from '@aaif/goose-hub-core'
+import { translate } from './i18n/index.ts'
 import {
   defaultTaskCreateDraftData,
   type TaskCreateDraftData,
@@ -131,12 +132,31 @@ export function shouldPersistTaskCreatorDraft(options: {
 export function describeDraftRestored(savedAt: Date, now: Date = new Date()): string {
   const ageMs = Math.max(0, now.getTime() - savedAt.getTime())
   const minutes = Math.floor(ageMs / 60000)
-  if (minutes < 1) return 'Restored your unsubmitted draft from a moment ago'
-  if (minutes < 60) return `Restored your unsubmitted draft from ${minutes} minute${minutes === 1 ? '' : 's'} ago`
+  if (minutes < 1) return translate('harness.tasks.creator.restoredMoment')
+  if (minutes < 60) {
+    return translate(
+      minutes === 1
+        ? 'harness.tasks.creator.restoredMinutes_one'
+        : 'harness.tasks.creator.restoredMinutes_other',
+      { count: minutes },
+    )
+  }
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `Restored your unsubmitted draft from ${hours} hour${hours === 1 ? '' : 's'} ago`
+  if (hours < 24) {
+    return translate(
+      hours === 1
+        ? 'harness.tasks.creator.restoredHours_one'
+        : 'harness.tasks.creator.restoredHours_other',
+      { count: hours },
+    )
+  }
   const days = Math.floor(hours / 24)
-  return `Restored your unsubmitted draft from ${days} day${days === 1 ? '' : 's'} ago`
+  return translate(
+    days === 1
+      ? 'harness.tasks.creator.restoredDays_one'
+      : 'harness.tasks.creator.restoredDays_other',
+    { count: days },
+  )
 }
 
 /** Typing pauses longer than this flush the draft; short pauses avoid a write per keystroke. */

@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
 } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   Sparkles,
   ScrollText,
@@ -149,6 +150,7 @@ export const MentionPopover = forwardRef<MentionPopoverHandle, MentionPopoverPro
     },
     ref,
   ) => {
+    const { t } = useTranslation()
     const popoverRef = useRef<HTMLDivElement>(null)
     const listRef = useRef<HTMLDivElement>(null)
 
@@ -211,7 +213,7 @@ export const MentionPopover = forwardRef<MentionPopoverHandle, MentionPopoverPro
 
     if (!isOpen) return null
 
-    const typeBadgeText = (type: MentionItemType) => {
+    const typeBadgeClass = (type: MentionItemType) => {
       switch (type) {
         case 'Attachment':
           return 'attached'
@@ -228,6 +230,23 @@ export const MentionPopover = forwardRef<MentionPopoverHandle, MentionPopoverPro
       }
     }
 
+    const typeBadgeLabel = (type: MentionItemType) => {
+      switch (type) {
+        case 'Attachment':
+          return t('mentions.popover.badge.attached')
+        case 'Task':
+          return t('mentions.popover.badge.task')
+        case 'Agent':
+          return t('mentions.popover.badge.agent')
+        case 'Rule':
+          return t('mentions.popover.badge.rule')
+        case 'Directory':
+          return t('mentions.popover.badge.folder')
+        case 'File':
+          return t('mentions.popover.badge.file')
+      }
+    }
+
     return (
       <div
         ref={popoverRef}
@@ -238,14 +257,19 @@ export const MentionPopover = forwardRef<MentionPopoverHandle, MentionPopoverPro
         }}
       >
         <div className="mention-popover-header">
-          <span className="mention-header-title">Mention (@)</span>
+          <span className="mention-header-title">{t('mentions.popover.title')}</span>
           {loading ? (
             <span className="mention-loading-indicator">
-              <Loader2 size={12} className="spinning" /> Scanning repository…
+              <Loader2 size={12} className="spinning" /> {t('mentions.popover.scanning')}
             </span>
           ) : (
             <span className="mention-header-count">
-              {filteredItems.length} {filteredItems.length === 1 ? 'match' : 'matches'}
+              {t(
+                filteredItems.length === 1
+                  ? 'mentions.popover.matches_one'
+                  : 'mentions.popover.matches_other',
+                { count: filteredItems.length },
+              )}
             </span>
           )}
         </div>
@@ -253,7 +277,7 @@ export const MentionPopover = forwardRef<MentionPopoverHandle, MentionPopoverPro
         <div ref={listRef} className="mention-popover-list">
           {filteredItems.length === 0 && !loading && (
             <div className="mention-empty-state">
-              <span>No items found matching "@{query}"</span>
+              <span>{t('mentions.popover.noMatches', { query })}</span>
             </div>
           )}
 
@@ -280,8 +304,8 @@ export const MentionPopover = forwardRef<MentionPopoverHandle, MentionPopoverPro
                         item.matchedText === item.name ? item.matches : [],
                       )}
                     </span>
-                    <span className={`mention-badge mention-badge-${typeBadgeText(item.itemType)}`}>
-                      {typeBadgeText(item.itemType)}
+                    <span className={`mention-badge mention-badge-${typeBadgeClass(item.itemType)}`}>
+                      {typeBadgeLabel(item.itemType)}
                     </span>
                   </div>
 
@@ -306,9 +330,9 @@ export const MentionPopover = forwardRef<MentionPopoverHandle, MentionPopoverPro
         </div>
 
         <div className="mention-popover-footer">
-          <span>↑↓ Navigate</span>
-          <span>↵ / Tab Select</span>
-          <span>Esc Dismiss</span>
+          <span>{t('mentions.popover.footer.navigate')}</span>
+          <span>{t('mentions.popover.footer.select')}</span>
+          <span>{t('mentions.popover.footer.dismiss')}</span>
         </div>
       </div>
     )

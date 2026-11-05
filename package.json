@@ -1,0 +1,16 @@
+{
+  "name": "openduck-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspace convenience scripts for the OpenDuck repo. The UI pnpm workspace root is ui/.",
+  "scripts": {
+    "build": "cd ui/hub && npm run build",
+    "typecheck": "cd ui/hub && npm run typecheck",
+    "test": "cd ui/hub && npm test",
+    "dev": "cd ui/hub && npm run dev"
+  },
+  "dependencies": {
+    "i18next": "^26.7.1",
+    "react-i18next": "^17.1.12"
+  }
+}

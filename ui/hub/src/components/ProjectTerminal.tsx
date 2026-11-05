@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import type { KeyboardEvent } from 'react'
 import type {
@@ -7,6 +8,7 @@ import type {
   ProxyItem,
 } from '@aaif/goose-hub-core'
 import type { createApi } from '../api'
+import { formatTime } from '../i18n/format.ts'
 
 interface ProjectTerminalProps {
   api: ReturnType<typeof createApi>
@@ -23,6 +25,7 @@ export function ProjectTerminal({
   rootPath,
   language,
 }: ProjectTerminalProps) {
+  const { t } = useTranslation()
   const [mode, setMode] = useState<TerminalMode>('shell')
 
   // --- Shell Runner State ---
@@ -31,7 +34,7 @@ export function ProjectTerminal({
     Array<{
       cmd: string
       output?: ExecCommandOutput
-      error?: string
+      error?: { kind: 'raw'; message: string } | { kind: 'fallback' }
       timestamp: string
     }>
   >([])
@@ -97,7 +100,7 @@ export function ProjectTerminal({
     setHistoryIndex(-1)
     setCommand('')
 
-    const timestamp = new Date().toLocaleTimeString()
+    const timestamp = new Date().toISOString()
     try {
       const output = await api.execCommand(slug, { command: trimmed })
       setHistory(prev => [...prev, { cmd: trimmed, output, timestamp }])
@@ -106,7 +109,7 @@ export function ProjectTerminal({
         ...prev,
         {
           cmd: trimmed,
-          error: cause instanceof Error ? cause.message : 'Execution failed',
+          error: cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback' },
           timestamp,
         },
       ])
@@ -198,7 +201,7 @@ export function ProjectTerminal({
       setActiveScreen(res.initialScreen)
       await fetchTuiSessions()
     } catch (err) {
-      alert(`Failed to start ${agent} session: ${err instanceof Error ? err.message : String(err)}`)
+      alert(t('terminal.page.startFailed', { agent, error: err instanceof Error ? err.message : String(err) }))
     } finally {
       setTuiBusy(false)
     }
@@ -222,7 +225,7 @@ export function ProjectTerminal({
       }
       await fetchTuiSessions()
     } catch (err) {
-      alert(`Prompt error: ${err instanceof Error ? err.message : String(err)}`)
+      alert(t('terminal.page.promptError', { error: err instanceof Error ? err.message : String(err) }))
     } finally {
       setTuiBusy(false)
     }
@@ -240,7 +243,7 @@ export function ProjectTerminal({
 
   const handleStopActiveSession = async () => {
     if (!activeSessionId) return
-    if (!confirm(`Are you sure you want to stop session ${activeSessionId}?`)) return
+    if (!confirm(t('terminal.page.stopConfirm', { sessionId: activeSessionId }))) return
 
     try {
       await api.stopTuiSession(slug, activeSessionId)
@@ -249,7 +252,7 @@ export function ProjectTerminal({
       setActiveResponse('')
       await fetchTuiSessions()
     } catch (err) {
-      alert(`Failed to stop session: ${err instanceof Error ? err.message : String(err)}`)
+      alert(t('terminal.page.stopFailed', { error: err instanceof Error ? err.message : String(err) }))
     }
   }
 
@@ -268,7 +271,7 @@ export function ProjectTerminal({
     <div className="panel terminal-panel">
       <div className="terminal-header">
         <div className="terminal-info">
-          <h3>Terminal & Agent TUIs</h3>
+          <h3>{t('terminal.page.title')}</h3>
           <span className="terminal-cwd">{rootPath}</span>
         </div>
         <div className="terminal-actions" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -279,7 +282,7 @@ export function ProjectTerminal({
               style={{ borderRadius: '4px', border: 'none' }}
               onClick={() => setMode('shell')}
             >
-              Shell Runner
+              {t('terminal.page.shellRunner')}
             </button>
             <button
               type="button"
@@ -287,12 +290,12 @@ export function ProjectTerminal({
               style={{ borderRadius: '4px', border: 'none' }}
               onClick={() => setMode('tui_agents')}
             >
-              Interactive TUIs (tmux)
+              {t('terminal.page.interactiveTuis')}
             </button>
           </div>
           {mode === 'shell' && (
             <button type="button" className="secondary mini-btn" onClick={() => setHistory([])}>
-              Clear Output
+              {t('terminal.page.clearOutput')}
             </button>
           )}
         </div>
@@ -301,7 +304,7 @@ export function ProjectTerminal({
       {mode === 'shell' ? (
         <>
           <div className="quick-presets">
-            <span className="presets-label">Quick actions:</span>
+            <span className="presets-label">{t('terminal.page.quickActions')}</span>
             {quickPresets.map(preset => (
               <button
                 key={preset}
@@ -318,7 +321,7 @@ export function ProjectTerminal({
           <div className="terminal-console">
             {history.length === 0 && (
               <p className="terminal-empty">
-                Terminal ready. Run commands in project root or click quick presets above.
+                {t('terminal.page.ready')}
               </p>
             )}
             {history.map((entry, idx) => {
@@ -331,13 +334,13 @@ export function ProjectTerminal({
                   <div className="terminal-entry-meta">
                     <span className="terminal-prompt">$ {entry.cmd}</span>
                     <div className="terminal-badges">
-                      {duration !== undefined && <span className="duration-tag">{duration}ms</span>}
+                      {duration !== undefined && <span className="duration-tag">{t('terminal.page.duration', { duration })}</span>}
                       {exitCode !== undefined && (
                         <span className={`exit-badge ${isSuccess ? 'exit-ok' : 'exit-err'}`}>
-                          {isSuccess ? '0' : `exit ${exitCode}`}
+                          {isSuccess ? '0' : t('terminal.page.exitCode', { code: exitCode })}
                         </span>
                       )}
-                      <span className="time-tag">{entry.timestamp}</span>
+                      <span className="time-tag">{formatTime(entry.timestamp)}</span>
                     </div>
                   </div>
                   {entry.output?.stdout && (
@@ -346,13 +349,13 @@ export function ProjectTerminal({
                   {entry.output?.stderr && (
                     <pre className="terminal-stderr">{entry.output.stderr}</pre>
                   )}
-                  {entry.error && <pre className="terminal-stderr">Error: {entry.error}</pre>}
+                  {entry.error && <pre className="terminal-stderr">{t('terminal.page.error', { error: entry.error.kind === 'raw' ? entry.error.message : t('terminal.page.executionFailed') })}</pre>}
                 </div>
               )
             })}
             {running && (
               <div className="terminal-running">
-                <span className="badge working">⚡ Executing command…</span>
+                <span className="badge working">{t('terminal.page.executing')}</span>
               </div>
             )}
           </div>
@@ -371,11 +374,11 @@ export function ProjectTerminal({
               value={command}
               onChange={e => setCommand(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Type shell command (e.g. git status, cargo test) and press Enter…"
+              placeholder={t('terminal.page.commandPlaceholder')}
               disabled={running}
             />
             <button type="submit" disabled={!command.trim() || running}>
-              {running ? 'Running…' : 'Run'}
+              {running ? t('terminal.page.running') : t('terminal.page.run')}
             </button>
           </form>
         </>
@@ -384,7 +387,7 @@ export function ProjectTerminal({
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           {/* Launch bar */}
           <div className="quick-presets" style={{ alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-            <span className="presets-label">Launch persistent agent:</span>
+            <span className="presets-label">{t('terminal.page.launchAgent')}</span>
             <button
               type="button"
               className="preset-chip"
@@ -423,7 +426,7 @@ export function ProjectTerminal({
             </button>
 
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginLeft: 'auto', fontSize: '12px' }}>
-              <span style={{ color: 'var(--text-muted)' }}>Proxy:</span>
+              <span style={{ color: 'var(--text-muted)' }}>{t('terminal.page.proxy')}</span>
               <select
                 value={selectedProxyMode === 'named' ? selectedProxyId : selectedProxyMode}
                 onChange={e => {
@@ -439,14 +442,14 @@ export function ProjectTerminal({
                 disabled={tuiBusy}
                 style={{ padding: '2px 6px', fontSize: '12px', borderRadius: '4px', border: '1px solid var(--border-default)', background: 'var(--bg-card)' }}
               >
-                <option value="profile">Profile Default</option>
-                <option value="direct">Direct (No Proxy)</option>
+                <option value="profile">{t('terminal.page.profileDefault')}</option>
+                <option value="direct">{t('terminal.page.direct')}</option>
                 {proxies.map(p => (
                   <option key={p.id} value={p.id}>
-                    Named: {p.id} ({p.url})
+                    {t('terminal.page.namedProxy', { id: p.id, url: p.url })}
                   </option>
                 ))}
-                <option value="custom">Custom URL…</option>
+                <option value="custom">{t('terminal.page.customUrl')}</option>
               </select>
               {selectedProxyMode === 'custom' && (
                 <input
@@ -465,7 +468,7 @@ export function ProjectTerminal({
           {tuiSessions.length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-default)', paddingBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
               <div style={{ display: 'flex', gap: '0.35rem', overflowX: 'auto', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Sessions:</span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{t('terminal.page.sessions')}</span>
                 {tuiSessions.map(sess => {
                   const isActive = sess.sessionId === activeSessionId
                   const status = sess.state.status
@@ -490,7 +493,7 @@ export function ProjectTerminal({
                     >
                       <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor, display: 'inline-block' }} />
                       <span>{sess.kind}: {sess.sessionId.slice(-8)}</span>
-                      {sess.pid && <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>PID {sess.pid}</span>}
+                      {sess.pid && <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>{t('terminal.page.pid', { pid: sess.pid })}</span>}
                     </button>
                   )
                 })}
@@ -502,10 +505,10 @@ export function ProjectTerminal({
                     type="button"
                     className="preset-chip"
                     onClick={copyAttachCommand}
-                    title="Copy command to attach live via tmux in your terminal"
+                    title={t('terminal.page.copyAttach')}
                     style={{ fontSize: '0.72rem' }}
                   >
-                    {copiedAttach ? '✓ Copied attach command' : `📋 ${activeSession.attachCommand}`}
+                    {copiedAttach ? t('terminal.page.copiedAttach') : `📋 ${activeSession.attachCommand}`}
                   </button>
                   <button
                     type="button"
@@ -513,7 +516,7 @@ export function ProjectTerminal({
                     onClick={() => setAutoRefresh(!autoRefresh)}
                     style={{ opacity: autoRefresh ? 1 : 0.6 }}
                   >
-                    {autoRefresh ? '🔄 Auto-sync: ON' : '⏸ Auto-sync: OFF'}
+                    {autoRefresh ? t('terminal.page.autoSyncOn') : t('terminal.page.autoSyncOff')}
                   </button>
                   <button
                     type="button"
@@ -521,15 +524,15 @@ export function ProjectTerminal({
                     onClick={async () => {
                       try {
                         await api.extendManagedTuiSession(activeSession.sessionId, 30)
-                        alert('Retention extended by 30 minutes')
+                        alert(t('terminal.page.retentionExtended'))
                       } catch (e: any) {
                         alert(e.message)
                       }
                     }}
-                    title="Extend session retention countdown by 30 minutes"
+                    title={t('terminal.page.extendRetention')}
                     style={{ fontSize: '0.72rem' }}
                   >
-                    +30m Extend
+                    {t('terminal.page.extend')}
                   </button>
                   <button
                     type="button"
@@ -541,10 +544,10 @@ export function ProjectTerminal({
                         alert(e.message)
                       }
                     }}
-                    title="Send Escape and C-c interrupt"
+                    title={t('terminal.page.sendInterrupt')}
                     style={{ fontSize: '0.72rem', color: '#fbbf24' }}
                   >
-                    Interrupt
+                    {t('terminal.page.interrupt')}
                   </button>
                   <button
                     type="button"
@@ -552,7 +555,7 @@ export function ProjectTerminal({
                     onClick={() => void handleStopActiveSession()}
                     style={{ color: '#f87171' }}
                   >
-                    Stop
+                    {t('terminal.page.stop')}
                   </button>
                 </div>
               )}
@@ -567,14 +570,14 @@ export function ProjectTerminal({
                 className={`mini-btn ${viewMode === 'screen' ? 'primary' : 'secondary'}`}
                 onClick={() => setViewMode('screen')}
               >
-                TUI Screen Grid
+                {t('terminal.page.screenGrid')}
               </button>
               <button
                 type="button"
                 className={`mini-btn ${viewMode === 'response' ? 'primary' : 'secondary'}`}
                 onClick={() => setViewMode('response')}
               >
-                Lossless Extracted Response
+                {t('terminal.page.extractedResponse')}
               </button>
             </div>
           )}
@@ -583,7 +586,7 @@ export function ProjectTerminal({
           <div className="terminal-console" style={{ position: 'relative', minHeight: 400, maxHeight: 560, overflowY: 'auto' }}>
             {!activeSessionId ? (
               <p className="terminal-empty">
-                No active agent TUI sessions. Launch agy, grok, codex, or claude above to start a persistent warm tmux session.
+                {t('terminal.page.noSessions')}
               </p>
             ) : viewMode === 'response' && activeResponse ? (
               <div style={{ padding: '0.75rem', color: 'var(--terminal-text)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
@@ -594,13 +597,13 @@ export function ProjectTerminal({
                 className="terminal-stdout"
                 style={{ margin: 0, padding: '0.75rem', fontFamily: 'var(--font-mono)', fontSize: '0.82rem', whiteSpace: 'pre', overflowX: 'auto', lineHeight: 1.35 }}
               >
-                {activeScreen || '(Loading terminal screen grid…)'}
+                {activeScreen || t('terminal.page.loadingScreen')}
               </pre>
             )}
 
             {tuiBusy && (
               <div className="terminal-running" style={{ position: 'absolute', bottom: 10, right: 10 }}>
-                <span className="badge working">⚡ Injecting prompt & waiting for turn…</span>
+                <span className="badge working">{t('terminal.page.injectingPrompt')}</span>
               </div>
             )}
           </div>
@@ -608,7 +611,7 @@ export function ProjectTerminal({
           {/* Quick Keys Control Bar */}
           {activeSessionId && (
             <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
-              <span className="presets-label">Keystrokes:</span>
+              <span className="presets-label">{t('terminal.page.keystrokes')}</span>
               <button type="button" className="preset-chip" onClick={() => void handleSendKeys(['Escape'])}>
                 Esc
               </button>
@@ -616,10 +619,10 @@ export function ProjectTerminal({
                 Enter ↵
               </button>
               <button type="button" className="preset-chip" onClick={() => void handleSendKeys(['y', 'Enter'])} style={{ color: '#34d399' }}>
-                y (Approve)
+                {t('terminal.page.approve')}
               </button>
               <button type="button" className="preset-chip" onClick={() => void handleSendKeys(['n', 'Enter'])} style={{ color: '#f87171' }}>
-                n (Deny)
+                {t('terminal.page.deny')}
               </button>
               <button type="button" className="preset-chip" onClick={() => void handleSendKeys(['C-c'])}>
                 Ctrl+C
@@ -650,11 +653,11 @@ export function ProjectTerminal({
                 className="terminal-input"
                 value={tuiPrompt}
                 onChange={e => setTuiPrompt(e.target.value)}
-                placeholder="Type prompt or slash command (/plan, /compact, /status) for agent TUI..."
+                placeholder={t('terminal.page.promptPlaceholder')}
                 disabled={tuiBusy}
               />
               <button type="submit" disabled={!tuiPrompt.trim() || tuiBusy}>
-                {tuiBusy ? 'Waiting…' : 'Send Prompt'}
+                {tuiBusy ? t('terminal.page.waiting') : t('terminal.page.sendPrompt')}
               </button>
             </form>
           )}

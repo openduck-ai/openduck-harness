@@ -1,3 +1,5 @@
+import { translate } from './i18n/index.ts'
+
 export interface DynamicPromptTaskOption {
   id: string
   name: string
@@ -21,7 +23,7 @@ export function formatSelectionExtraPrompt(filePath: string, selectedText: strin
   const path = filePath.trim()
   if (!text) return ''
   if (!path) return text
-  return `Selected excerpt from \`${path}\`:\n\n${text}`
+  return `${translate('dynamicPrompt.helper.selectedExcerpt', { path })}\n\n${text}`
 }
 
 export function clampMenuPosition(

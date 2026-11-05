@@ -1,4 +1,6 @@
+import { useTranslation } from 'react-i18next'
 import { useState } from 'react'
+import { formatDate, formatDateTime } from '../i18n/format.ts'
 import type { Project } from '@aaif/goose-hub-core'
 import {
   Search,
@@ -41,6 +43,7 @@ export function ProjectList({
   onOpenRegisterModal,
   onStopChat,
 }: ProjectListProps) {
+  const { t } = useTranslation()
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'archived'>('all')
   const [kindFilter, setKindFilter] = useState<string>('all')
@@ -93,7 +96,7 @@ export function ProjectList({
             <input
               type="text"
               className="search-input"
-              placeholder="Search projects by name, path, language…"
+              placeholder={t('projectList.page.searchPlaceholder')}
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
@@ -102,7 +105,7 @@ export function ProjectList({
                 type="button"
                 className="clear-search-btn"
                 onClick={() => setSearch('')}
-                title="Clear search"
+                title={t('projectList.page.clearSearch')}
               >
                 <X size={14} />
               </button>
@@ -115,9 +118,9 @@ export function ProjectList({
               onChange={e => setStatusFilter(e.target.value as 'all' | 'active' | 'archived')}
               className="filter-select"
             >
-              <option value="all">All Status ({projects.length})</option>
-              <option value="active">Active Only ({activeProjectsCount})</option>
-              <option value="archived">Archived Only ({projects.length - activeProjectsCount})</option>
+              <option value="all">{t('projectList.page.allStatus', { count: projects.length })}</option>
+              <option value="active">{t('projectList.page.activeOnly', { count: activeProjectsCount })}</option>
+              <option value="archived">{t('projectList.page.archivedOnly', { count: projects.length - activeProjectsCount })}</option>
             </select>
 
             <select
@@ -125,11 +128,11 @@ export function ProjectList({
               onChange={e => setKindFilter(e.target.value)}
               className="filter-select"
             >
-              <option value="all">All Kinds</option>
-              <option value="software">Software</option>
-              <option value="docs">Documentation</option>
-              <option value="automation">Automation</option>
-              <option value="other">Other</option>
+              <option value="all">{t('projectList.page.allKinds')}</option>
+              <option value="software">{t('projectList.page.software')}</option>
+              <option value="docs">{t('projectList.page.documentation')}</option>
+              <option value="automation">{t('projectList.page.automation')}</option>
+              <option value="other">{t('projectList.page.other')}</option>
             </select>
           </div>
         </div>
@@ -140,19 +143,19 @@ export function ProjectList({
               type="button"
               className={`toggle-btn ${viewMode === 'grid' ? 'active' : ''}`}
               onClick={() => setViewMode('grid')}
-              title="Grid View"
+              title={t('projectList.page.gridView')}
             >
               <LayoutGrid size={15} />
-              <span>Grid</span>
+              <span>{t('projectList.page.grid')}</span>
             </button>
             <button
               type="button"
               className={`toggle-btn ${viewMode === 'table' ? 'active' : ''}`}
               onClick={() => setViewMode('table')}
-              title="Table View"
+              title={t('projectList.page.tableView')}
             >
               <List size={15} />
-              <span>Table</span>
+              <span>{t('projectList.page.table')}</span>
             </button>
           </div>
 
@@ -160,11 +163,11 @@ export function ProjectList({
             type="button"
             className="secondary refresh-btn"
             onClick={onRefresh}
-            title="Refresh project list"
+            title={t('projectList.page.refreshTitle')}
             disabled={busy}
           >
             <RefreshCw size={15} className={busy ? 'spinning' : ''} />
-            <span>Refresh</span>
+            <span>{t('projectList.page.refresh')}</span>
           </button>
         </div>
       </div>
@@ -178,11 +181,11 @@ export function ProjectList({
           <div className="empty-state-icon-box">
             <Sparkles size={32} />
           </div>
-          <h3>{search || statusFilter !== 'all' || kindFilter !== 'all' ? 'No matching projects found' : 'No projects registered yet'}</h3>
+          <h3>{search || statusFilter !== 'all' || kindFilter !== 'all' ? t('projectList.page.noMatches') : t('projectList.page.noProjects')}</h3>
           <p className="muted">
             {search || statusFilter !== 'all' || kindFilter !== 'all'
-              ? 'Try adjusting your search terms or filters to find what you are looking for.'
-              : 'Register a local project directory to connect your OpenDuck agent workspace.'}
+              ? t('projectList.page.adjustFilters')
+              : t('projectList.page.registerHint')}
           </p>
           {search || statusFilter !== 'all' || kindFilter !== 'all' ? (
             <button
@@ -194,7 +197,7 @@ export function ProjectList({
                 setKindFilter('all')
               }}
             >
-              Reset filters
+              {t('projectList.page.resetFilters')}
             </button>
           ) : (
             <button
@@ -203,7 +206,7 @@ export function ProjectList({
               onClick={onOpenRegisterModal}
             >
               <Plus size={16} />
-              <span>Register First Project</span>
+              <span>{t('projectList.page.registerFirst')}</span>
             </button>
           )}
         </div>
@@ -237,31 +240,31 @@ export function ProjectList({
                       <button
                         type="button"
                         className="badge working-pulse-badge stop-project-chat-badge"
-                        title="Agent is working in chat. Click to stop."
+                        title={t('projectList.page.stopTitle')}
                         onClick={e => {
                           e.stopPropagation()
                           void onStopChat?.(project.slug)
                         }}
                       >
                         <Square size={10} className="stop-icon" />
-                        <span>Stop</span>
+                        <span>{t('projectList.page.stop')}</span>
                       </button>
                     )}
                     {hasPermission && (
-                      <span className="badge permission-action-badge" title="Permission required">
-                        <ShieldAlert size={12} /> Action
+                      <span className="badge permission-action-badge" title={t('projectList.page.permission')}>
+                        <ShieldAlert size={12} />{' '}{t('projectList.page.action')}
                       </span>
                     )}
                     <span className={`status-pill ${project.status}`}>{project.status}</span>
                   </div>
                 </div>
 
-                <p className="project-card-desc">{project.description || 'No description provided.'}</p>
+                <p className="project-card-desc">{project.description || t('projectList.page.noDescription')}</p>
 
                 <div
                   className="project-card-path-box"
                   onClick={e => copyPath(project.path, project.slug, e)}
-                  title="Click to copy path"
+                  title={t('projectList.page.copyPath')}
                 >
                   <code className="path-text">{project.path}</code>
                   <span className="copy-icon-btn">
@@ -279,19 +282,19 @@ export function ProjectList({
                     {project.emailRecipients && project.emailRecipients.length > 0 && (
                       <span className="tag-lang" title={project.emailRecipients.join(', ')}>
                         <Mail size={12} />
-                        {project.emailRecipients.length} alert{project.emailRecipients.length > 1 ? 's' : ''}
+                        {t(project.emailRecipients.length === 1 ? 'projectList.page.alerts_one' : 'projectList.page.alerts_other', { count: project.emailRecipients.length })}
                       </span>
                     )}
                     {project.lastActivityAt && (
-                      <span className="tag-time" title="Last activity">
+                      <span className="tag-time" title={t('projectList.page.lastActivity')}>
                         <Clock size={12} />
-                        {new Date(project.lastActivityAt).toLocaleDateString()}
+                        {formatDate(project.lastActivityAt)}
                       </span>
                     )}
                   </div>
 
                   <div className="open-action-link">
-                    <span>Open</span>
+                    <span>{t('projectList.page.open')}</span>
                     <ArrowRight size={14} className="arrow-icon" />
                   </div>
                 </div>
@@ -304,12 +307,12 @@ export function ProjectList({
           <table className="management-table">
             <thead>
               <tr>
-                <th>Project Name</th>
-                <th>Type & Stack</th>
-                <th>Directory Path</th>
-                <th>Status</th>
-                <th>Last Active</th>
-                <th className="text-right">Action</th>
+                <th>{t('projectList.page.projectName')}</th>
+                <th>{t('projectList.page.typeStack')}</th>
+                <th>{t('projectList.page.directoryPath')}</th>
+                <th>{t('projectList.page.status')}</th>
+                <th>{t('projectList.page.lastActive')}</th>
+                <th className="text-right">{t('projectList.page.action')}</th>
               </tr>
             </thead>
             <tbody>
@@ -350,21 +353,21 @@ export function ProjectList({
                           <button
                             type="button"
                             className="badge working-pulse-badge stop-project-chat-badge"
-                            title="Agent is working in chat. Click to stop."
+                            title={t('projectList.page.stopTitle')}
                             onClick={e => {
                               e.stopPropagation()
                               void onStopChat?.(project.slug)
                             }}
                           >
-                            <Square size={10} className="stop-icon" /> Stop
+                            <Square size={10} className="stop-icon" />{' '}{t('projectList.page.stop')}
                           </button>
                         )}
-                        {hasPermission && <span className="badge permission-action-badge">⚠️ Action</span>}
+                        {hasPermission && <span className="badge permission-action-badge">{t('projectList.page.warningAction')}</span>}
                       </div>
                     </td>
                     <td className="muted text-sm">
                       {project.lastActivityAt
-                        ? new Date(project.lastActivityAt).toLocaleString()
+                        ? formatDateTime(project.lastActivityAt)
                         : '—'}
                     </td>
                     <td className="text-right">
@@ -376,7 +379,7 @@ export function ProjectList({
                           onOpenProject(project)
                         }}
                       >
-                        <span>Open</span>
+                        <span>{t('projectList.page.open')}</span>
                         <ArrowRight size={13} />
                       </button>
                     </td>

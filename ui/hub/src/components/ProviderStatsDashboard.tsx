@@ -1,5 +1,11 @@
+import { Trans, useTranslation } from 'react-i18next'
+import { formatNumber } from '../i18n/format.ts'
 import { useState, useMemo } from 'react'
-import type { HarnessRunResponse, ProviderCallRecord, TaskProviderStats } from '@aaif/goose-hub-core'
+import type {
+  HarnessRunResponse,
+  ProviderCallRecord,
+  TaskProviderStats,
+} from '@aaif/goose-hub-core'
 import { computeTaskProviderStats } from '../taskTrajectory.ts'
 import {
   Zap,
@@ -33,6 +39,7 @@ export function ProviderStatsDashboard({
   providerStats: inputProviderStats,
   onJumpToStep,
 }: ProviderStatsDashboardProps) {
+  const { t } = useTranslation()
   const providerStats = useMemo(
     () => inputProviderStats ?? computeTaskProviderStats(run),
     [inputProviderStats, run],
@@ -79,7 +86,9 @@ export function ProviderStatsDashboard({
       }
       if (
         statusFilter === 'retried' &&
-        (call.retryAttempt === undefined || call.retryAttempt === null || call.retryAttempt === 0) &&
+        (call.retryAttempt === undefined ||
+          call.retryAttempt === null ||
+          call.retryAttempt === 0) &&
         !call.retryReason
       ) {
         return false
@@ -112,12 +121,16 @@ export function ProviderStatsDashboard({
         <div className="stats-header-titles">
           <div className="stats-header-badge">
             <Zap size={14} className="text-accent" />
-            <span>Telemetry & Performance</span>
+            <span>{t('config.stats.telemetry')}</span>
           </div>
-          <h3>LLM Provider Call Statistics</h3>
+          <h3>{t('config.stats.title')}</h3>
           <p className="stats-header-desc">
-            Aggregated metrics for model invocations, latency, tokens, retries, and errors across task{' '}
-            <code>{run.taskId}</code>.
+            <Trans
+              t={t}
+              i18nKey="config.stats.description"
+              values={{ taskId: run.taskId }}
+              components={{ code: <code /> }}
+            />
           </p>
         </div>
       </div>
@@ -126,21 +139,30 @@ export function ProviderStatsDashboard({
       <div className="provider-kpi-grid">
         <div className="provider-kpi-card">
           <div className="kpi-label-row">
-            <span className="kpi-label">Total Invocations</span>
+            <span className="kpi-label">{t('config.stats.totalInvocations')}</span>
             <Bot size={15} className="kpi-icon" />
           </div>
           <div className="kpi-value">{providerStats.totalCalls}</div>
           <div className="kpi-subtext">
-            <span className="kpi-ok">{providerStats.successfulCalls} succeeded</span>
+            <span className="kpi-ok">
+              {t('config.stats.succeeded', {
+                count: providerStats.successfulCalls,
+              })}
+            </span>
             {providerStats.failedCalls > 0 && (
-              <span className="kpi-err"> • {providerStats.failedCalls} failed</span>
+              <span className="kpi-err">
+                {' • '}
+                {t('config.stats.failedCount', {
+                  count: providerStats.failedCalls,
+                })}
+              </span>
             )}
           </div>
         </div>
 
         <div className="provider-kpi-card">
           <div className="kpi-label-row">
-            <span className="kpi-label">Success Rate</span>
+            <span className="kpi-label">{t('config.stats.successRate')}</span>
             {successRate >= 95 ? (
               <CheckCircle2 size={15} className="kpi-icon text-success" />
             ) : (
@@ -158,63 +180,74 @@ export function ProviderStatsDashboard({
 
         <div className="provider-kpi-card">
           <div className="kpi-label-row">
-            <span className="kpi-label">Retries & Failovers</span>
+            <span className="kpi-label">{t('config.stats.retriesFailovers')}</span>
             <RotateCcw size={15} className="kpi-icon" />
           </div>
           <div className="kpi-value">{providerStats.totalRetries}</div>
           <div className="kpi-subtext">
             {providerStats.totalRetries === 0
-              ? 'Zero retry overhead'
-              : `${providerStats.totalRetries} retry attempts logged`}
+              ? t('config.stats.zeroRetry')
+              : t('config.stats.retryAttempts', {
+                  count: providerStats.totalRetries,
+                })}
           </div>
         </div>
 
         <div className="provider-kpi-card">
           <div className="kpi-label-row">
-            <span className="kpi-label">Avg Call Latency</span>
+            <span className="kpi-label">{t('config.stats.avgCallLatency')}</span>
             <Clock size={15} className="kpi-icon" />
           </div>
           <div className="kpi-value font-mono">
-            {Math.round(providerStats.avgDurationMs).toLocaleString()}{' '}
-            <span className="kpi-unit">ms</span>
+            {formatNumber(Math.round(providerStats.avgDurationMs))}{' '}
+            <span className="kpi-unit">{t('config.stats.millisecondUnit')}</span>
           </div>
           <div className="kpi-subtext">
             {providerStats.avgWaitMs !== undefined && providerStats.avgWaitMs !== null
-              ? `TTFB: ${Math.round(providerStats.avgWaitMs)}ms • Stream: ${Math.round(providerStats.avgReceiveMs || 0)}ms`
-              : `${(providerStats.totalDurationMs / 1000).toFixed(2)}s total completion time`}
+              ? t('config.stats.timing', {
+                  wait: Math.round(providerStats.avgWaitMs),
+                  receive: Math.round(providerStats.avgReceiveMs || 0),
+                })
+              : t('config.stats.completionTime', {
+                  seconds: (providerStats.totalDurationMs / 1000).toFixed(2),
+                })}
           </div>
         </div>
 
         <div className="provider-kpi-card">
           <div className="kpi-label-row">
-            <span className="kpi-label">Total LLM Tokens</span>
+            <span className="kpi-label">{t('config.stats.totalLlmTokens')}</span>
             <Sparkles size={15} className="kpi-icon" />
           </div>
           <div className="kpi-value font-mono token-highlight">
-            {providerStats.totalTokens.toLocaleString()}
+            {formatNumber(providerStats.totalTokens)}
           </div>
           <div className="kpi-subtext">
-            ↑ {providerStats.inputTokens.toLocaleString()} prompt • ↓{' '}
-            {providerStats.outputTokens.toLocaleString()} output
+            {t('config.stats.tokenSummary', {
+              input: formatNumber(providerStats.inputTokens),
+              output: formatNumber(providerStats.outputTokens),
+            })}
           </div>
         </div>
 
-        {providerStats.totalCost !== undefined && providerStats.totalCost !== null && providerStats.totalCost > 0 && (
-          <div className="provider-kpi-card">
-            <div className="kpi-label-row">
-              <span className="kpi-label">Estimated Cost</span>
-              <DollarSign size={15} className="kpi-icon" />
+        {providerStats.totalCost !== undefined &&
+          providerStats.totalCost !== null &&
+          providerStats.totalCost > 0 && (
+            <div className="provider-kpi-card">
+              <div className="kpi-label-row">
+                <span className="kpi-label">{t('config.stats.estimatedCost')}</span>
+                <DollarSign size={15} className="kpi-icon" />
+              </div>
+              <div className="kpi-value font-mono">${providerStats.totalCost.toFixed(4)}</div>
+              <div className="kpi-subtext">{t('config.stats.acrossCalls')}</div>
             </div>
-            <div className="kpi-value font-mono">${providerStats.totalCost.toFixed(4)}</div>
-            <div className="kpi-subtext">Across all model calls</div>
-          </div>
-        )}
+          )}
       </div>
 
       {/* 3. Provider & Model Breakdowns */}
       <div className="provider-breakdown-section">
         <h4 className="section-title">
-          <Layers size={15} /> Breakdown by Provider
+          <Layers size={15} /> {t('config.stats.byProvider')}
         </h4>
         <div className="provider-cards-grid">
           {Object.entries(providerStats.byProvider || {}).map(([pName, pStat]) => {
@@ -227,33 +260,39 @@ export function ProviderStatsDashboard({
                     <span className="provider-dot" />
                     <strong>{pName}</strong>
                   </div>
-                  <span className="p-card-calls-badge">{pStat.totalCalls} calls</span>
+                  <span className="p-card-calls-badge">
+                    {t('config.stats.callCount', { count: pStat.totalCalls })}
+                  </span>
                 </div>
 
                 <div className="p-card-metrics-grid">
                   <div className="p-metric-cell">
-                    <span className="p-metric-label">Success Rate</span>
-                    <span className={`p-metric-value ${pStat.failedCalls > 0 ? 'text-warn' : 'text-success'}`}>
+                    <span className="p-metric-label">{t('config.stats.successRate')}</span>
+                    <span
+                      className={`p-metric-value ${pStat.failedCalls > 0 ? 'text-warn' : 'text-success'}`}
+                    >
                       {pSuccessRate.toFixed(1)}%
                     </span>
                   </div>
                   <div className="p-metric-cell">
-                    <span className="p-metric-label">Avg Latency</span>
-                    <span className="p-metric-value">{Math.round(pStat.avgDurationMs)} ms</span>
+                    <span className="p-metric-label">{t('config.stats.avgLatency')}</span>
+                    <span className="p-metric-value">
+                      {t('config.stats.milliseconds', { ms: Math.round(pStat.avgDurationMs) })}
+                    </span>
                   </div>
                   <div className="p-metric-cell">
-                    <span className="p-metric-label">Tokens</span>
-                    <span className="p-metric-value">{pStat.totalTokens.toLocaleString()}</span>
+                    <span className="p-metric-label">{t('config.stats.tokens')}</span>
+                    <span className="p-metric-value">{formatNumber(pStat.totalTokens)}</span>
                   </div>
                   <div className="p-metric-cell">
-                    <span className="p-metric-label">Retries</span>
+                    <span className="p-metric-label">{t('config.stats.retries')}</span>
                     <span className="p-metric-value">{pStat.retries}</span>
                   </div>
                 </div>
 
                 {pStat.errors && pStat.errors.length > 0 && (
                   <div className="p-card-errors">
-                    <span className="p-errors-title">Encountered Errors:</span>
+                    <span className="p-errors-title">{t('config.stats.errors')}</span>
                     <ul className="p-errors-list">
                       {pStat.errors.map((err, eIdx) => (
                         <li key={eIdx}>{err}</li>
@@ -271,20 +310,20 @@ export function ProviderStatsDashboard({
       {providerStats.byModel && Object.keys(providerStats.byModel).length > 0 && (
         <div className="provider-breakdown-section">
           <h4 className="section-title">
-            <Bot size={15} /> Breakdown by Model
+            <Bot size={15} /> {t('config.stats.byModel')}
           </h4>
           <div className="model-table-container">
             <table className="model-summary-table">
               <thead>
                 <tr>
-                  <th>Provider / Model</th>
-                  <th>Calls</th>
-                  <th>Success</th>
-                  <th>Retries</th>
-                  <th>Avg Latency</th>
-                  <th>Tokens (Prompt / Output)</th>
-                  <th>Total Tokens</th>
-                  {providerStats.totalCost ? <th>Cost</th> : null}
+                  <th>{t('config.stats.providerModel')}</th>
+                  <th>{t('config.stats.calls')}</th>
+                  <th>{t('config.stats.success')}</th>
+                  <th>{t('config.stats.retries')}</th>
+                  <th>{t('config.stats.avgLatency')}</th>
+                  <th>{t('config.stats.tokenBreakdown')}</th>
+                  <th>{t('config.stats.totalTokens')}</th>
+                  {providerStats.totalCost ? <th>{t('config.stats.cost')}</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -300,16 +339,22 @@ export function ProviderStatsDashboard({
                       <strong>{mStat.totalCalls}</strong>
                     </td>
                     <td>
-                      <span className={`status-pill ${mStat.failedCalls > 0 ? 'pill-warn' : 'pill-ok'}`}>
+                      <span
+                        className={`status-pill ${mStat.failedCalls > 0 ? 'pill-warn' : 'pill-ok'}`}
+                      >
                         {mStat.successfulCalls} / {mStat.totalCalls}
                       </span>
                     </td>
-                    <td>{mStat.retries > 0 ? <span className="text-warn">{mStat.retries}</span> : 0}</td>
-                    <td className="font-mono">{Math.round(mStat.avgDurationMs)} ms</td>
-                    <td className="font-mono text-muted">
-                      {mStat.inputTokens.toLocaleString()} / {mStat.outputTokens.toLocaleString()}
+                    <td>
+                      {mStat.retries > 0 ? <span className="text-warn">{mStat.retries}</span> : 0}
                     </td>
-                    <td className="font-mono font-bold">{mStat.totalTokens.toLocaleString()}</td>
+                    <td className="font-mono">
+                      {t('config.stats.milliseconds', { ms: Math.round(mStat.avgDurationMs) })}
+                    </td>
+                    <td className="font-mono text-muted">
+                      {formatNumber(mStat.inputTokens)} / {formatNumber(mStat.outputTokens)}
+                    </td>
+                    <td className="font-mono font-bold">{formatNumber(mStat.totalTokens)}</td>
                     {providerStats.totalCost ? (
                       <td className="font-mono">
                         {mStat.totalCost !== undefined && mStat.totalCost !== null
@@ -330,11 +375,9 @@ export function ProviderStatsDashboard({
         <div className="ledger-header">
           <div className="ledger-title-group">
             <h4 className="section-title">
-              <Sparkles size={15} /> Chronological Provider Invocations ({allCalls.length})
+              <Sparkles size={15} /> {t('config.stats.ledgerTitle', { count: allCalls.length })}
             </h4>
-            <span className="ledger-subtitle">
-              Detailed step-by-step breakdown of every model request, retry, and latency measurement
-            </span>
+            <span className="ledger-subtitle">{t('config.stats.ledgerSubtitle')}</span>
           </div>
 
           <div className="ledger-filters-toolbar">
@@ -342,7 +385,7 @@ export function ProviderStatsDashboard({
               <Search size={14} className="search-icon" />
               <input
                 type="text"
-                placeholder="Search provider, model, retry reason, error..."
+                placeholder={t('config.stats.search')}
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 className="ledger-search-input"
@@ -354,9 +397,9 @@ export function ProviderStatsDashboard({
                 className="ledger-filter-select"
                 value={selectedProvider}
                 onChange={e => setSelectedProvider(e.target.value)}
-                aria-label="Filter by provider"
+                aria-label={t('config.stats.filterProvider')}
               >
-                <option value="all">All Providers</option>
+                <option value="all">{t('config.stats.allProviders')}</option>
                 {providersList.map(p => (
                   <option key={p} value={p}>
                     {p}
@@ -374,12 +417,12 @@ export function ProviderStatsDashboard({
                   onClick={() => setStatusFilter(tab)}
                 >
                   {tab === 'all'
-                    ? 'All'
+                    ? t('config.stats.all')
                     : tab === 'success'
-                      ? 'Success'
+                      ? t('config.stats.success')
                       : tab === 'failed'
-                        ? 'Failed'
-                        : 'Retries'}
+                        ? t('config.stats.failed')
+                        : t('config.stats.retries')}
                 </button>
               ))}
             </div>
@@ -389,9 +432,9 @@ export function ProviderStatsDashboard({
         {filteredCalls.length === 0 ? (
           <div className="empty-ledger-card">
             {allCalls.length === 0 ? (
-              <p>No individual provider call records were captured for this run.</p>
+              <p>{t('config.stats.noCalls')}</p>
             ) : (
-              <p>No provider calls match the active filter or search criteria.</p>
+              <p>{t('config.stats.noMatches')}</p>
             )}
           </div>
         ) : (
@@ -399,15 +442,15 @@ export function ProviderStatsDashboard({
             <table className="ledger-table">
               <thead>
                 <tr>
-                  <th>Step</th>
-                  <th>Attempt</th>
-                  <th>Provider & Model</th>
-                  <th>Status</th>
-                  <th>Latency</th>
-                  <th>Network Waterfall (Connect / Send / TTFB / Stream)</th>
-                  <th>Tokens</th>
-                  <th>Retry Details / Reason</th>
-                  <th>Action</th>
+                  <th>{t('config.stats.step')}</th>
+                  <th>{t('config.stats.attempt')}</th>
+                  <th>{t('config.stats.providerAndModel')}</th>
+                  <th>{t('config.stats.status')}</th>
+                  <th>{t('config.stats.latency')}</th>
+                  <th>{t('config.stats.networkWaterfall')}</th>
+                  <th>{t('config.stats.tokens')}</th>
+                  <th>{t('config.stats.retryDetails')}</th>
+                  <th>{t('config.stats.action')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -427,9 +470,13 @@ export function ProviderStatsDashboard({
                             type="button"
                             className="step-jump-btn"
                             onClick={() => onJumpToStep(call.stepIndex)}
-                            title={`Inspect Step #${call.stepIndex}`}
+                            title={t('config.stats.inspectStep', {
+                              step: call.stepIndex,
+                            })}
                           >
-                            Step #{call.stepIndex}
+                            {t('config.stats.stepNumber', {
+                              step: call.stepIndex,
+                            })}
                             <ArrowRight size={11} />
                           </button>
                         ) : (
@@ -439,10 +486,18 @@ export function ProviderStatsDashboard({
                       <td>
                         <span className="attempt-badge">
                           #{call.callIndexInStep + 1}
-                          {call.retryAttempt !== undefined && call.retryAttempt !== null && call.retryAttempt > 0 && (
-                            <span className="retry-pill">Retry {call.retryAttempt}</span>
+                          {call.retryAttempt !== undefined &&
+                            call.retryAttempt !== null &&
+                            call.retryAttempt > 0 && (
+                              <span className="retry-pill">
+                                {t('config.stats.retryNumber', {
+                                  count: call.retryAttempt,
+                                })}
+                              </span>
+                            )}
+                          {call.isSecondary && (
+                            <span className="secondary-pill">{t('config.stats.secondary')}</span>
                           )}
-                          {call.isSecondary && <span className="secondary-pill">Secondary</span>}
                         </span>
                       </td>
                       <td>
@@ -453,42 +508,80 @@ export function ProviderStatsDashboard({
                       </td>
                       <td>
                         <span className={`status-pill ${call.success ? 'pill-ok' : 'pill-err'}`}>
-                          {call.success ? '✓ Ok' : '✕ Fail'}
+                          {call.success ? t('config.stats.ok') : t('config.stats.fail')}
                         </span>
                       </td>
-                      <td className="font-mono">{call.latencyMs.toLocaleString()} ms</td>
+                      <td className="font-mono">
+                        {t('config.stats.milliseconds', { ms: formatNumber(call.latencyMs) })}
+                      </td>
                       <td>
                         {call.networkTiming ? (
                           (() => {
                             const total = call.networkTiming.totalMs || call.latencyMs || 1
-                            const connPct = Math.round(((call.networkTiming.connectionMs || 0) / total) * 100)
-                            const sendPct = Math.max(1, Math.round(((call.networkTiming.sendMs || 0) / total) * 100))
-                            const waitPct = Math.round(((call.networkTiming.waitMs || 0) / total) * 100)
-                            const recvPct = Math.round(((call.networkTiming.receiveMs || 0) / total) * 100)
+                            const connPct = Math.round(
+                              ((call.networkTiming.connectionMs || 0) / total) * 100,
+                            )
+                            const sendPct = Math.max(
+                              1,
+                              Math.round(((call.networkTiming.sendMs || 0) / total) * 100),
+                            )
+                            const waitPct = Math.round(
+                              ((call.networkTiming.waitMs || 0) / total) * 100,
+                            )
+                            const recvPct = Math.round(
+                              ((call.networkTiming.receiveMs || 0) / total) * 100,
+                            )
                             return (
                               <div className="network-waterfall-cell">
                                 <div
                                   className="network-waterfall-bar"
-                                  title={`Connect: ${call.networkTiming.connectionMs}ms | Send: ${call.networkTiming.sendMs}ms | Wait (TTFB): ${call.networkTiming.waitMs}ms | Stream: ${call.networkTiming.receiveMs}ms`}
+                                  title={t('config.stats.waterfallTooltip', {
+                                    connect: call.networkTiming.connectionMs,
+                                    send: call.networkTiming.sendMs,
+                                    wait: call.networkTiming.waitMs,
+                                    receive: call.networkTiming.receiveMs,
+                                  })}
                                 >
                                   {call.networkTiming.connectionMs > 0 && (
-                                    <div className="waterfall-seg seg-connect" style={{ width: `${connPct}%` }} />
+                                    <div
+                                      className="waterfall-seg seg-connect"
+                                      style={{ width: `${connPct}%` }}
+                                    />
                                   )}
-                                  <div className="waterfall-seg seg-send" style={{ width: `${sendPct}%` }} />
-                                  <div className="waterfall-seg seg-wait" style={{ width: `${waitPct}%` }} />
+                                  <div
+                                    className="waterfall-seg seg-send"
+                                    style={{ width: `${sendPct}%` }}
+                                  />
+                                  <div
+                                    className="waterfall-seg seg-wait"
+                                    style={{ width: `${waitPct}%` }}
+                                  />
                                   {call.networkTiming.receiveMs > 0 && (
-                                    <div className="waterfall-seg seg-receive" style={{ width: `${recvPct}%` }} />
+                                    <div
+                                      className="waterfall-seg seg-receive"
+                                      style={{ width: `${recvPct}%` }}
+                                    />
                                   )}
                                 </div>
                                 <div className="waterfall-legend-inline">
-                                  <span className="legend-item-inline" title="Time To First Byte / Token">
+                                  <span
+                                    className="legend-item-inline"
+                                    title={t('config.stats.ttfbTitle')}
+                                  >
                                     <span className="legend-dot wait" />
-                                    TTFB {call.networkTiming.waitMs}ms
+                                    {t('config.stats.ttfb', {
+                                      ms: call.networkTiming.waitMs,
+                                    })}
                                   </span>
                                   {call.networkTiming.receiveMs > 0 && (
-                                    <span className="legend-item-inline" title="Stream receive duration">
+                                    <span
+                                      className="legend-item-inline"
+                                      title={t('config.stats.streamTitle')}
+                                    >
                                       <span className="legend-dot receive" />
-                                      Stream {call.networkTiming.receiveMs}ms
+                                      {t('config.stats.stream', {
+                                        ms: call.networkTiming.receiveMs,
+                                      })}
                                     </span>
                                   )}
                                 </div>
@@ -502,9 +595,16 @@ export function ProviderStatsDashboard({
                       <td className="font-mono">
                         {call.tokenUsage ? (
                           <span
-                            title={`Input: ${call.tokenUsage.inputTokens?.toLocaleString() ?? 0} | Output: ${call.tokenUsage.outputTokens?.toLocaleString() ?? 0}`}
+                            title={t('config.stats.tokenTooltip', {
+                              input: formatNumber(call.tokenUsage.inputTokens ?? 0),
+                              output: formatNumber(call.tokenUsage.outputTokens ?? 0),
+                            })}
                           >
-                            {(call.tokenUsage.totalTokens ?? (call.tokenUsage.inputTokens ?? 0) + (call.tokenUsage.outputTokens ?? 0)).toLocaleString()}
+                            {formatNumber(
+                              call.tokenUsage.totalTokens ??
+                                (call.tokenUsage.inputTokens ?? 0) +
+                                  (call.tokenUsage.outputTokens ?? 0),
+                            )}
                           </span>
                         ) : (
                           '—'
@@ -522,7 +622,9 @@ export function ProviderStatsDashboard({
                               ⚠️ {call.error}
                             </span>
                           )}
-                          {!call.retryReason && !call.error && <span className="text-muted">—</span>}
+                          {!call.retryReason && !call.error && (
+                            <span className="text-muted">—</span>
+                          )}
                         </div>
                       </td>
                       <td>
@@ -532,7 +634,7 @@ export function ProviderStatsDashboard({
                             className="btn-tiny"
                             onClick={() => toggleCallExpanded(callKey)}
                           >
-                            {isExpanded ? 'Hide' : 'Details'}
+                            {isExpanded ? t('config.stats.hide') : t('config.stats.details')}
                           </button>
                         )}
                       </td>

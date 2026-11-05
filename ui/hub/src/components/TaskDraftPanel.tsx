@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import { useEffect, useRef, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 import type { SubtaskExpectedOutput, SubtaskSpec, TaskDraftMessage } from '@aaif/goose-hub-core'
 import { blankExpectedOutput, moveSubtask } from '../taskDraft.ts'
@@ -37,6 +38,7 @@ export function TaskDraftChat({
   onMentionKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean
   onCursorActivity: (value: string, cursor: number) => void
 }) {
+  const { t } = useTranslation()
   const logRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -48,27 +50,25 @@ export function TaskDraftChat({
   return (
     <div className={`task-draft-chat${mentionOpen ? ' mention-open' : ''}`}>
       <div className="task-draft-chat-head">
-        <label className="form-label">Draft with the harness</label>
+        <label className="form-label">{t('harness.draft.panel.draftTitle')}</label>
         <p className="task-draft-hint">
-          Describe the task. Type @ to mention files, agents, or attachments. A long run is split
-          into subtasks you can edit. Each subtask runs only after the previous one succeeds and
-          its expected outputs pass.
+          {t('harness.draft.panel.draftHint')}
         </p>
       </div>
       <div className="task-draft-log" ref={logRef} role="log" aria-live="polite">
         {messages.length === 0 && !drafting && (
-          <p className="task-draft-empty">No messages yet. Say what the agent should do.</p>
+          <p className="task-draft-empty">{t('harness.draft.panel.empty')}</p>
         )}
         {messages.map((message, index) => (
           <div
             className={`task-draft-msg ${message.role === 'assistant' ? 'is-assistant' : 'is-user'}`}
             key={`${message.role}-${index}`}
           >
-            <span className="task-draft-role">{message.role === 'assistant' ? 'Harness' : 'You'}</span>
+            <span className="task-draft-role">{message.role === 'assistant' ? t('harness.draft.panel.harness') : t('harness.draft.panel.you')}</span>
             <p>{message.content}</p>
           </div>
         ))}
-        {drafting && <p className="task-draft-empty">Drafting…</p>}
+        {drafting && <p className="task-draft-empty">{t('harness.draft.panel.drafting')}</p>}
       </div>
       <div className="task-draft-compose">
         <div className="task-draft-input">
@@ -78,8 +78,8 @@ export function TaskDraftChat({
             className="form-textarea"
             rows={2}
             value={input}
-            aria-label="Message the harness about this task"
-            placeholder="Describe the task, or ask to split, merge, or change a subtask. Type @ to mention"
+            aria-label={t('harness.draft.panel.messageLabel')}
+            placeholder={t('harness.draft.panel.messagePlaceholder')}
             onChange={event => {
               const cursor = event.target.selectionStart ?? event.target.value.length
               onInput(event.target.value, cursor)
@@ -108,7 +108,7 @@ export function TaskDraftChat({
           onClick={onSend}
           disabled={drafting || !input.trim()}
         >
-          {drafting ? 'Drafting…' : 'Send'}
+          {drafting ? t('harness.draft.panel.drafting') : t('harness.draft.panel.send')}
         </button>
       </div>
     </div>
@@ -126,6 +126,7 @@ export function SubtaskEditor({
   onChange: (next: SubtaskSpec[]) => void
   onAdd: () => void
 }) {
+  const { t } = useTranslation()
   const update = (index: number, patch: Partial<SubtaskSpec>) => {
     onChange(subtasks.map((subtask, itemIndex) => (itemIndex === index ? { ...subtask, ...patch } : subtask)))
   }
@@ -141,31 +142,30 @@ export function SubtaskEditor({
   return (
     <div className="subtask-editor">
       <div className="subtask-editor-head">
-        <label className="form-label">Subtasks</label>
+        <label className="form-label">{t('harness.draft.panel.subtasks')}</label>
         <button type="button" className="btn-secondary btn-sm" onClick={onAdd}>
-          Add subtask
+          {t('harness.draft.panel.addSubtask')}
         </button>
       </div>
       {subtasks.length === 0 && (
         <p className="task-draft-hint">
-          This task runs as one session. Add at least two subtasks to run a long task in order.
+          {t('harness.draft.panel.noSubtasks')}
         </p>
       )}
       {subtasks.length === 1 && (
         <p className="task-draft-hint">
-          Add another subtask to run them one by one. A single subtask still runs as one session.
+          {t('harness.draft.panel.oneSubtask')}
         </p>
       )}
       {subtasks.length >= 2 && (
         <p className="task-draft-hint">
-          These run in order in the same workspace. The next one starts only when this one
-          succeeds and its expected outputs pass.
+          {t('harness.draft.panel.orderedHint')}
         </p>
       )}
       {subtasks.map((subtask, index) => (
         <div className="subtask-card" key={subtask.id || index}>
           <div className="subtask-card-head">
-            <span className="subtask-index">Subtask {index + 1}</span>
+            <span className="subtask-index">{t('harness.draft.panel.subtask', { index: index + 1 })}</span>
             <div className="subtask-card-actions">
               <button
                 type="button"
@@ -173,7 +173,7 @@ export function SubtaskEditor({
                 onClick={() => onChange(moveSubtask(subtasks, index, -1))}
                 disabled={index === 0}
               >
-                Up
+                {t('harness.draft.panel.up')}
               </button>
               <button
                 type="button"
@@ -181,24 +181,24 @@ export function SubtaskEditor({
                 onClick={() => onChange(moveSubtask(subtasks, index, 1))}
                 disabled={index === subtasks.length - 1}
               >
-                Down
+                {t('harness.draft.panel.down')}
               </button>
               <button
                 type="button"
                 className="btn-secondary btn-sm"
                 onClick={() => onChange(subtasks.filter((_, itemIndex) => itemIndex !== index))}
               >
-                Remove
+                {t('harness.draft.panel.remove')}
               </button>
             </div>
           </div>
-          <label className="form-label">Title</label>
+          <label className="form-label">{t('harness.draft.panel.title')}</label>
           <input
             className="form-input"
             value={subtask.title}
             onChange={event => update(index, { title: event.target.value })}
           />
-          <label className="form-label">Instructions</label>
+          <label className="form-label">{t('harness.draft.panel.instructions')}</label>
           <textarea
             className="form-textarea"
             rows={3}
@@ -207,7 +207,7 @@ export function SubtaskEditor({
           />
           <div className="form-row-2">
             <div className="form-group">
-              <label className="form-label">Max turns</label>
+              <label className="form-label">{t('harness.draft.panel.maxTurns')}</label>
               <input
                 type="number"
                 min={1}
@@ -222,11 +222,11 @@ export function SubtaskEditor({
               />
             </div>
             <div className="form-group">
-              <label className="form-label">Target files</label>
+              <label className="form-label">{t('harness.draft.panel.targetFiles')}</label>
               <input
                 className="form-input"
                 value={(subtask.targetFiles ?? []).join(', ')}
-                placeholder="src/a.rs, src/b.rs"
+                placeholder={t('harness.draft.panel.targetFilesPlaceholder')}
                 onChange={event =>
                   update(index, {
                     targetFiles: event.target.value.split(',').map(file => file.trim()),
@@ -237,7 +237,7 @@ export function SubtaskEditor({
           </div>
           <div className="expected-output-list">
             <div className="subtask-editor-head">
-              <label className="form-label">Expected outputs</label>
+              <label className="form-label">{t('harness.draft.panel.outputs')}</label>
               <button
                 type="button"
                 className="btn-secondary btn-sm"
@@ -247,7 +247,7 @@ export function SubtaskEditor({
                   })
                 }
               >
-                Add output
+                {t('harness.draft.panel.addOutput')}
               </button>
             </div>
             {(subtask.expectedOutputs ?? []).map((output, outputIndex) => (
@@ -255,38 +255,38 @@ export function SubtaskEditor({
                 <input
                   className="form-input"
                   value={output.description}
-                  placeholder="What must be true before the next subtask"
-                  aria-label={`Subtask ${index + 1} output ${outputIndex + 1}`}
+                  placeholder={t('harness.draft.panel.outputPlaceholder')}
+                  aria-label={t('harness.draft.panel.outputLabel', { index: index + 1, output: outputIndex + 1 })}
                   onChange={event => updateOutput(index, outputIndex, { description: event.target.value })}
                 />
                 <select
                   className="form-input"
                   value={output.kind || 'note'}
-                  aria-label={`Subtask ${index + 1} output ${outputIndex + 1} check`}
+                  aria-label={t('harness.draft.panel.outputCheckLabel', { index: index + 1, output: outputIndex + 1 })}
                   onChange={event =>
                     updateOutput(index, outputIndex, {
                       kind: event.target.value,
                     })
                   }
                 >
-                  <option value="note">Final answer</option>
-                  <option value="file">File</option>
-                  <option value="command">Command</option>
+                  <option value="note">{t('harness.draft.panel.finalAnswer')}</option>
+                  <option value="file">{t('harness.draft.panel.file')}</option>
+                  <option value="command">{t('harness.draft.panel.command')}</option>
                 </select>
                 {output.kind === 'file' && (
                   <>
                     <input
                       className="form-input"
                       value={output.filePath || ''}
-                      placeholder="path/to/file"
-                      aria-label={`Subtask ${index + 1} file path`}
+                      placeholder={t('harness.draft.panel.filePathPlaceholder')}
+                      aria-label={t('harness.draft.panel.filePathLabel', { index: index + 1 })}
                       onChange={event => updateOutput(index, outputIndex, { filePath: event.target.value })}
                     />
                     <input
                       className="form-input"
                       value={output.expectedContent || ''}
-                      placeholder="Text the file must contain"
-                      aria-label={`Subtask ${index + 1} expected file text`}
+                      placeholder={t('harness.draft.panel.fileContentPlaceholder')}
+                      aria-label={t('harness.draft.panel.fileTextLabel', { index: index + 1 })}
                       onChange={event =>
                         updateOutput(index, outputIndex, { expectedContent: event.target.value })
                       }
@@ -298,15 +298,15 @@ export function SubtaskEditor({
                     <input
                       className="form-input"
                       value={output.command || ''}
-                      placeholder="cargo test"
-                      aria-label={`Subtask ${index + 1} command`}
+                      placeholder={t('harness.draft.panel.commandPlaceholder')}
+                      aria-label={t('harness.draft.panel.commandLabel', { index: index + 1 })}
                       onChange={event => updateOutput(index, outputIndex, { command: event.target.value })}
                     />
                     <input
                       className="form-input"
                       value={output.expectedStdout || ''}
-                      placeholder="Stdout must contain (optional)"
-                      aria-label={`Subtask ${index + 1} expected stdout`}
+                      placeholder={t('harness.draft.panel.stdoutPlaceholder')}
+                      aria-label={t('harness.draft.panel.stdoutLabel', { index: index + 1 })}
                       onChange={event =>
                         updateOutput(index, outputIndex, { expectedStdout: event.target.value })
                       }
@@ -324,7 +324,7 @@ export function SubtaskEditor({
                     })
                   }
                 >
-                  Remove
+                  {t('harness.draft.panel.remove')}
                 </button>
               </div>
             ))}

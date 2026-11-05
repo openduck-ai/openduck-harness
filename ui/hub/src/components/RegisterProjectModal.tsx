@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Project, ProjectDirectory, ProjectInput, ProjectKind } from '@aaif/goose-hub-core'
+import { useTranslation } from 'react-i18next'
 import { Folder, FolderPlus, Plus, X } from 'lucide-react'
 import {
   directoryPathsMatch,
@@ -12,6 +13,8 @@ import {
 } from '../projectIdentity'
 import { ProjectRootsEditor } from './ProjectRootsEditor'
 import { useProjectRoots, type ProjectRootsApi } from './useProjectRoots'
+
+type ErrorText = { kind: 'raw'; message: string } | { kind: 'fallback'; key: string }
 
 const emptyForm: ProjectInput = {
   slug: '',
@@ -38,6 +41,7 @@ export function RegisterProjectModal({
   onClose,
   onCreateProject,
 }: RegisterProjectModalProps) {
+  const { t } = useTranslation()
   const { roots, loading, error, addRoot, removeRoot, clearError } = useProjectRoots(api)
   const [showRoots, setShowRoots] = useState(false)
   const [selectedRoot, setSelectedRoot] = useState('')
@@ -47,12 +51,12 @@ export function RegisterProjectModal({
   const [filter, setFilter] = useState('')
   const [createName, setCreateName] = useState('')
   const [creatingDir, setCreatingDir] = useState(false)
-  const [dirError, setDirError] = useState('')
+  const [dirError, setDirError] = useState<ErrorText | null>(null)
   const [selectedDir, setSelectedDir] = useState<ProjectDirectory | null>(null)
   const [form, setForm] = useState<ProjectInput>(emptyForm)
   const [slugEdited, setSlugEdited] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [formError, setFormError] = useState('')
+  const [formError, setFormError] = useState<ErrorText | null>(null)
   const directoryRequest = useRef(0)
 
   const projectSlugs = useMemo(() => projects.map(project => project.slug), [projects])
@@ -72,7 +76,7 @@ export function RegisterProjectModal({
     setSelectedDir(null)
     setSlugEdited(false)
     setFilter('')
-    setDirError('')
+    setDirError(null)
     setForm(current => ({ ...current, path: '', title: '', slug: '' }))
     if (!selectedRoot) {
       setDirectories([])
@@ -92,7 +96,7 @@ export function RegisterProjectModal({
         if (ignore || directoryRequest.current !== requestId) return
         setDirectories([])
         setTruncated(false)
-        setDirError(cause instanceof Error ? cause.message : 'Unable to list folders')
+        setDirError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'projectRegistration.modal.errorListFolders' })
       })
       .finally(() => {
         if (!ignore && directoryRequest.current === requestId) setDirectoriesLoading(false)
@@ -115,7 +119,7 @@ export function RegisterProjectModal({
   const applyDirectory = (directory: ProjectDirectory) => {
     setSelectedDir(directory)
     setSlugEdited(false)
-    setDirError('')
+    setDirError(null)
     setForm(current => ({
       ...current,
       path: directory.path,
@@ -128,12 +132,12 @@ export function RegisterProjectModal({
     const name = createName.trim()
     if (!selectedRoot) return
     if (!isProjectDirectoryName(name)) {
-      setDirError('Enter a single folder name without slashes.')
+      setDirError({ kind: 'fallback', key: 'projectRegistration.modal.errorSingleFolder' })
       return
     }
     const requestId = ++directoryRequest.current
     setCreatingDir(true)
-    setDirError('')
+    setDirError(null)
     try {
       const created = await api.createProjectRootDirectory({ root: selectedRoot, name })
       const listing = await api.listProjectRootDirectories(selectedRoot)
@@ -150,7 +154,7 @@ export function RegisterProjectModal({
     } catch (cause) {
       if (directoryRequest.current !== requestId) return
       setDirectoriesLoading(false)
-      setDirError(cause instanceof Error ? cause.message : 'Unable to create folder')
+      setDirError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'projectRegistration.modal.errorCreateFolder' })
     } finally {
       setCreatingDir(false)
     }
@@ -169,11 +173,11 @@ export function RegisterProjectModal({
     event.preventDefault()
     if (!selectedDir || registeredProject) return
     if (!title || !isValidProjectSlug(slug)) {
-      setFormError('Choose a folder, then keep a title and a lowercase slug.')
+      setFormError({ kind: 'fallback', key: 'projectRegistration.modal.errorFormIncomplete' })
       return
     }
     setSubmitting(true)
-    setFormError('')
+    setFormError(null)
     try {
       await onCreateProject({
         ...form,
@@ -183,7 +187,7 @@ export function RegisterProjectModal({
       })
       onClose()
     } catch (cause) {
-      setFormError(cause instanceof Error ? cause.message : 'Unable to create project')
+      setFormError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'projectRegistration.modal.errorCreateProject' })
     } finally {
       setSubmitting(false)
     }
@@ -202,29 +206,29 @@ export function RegisterProjectModal({
                 <Plus size={20} />
               </div>
               <div>
-                <h2>Register New Project</h2>
+                <h2>{t('projectRegistration.modal.title')}</h2>
                 <p className="muted text-sm">
-                  Pick a folder inside a configured root. The title and slug come from the folder name.
+                  {t('projectRegistration.modal.subtitle')}
                 </p>
               </div>
             </div>
-            <button type="button" className="close-btn" onClick={onClose} title="Close">
+            <button type="button" className="close-btn" onClick={onClose} title={t('projectRegistration.modal.close')}>
               <X size={18} />
             </button>
           </div>
 
-          {formError && <p className="error">{formError}</p>}
+          {formError && <p className="error">{formError.kind === 'raw' ? formError.message : t(formError.key)}</p>}
 
           <section className="register-section">
             <div className="register-section-head">
-              <span className="form-label">Project root</span>
+              <span className="form-label">{t('projectRegistration.modal.rootLabel')}</span>
               {roots.length > 0 && (
                 <button
                   type="button"
                   className="ghost-btn"
                   onClick={() => setShowRoots(current => !current)}
                 >
-                  {showRoots ? 'Hide roots' : 'Configure roots'}
+                  {showRoots ? t('projectRegistration.modal.hideRoots') : t('projectRegistration.modal.configureRoots')}
                 </button>
               )}
             </div>
@@ -237,14 +241,14 @@ export function RegisterProjectModal({
                 {roots.map(root => (
                   <option key={root.path} value={root.path} disabled={!root.available}>
                     {root.path}
-                    {root.available ? '' : ' (missing)'}
+                    {root.available ? '' : ` ${t('projectRegistration.modal.rootMissing')}`}
                   </option>
                 ))}
               </select>
             )}
             {!loading && roots.length > 0 && usableRoots.length === 0 && (
               <p className="form-hint">
-                Configured roots are not accessible. Remove them or add a folder that exists.
+                {t('projectRegistration.modal.rootsInaccessible')}
               </p>
             )}
             {rootsEditorOpen && (
@@ -265,9 +269,9 @@ export function RegisterProjectModal({
           </section>
 
           <section className="register-section">
-            <span className="form-label">Project folder</span>
+            <span className="form-label">{t('projectRegistration.modal.folderLabel')}</span>
             <p className="form-hint">
-              Select an existing folder in this root, or create a new one. Each project is a direct child of the root.
+              {t('projectRegistration.modal.folderHint')}
             </p>
             {selectedRoot ? (
               <>
@@ -277,14 +281,14 @@ export function RegisterProjectModal({
                   onKeyDown={event => {
                     if (event.key === 'Enter') event.preventDefault()
                   }}
-                  placeholder="Filter folders"
+                  placeholder={t('projectRegistration.modal.filterFoldersPlaceholder')}
                   className="form-input"
                 />
                 <div className="register-dir-list">
-                  {directoriesLoading && <p className="form-hint">Loading folders…</p>}
+                  {directoriesLoading && <p className="form-hint">{t('projectRegistration.modal.loadingFolders')}</p>}
                   {!directoriesLoading && filteredDirectories.length === 0 && (
                     <p className="form-hint">
-                      {filter.trim() ? 'No folders match.' : 'No folders in this root yet.'}
+                      {filter.trim() ? t('projectRegistration.modal.noFoldersMatch') : t('projectRegistration.modal.noFoldersYet')}
                     </p>
                   )}
                   {filteredDirectories.map(directory => {
@@ -302,12 +306,12 @@ export function RegisterProjectModal({
                       >
                         <Folder size={15} />
                         <span className="register-dir-name">{directory.name}</span>
-                        {registered && <span className="register-dir-badge">Registered</span>}
+                        {registered && <span className="register-dir-badge">{t('projectRegistration.modal.registeredBadge')}</span>}
                       </button>
                     )
                   })}
                 </div>
-                {truncated && <p className="form-hint">Showing the first 500 folders.</p>}
+                {truncated && <p className="form-hint">{t('projectRegistration.modal.showingFirst500')}</p>}
                 <div className="register-create-row">
                   <input
                     value={createName}
@@ -318,7 +322,7 @@ export function RegisterProjectModal({
                         void createDirectory()
                       }
                     }}
-                    placeholder="new-folder"
+                    placeholder={t('projectRegistration.modal.newFolderPlaceholder')}
                     className="form-input"
                     spellCheck={false}
                     autoComplete="off"
@@ -330,14 +334,14 @@ export function RegisterProjectModal({
                     onClick={() => void createDirectory()}
                   >
                     <FolderPlus size={15} />
-                    <span>{creatingDir ? 'Creating…' : 'Create'}</span>
+                    <span>{creatingDir ? t('projectRegistration.modal.creating') : t('projectRegistration.modal.create')}</span>
                   </button>
                 </div>
-                {dirError && <p className="error">{dirError}</p>}
+                {dirError && <p className="error">{dirError.kind === 'raw' ? dirError.message : t(dirError.key)}</p>}
                 {selectedDir && <code className="register-selected-path">{selectedDir.path}</code>}
                 {registeredProject && (
                   <p className="form-hint">
-                    Already registered as {registeredProject.title || registeredProject.slug}.
+                    {t('projectRegistration.modal.alreadyRegistered', { name: registeredProject.title || registeredProject.slug })}
                   </p>
                 )}
               </>
@@ -345,8 +349,8 @@ export function RegisterProjectModal({
               !rootsEditorOpen && (
                 <p className="form-hint">
                   {roots.length > 0
-                    ? 'Loading folders…'
-                    : 'Add a project root before choosing a folder.'}
+                    ? t('projectRegistration.modal.loadingFolders')
+                    : t('projectRegistration.modal.addRootFirst')}
                 </p>
               )
             )}
@@ -354,7 +358,7 @@ export function RegisterProjectModal({
 
           <div className="register-identity-grid">
             <label className="form-group">
-              <span className="form-label">Project title</span>
+              <span className="form-label">{t('projectRegistration.modal.titleLabel')}</span>
               <input
                 value={form.title}
                 onChange={event => {
@@ -370,12 +374,12 @@ export function RegisterProjectModal({
                 onKeyDown={event => {
                   if (event.key === 'Enter') event.preventDefault()
                 }}
-                placeholder="Generated from the folder name"
+                placeholder={t('projectRegistration.modal.titlePlaceholder')}
                 className="form-input"
               />
             </label>
             <label className="form-group">
-              <span className="form-label">Slug identifier</span>
+              <span className="form-label">{t('projectRegistration.modal.slugLabel')}</span>
               <input
                 required
                 pattern="[a-z0-9]+(-[a-z0-9]+)*"
@@ -387,23 +391,23 @@ export function RegisterProjectModal({
                 onKeyDown={event => {
                   if (event.key === 'Enter') event.preventDefault()
                 }}
-                placeholder="generated-from-the-folder"
+                placeholder={t('projectRegistration.modal.slugPlaceholder')}
                 className="form-input code-font"
                 spellCheck={false}
                 autoComplete="off"
               />
             </label>
           </div>
-          <p className="form-hint">Generated from the folder name. You can edit either field.</p>
+          <p className="form-hint">{t('projectRegistration.modal.identityHint')}</p>
           {selectedDir && !isValidProjectSlug(form.slug.trim()) && (
             <p className="form-hint">
-              This folder name has no letters or digits for an identifier. Enter a slug.
+              {t('projectRegistration.modal.invalidSlugHint')}
             </p>
           )}
 
           <div className="register-identity-grid">
             <label className="form-group">
-              <span className="form-label">Project kind</span>
+              <span className="form-label">{t('projectRegistration.modal.kindLabel')}</span>
               <select
                 value={form.kind}
                 onChange={event =>
@@ -411,39 +415,39 @@ export function RegisterProjectModal({
                 }
                 className="form-select"
               >
-                <option value="software">Software Engineering</option>
-                <option value="docs">Documentation & Knowledge</option>
-                <option value="automation">Workflow / Automation</option>
-                <option value="other">Other</option>
+                <option value="software">{t('projectRegistration.modal.kindSoftware')}</option>
+                <option value="docs">{t('projectRegistration.modal.kindDocs')}</option>
+                <option value="automation">{t('projectRegistration.modal.kindAutomation')}</option>
+                <option value="other">{t('projectRegistration.modal.kindOther')}</option>
               </select>
             </label>
             <label className="form-group">
-              <span className="form-label">Language / framework</span>
+              <span className="form-label">{t('projectRegistration.modal.languageLabel')}</span>
               <input
                 value={form.language ?? ''}
                 onChange={event => setForm(current => ({ ...current, language: event.target.value }))}
                 onKeyDown={event => {
                   if (event.key === 'Enter') event.preventDefault()
                 }}
-                placeholder="TypeScript, React, Rust"
+                placeholder={t('projectRegistration.modal.languagePlaceholder')}
                 className="form-input"
               />
             </label>
           </div>
 
           <label className="form-group">
-            <span className="form-label">Description</span>
+            <span className="form-label">{t('projectRegistration.modal.descriptionLabel')}</span>
             <textarea
               rows={3}
               value={form.description}
               onChange={event => setForm(current => ({ ...current, description: event.target.value }))}
-              placeholder="What this project does, and anything the agent should know"
+              placeholder={t('projectRegistration.modal.descriptionPlaceholder')}
               className="form-textarea"
             />
           </label>
 
           <label className="form-group">
-            <span className="form-label">Email notification recipients</span>
+            <span className="form-label">{t('projectRegistration.modal.emailLabel')}</span>
             <input
               value={(form.emailRecipients || []).join(', ')}
               onChange={event =>
@@ -458,18 +462,18 @@ export function RegisterProjectModal({
               onKeyDown={event => {
                 if (event.key === 'Enter') event.preventDefault()
               }}
-              placeholder="dev@example.com, ops@example.com"
+              placeholder={t('projectRegistration.modal.emailPlaceholder')}
               className="form-input"
             />
-            <small className="form-hint">Addresses that receive task execution reports.</small>
+            <small className="form-hint">{t('projectRegistration.modal.emailHint')}</small>
           </label>
 
           <div className="modal-actions-row">
             <button type="button" className="secondary" onClick={onClose}>
-              Cancel
+              {t('projectRegistration.modal.cancel')}
             </button>
             <button type="submit" className="btn-primary" disabled={!canSubmit}>
-              {submitting ? 'Registering…' : 'Register Project'}
+              {submitting ? t('projectRegistration.modal.registering') : t('projectRegistration.modal.registerProject')}
             </button>
           </div>
         </form>

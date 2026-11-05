@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import { useState, useMemo, useEffect } from 'react'
 import type { HarnessHistorySummary, HarnessPagination } from '@aaif/goose-hub-core'
 import {
@@ -35,14 +36,16 @@ interface HarnessHistoryTableProps {
   isLoading?: boolean
 }
 
-const STATUS_OPTIONS = [
-  { label: 'All', value: '' },
-  { label: 'Success', value: 'success' },
-  { label: 'Failed', value: 'failure' },
-  { label: 'Timed out', value: 'timeout' },
-  { label: 'Cancelled', value: 'cancelled' },
-  { label: 'Skipped', value: 'skipped' },
-]
+function getStatusOptions(t: ReturnType<typeof useTranslation>['t']) {
+  return [
+    { label: t('harness.history.all'), value: '' },
+    { label: t('harness.history.success'), value: 'success' },
+    { label: t('harness.history.failed'), value: 'failure' },
+    { label: t('harness.history.timedOut'), value: 'timeout' },
+    { label: t('harness.history.cancelled'), value: 'cancelled' },
+    { label: t('harness.history.skipped'), value: 'skipped' },
+  ]
+}
 
 export function HarnessHistoryTable({
   items,
@@ -61,6 +64,7 @@ export function HarnessHistoryTable({
   onPageSizeChange,
   isLoading = false,
 }: HarnessHistoryTableProps) {
+  const { t } = useTranslation()
   const [statusFilter, setStatusFilter] = useState('')
   const [taskFilter, setTaskFilter] = useState(initialTaskId)
   const [jobTypeFilter, setJobTypeFilter] = useState('')
@@ -112,14 +116,14 @@ export function HarnessHistoryTable({
     <div className="history-list-container">
       <div className="history-filters-bar">
         <div className="history-filter-group">
-          <label className="history-filter-label">Status:</label>
+          <label className="history-filter-label">{t('harness.history.status')}</label>
           <select
             className="form-input form-select-sm history-filter-select"
             value={statusFilter}
             onChange={e => setStatusFilter(e.target.value)}
-            aria-label="Filter by status"
+            aria-label={t('harness.history.filterStatus')}
           >
-            {STATUS_OPTIONS.map(opt => (
+            {getStatusOptions(t).map(opt => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
@@ -128,14 +132,14 @@ export function HarnessHistoryTable({
         </div>
 
         <div className="history-filter-group">
-          <label className="history-filter-label">Task:</label>
+          <label className="history-filter-label">{t('harness.history.task')}</label>
           <select
             className="form-input form-select-sm history-filter-select"
             value={taskFilter}
             onChange={e => setTaskFilter(e.target.value)}
-            aria-label="Filter by task"
+            aria-label={t('harness.history.filterTask')}
           >
-            <option value="">All Tasks</option>
+            <option value="">{t('harness.history.allTasks')}</option>
             {allTaskIds.map(id => (
               <option key={id} value={id}>
                 {historyTaskTitle({ taskId: id }, taskNames)}
@@ -146,14 +150,14 @@ export function HarnessHistoryTable({
 
         {jobTypes.length > 1 && (
           <div className="history-filter-group">
-            <label className="history-filter-label">Type:</label>
+            <label className="history-filter-label">{t('harness.history.type')}</label>
             <select
               className="form-input form-select-sm history-filter-select"
               value={jobTypeFilter}
               onChange={e => setJobTypeFilter(e.target.value)}
-              aria-label="Filter by job type"
+              aria-label={t('harness.history.filterType')}
             >
-              <option value="">All Types</option>
+              <option value="">{t('harness.history.allTypes')}</option>
               {jobTypes.map(jt => (
                 <option key={jt} value={jt}>
                   {jt}
@@ -173,14 +177,14 @@ export function HarnessHistoryTable({
               setJobTypeFilter('')
             }}
           >
-            Clear filters
+            {t('harness.history.clearFilters')}
           </button>
         )}
       </div>
 
       {filteredItems.length === 0 ? (
         <div className="empty-history-filter">
-          <p className="empty-text">No runs match your filter criteria.</p>
+          <p className="empty-text">{t('harness.history.noMatches')}</p>
           <button
             type="button"
             className="btn-secondary"
@@ -190,7 +194,7 @@ export function HarnessHistoryTable({
               setJobTypeFilter('')
             }}
           >
-            Clear filters
+            {t('harness.history.clearFilters')}
           </button>
         </div>
       ) : (
@@ -215,7 +219,7 @@ export function HarnessHistoryTable({
                     onInspect(item)
                   }
                 }}
-                title={`Run ID: ${item.id}`}
+                title={t('harness.history.runId', { id: item.id })}
               >
                 <div className="history-row-main">
                   <div className="history-row-header">
@@ -239,7 +243,7 @@ export function HarnessHistoryTable({
                     <div className="history-row-metrics">
                       <span className="history-row-relative">{row.relative}</span>
                       <span className="history-row-duration">{row.duration}</span>
-                      <span className="history-row-steps">{row.steps} steps</span>
+                      <span className="history-row-steps">{t('harness.history.steps', { count: row.steps })}</span>
                     </div>
                     {canContinue && (
                       <button
@@ -249,13 +253,13 @@ export function HarnessHistoryTable({
                           e.stopPropagation()
                           onContinue?.(item)
                         }}
-                        title="Continue this run"
+                        title={t('harness.history.continueTitle')}
                       >
                         <FastForward size={13} fill="currentColor" />
                         <span>
                           {item.resumeSubtaskTitle
-                            ? `Resume: ${item.resumeSubtaskTitle}`
-                            : 'Continue'}
+                            ? t('harness.history.resume', { title: item.resumeSubtaskTitle })
+                            : t('harness.history.continue')}
                         </span>
                       </button>
                     )}
@@ -267,10 +271,10 @@ export function HarnessHistoryTable({
                           e.stopPropagation()
                           onInspect(item)
                         }}
-                        title="Continue this run with its history and a new prompt"
+                        title={t('harness.history.followUpTitle')}
                       >
                         <FastForward size={13} />
-                        <span>Follow up</span>
+                        <span>{t('harness.history.followUp')}</span>
                       </button>
                     )}
                   </div>
@@ -299,12 +303,12 @@ export function HarnessHistoryTable({
           }}
         >
           <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            Showing {pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.limit + 1}–{Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total} runs
+            {t('harness.history.showing', { start: pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.limit + 1, end: Math.min(pagination.page * pagination.limit, pagination.total), total: pagination.total })}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             {onPageSizeChange && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem' }}>
-                <span style={{ color: 'var(--text-secondary)' }}>Page size:</span>
+                <span style={{ color: 'var(--text-secondary)' }}>{t('harness.history.pageSize')}</span>
                 <select
                   className="form-input form-select-sm"
                   value={pagination.limit}
@@ -324,7 +328,7 @@ export function HarnessHistoryTable({
                 className="btn-secondary mini-btn"
                 disabled={pagination.page <= 1 || isLoading}
                 onClick={() => onPageChange?.(1)}
-                title="First page"
+                title={t('harness.history.firstPage')}
                 style={{ padding: '3px 6px', display: 'inline-flex', alignItems: 'center' }}
               >
                 <ChevronsLeft size={14} />
@@ -334,20 +338,20 @@ export function HarnessHistoryTable({
                 className="btn-secondary mini-btn"
                 disabled={pagination.page <= 1 || isLoading}
                 onClick={() => onPageChange?.(pagination.page - 1)}
-                title="Previous page"
+                title={t('harness.history.previousPage')}
                 style={{ padding: '3px 6px', display: 'inline-flex', alignItems: 'center' }}
               >
                 <ChevronLeft size={14} />
               </button>
               <span style={{ fontSize: '0.85rem', padding: '0 4px', color: 'var(--text-primary)' }}>
-                Page {pagination.page} / {Math.max(1, pagination.totalPages)}
+                {t('harness.history.page', { page: pagination.page, total: Math.max(1, pagination.totalPages) })}
               </span>
               <button
                 type="button"
                 className="btn-secondary mini-btn"
                 disabled={pagination.page >= pagination.totalPages || isLoading}
                 onClick={() => onPageChange?.(pagination.page + 1)}
-                title="Next page"
+                title={t('harness.history.nextPage')}
                 style={{ padding: '3px 6px', display: 'inline-flex', alignItems: 'center' }}
               >
                 <ChevronRight size={14} />
@@ -357,7 +361,7 @@ export function HarnessHistoryTable({
                 className="btn-secondary mini-btn"
                 disabled={pagination.page >= pagination.totalPages || isLoading}
                 onClick={() => onPageChange?.(pagination.totalPages)}
-                title="Last page"
+                title={t('harness.history.lastPage')}
                 style={{ padding: '3px 6px', display: 'inline-flex', alignItems: 'center' }}
               >
                 <ChevronsRight size={14} />

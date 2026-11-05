@@ -1,5 +1,6 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { useTranslation } from 'react-i18next'
 import {
   isPotentialFilePath,
   normalizeMentionedPath,
@@ -13,11 +14,12 @@ interface MarkdownPreviewProps {
 }
 
 export function MarkdownPreview({ content, resolveImageUrl, onOpenFile }: MarkdownPreviewProps) {
+  const { t } = useTranslation()
   const trimmed = content.trim()
   if (!trimmed) {
     return (
       <div className="markdown-preview markdown-preview-empty">
-        <p className="muted">Nothing to preview.</p>
+        <p className="muted">{t('markdown.preview.empty')}</p>
       </div>
     )
   }
@@ -40,7 +42,7 @@ export function MarkdownPreview({ content, resolveImageUrl, onOpenFile }: Markdo
                       e.preventDefault()
                       onOpenFile(cleanPath)
                     }}
-                    title={`Preview ${cleanPath}`}
+                    title={t('markdown.preview.previewFile', { path: cleanPath })}
                   >
                     {children}
                   </a>
@@ -62,7 +64,7 @@ export function MarkdownPreview({ content, resolveImageUrl, onOpenFile }: Markdo
                   loading="lazy"
                   className={isClickable ? 'markdown-clickable-image' : undefined}
                   onClick={isClickable ? () => onOpenFile!(src!) : undefined}
-                  title={isClickable ? `Click to preview: ${src}` : undefined}
+                  title={isClickable ? t('markdown.preview.clickToPreviewImage', { src }) : undefined}
                 />
               )
             },
@@ -85,7 +87,7 @@ export function MarkdownPreview({ content, resolveImageUrl, onOpenFile }: Markdo
                         e.stopPropagation()
                         onOpenFile(cleanPath)
                       }}
-                      title={`Click to preview file: ${cleanPath}`}
+                      title={t('markdown.preview.clickToPreviewFile', { path: cleanPath })}
                       role="button"
                       tabIndex={0}
                       onKeyDown={(e) => {
@@ -120,7 +122,7 @@ export function MarkdownPreview({ content, resolveImageUrl, onOpenFile }: Markdo
                                   e.stopPropagation()
                                   onOpenFile(clean)
                                 }}
-                                title={`Click to preview file: ${clean}`}
+                                title={t('markdown.preview.clickToPreviewFile', { path: clean })}
                                 role="button"
                                 tabIndex={0}
                                 onKeyDown={(e) => {

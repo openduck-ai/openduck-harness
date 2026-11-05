@@ -1,3 +1,8 @@
+import { translate } from './i18n/index.ts'
+import {
+  formatDurationMs as formatLocalizedDurationMs,
+  formatRelativeTime as formatLocalizedRelativeTime,
+} from './i18n/format.ts'
 import type { HarnessHistorySummary, ProjectTaskSummary } from '@aaif/goose-hub-core'
 
 export function historyTaskTitle(
@@ -116,43 +121,11 @@ export function latestRunForTask(
 }
 
 export function formatDurationMs(ms: number): string {
-  if (ms < 1000) return '<1s'
-  const totalSeconds = Math.round(ms / 1000)
-  if (totalSeconds < 1) return '<1s'
-  const hours = Math.floor(totalSeconds / 3600)
-  const remainingSeconds = totalSeconds % 3600
-  const minutes = Math.floor(remainingSeconds / 60)
-  const seconds = remainingSeconds % 60
-
-  const parts: string[] = []
-  if (hours > 0) parts.push(`${hours}h`)
-  if (minutes > 0) parts.push(`${minutes}m`)
-  if (seconds > 0) parts.push(`${seconds}s`)
-  return parts.join(' ')
+  return formatLocalizedDurationMs(ms)
 }
 
 export function formatRelativeTime(iso: string | null | undefined, now: number): string {
-  if (!iso) return ''
-  const timestamp = Date.parse(iso)
-  if (Number.isNaN(timestamp)) return ''
-  const diffMs = Math.max(0, now - timestamp)
-  const diffSec = Math.floor(diffMs / 1000)
-
-  if (diffSec < 45) return 'just now'
-  if (diffSec < 60 * 60) {
-    const mins = Math.max(1, Math.floor(diffSec / 60))
-    return `${mins}m ago`
-  }
-  if (diffSec < 24 * 3600) {
-    const hours = Math.floor(diffSec / 3600)
-    return `${hours}h ago`
-  }
-  if (diffSec < 7 * 86400) {
-    const days = Math.floor(diffSec / 86400)
-    return `${days}d ago`
-  }
-  const date = new Date(timestamp)
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+  return formatLocalizedRelativeTime(iso, now)
 }
 
 export function firstLine(text: string | null | undefined, max = 140): string | undefined {
@@ -199,12 +172,14 @@ export function presentLastRun(input: {
   if (input.running) {
     const elapsed = formatDurationMs(Math.max(0, input.now - Date.parse(input.running.startedAt)))
     const stepPart =
-      input.running.stepCount !== undefined ? ` · step ${input.running.stepCount}` : ''
+      input.running.stepCount !== undefined
+        ? ` · ${translate('harness.tasks.step', { count: input.running.stepCount })}`
+        : ''
     return {
       kind: 'running',
       text: input.running.currentStatus === 'queued'
-        ? `Queued · ${elapsed}`
-        : `Running · ${elapsed}${stepPart}`,
+        ? translate('harness.tasks.queued', { elapsed })
+        : `${translate('harness.tasks.running', { elapsed })}${stepPart}`,
       jobId: input.running.jobId,
     }
   }
@@ -228,7 +203,9 @@ export function presentLastRun(input: {
   const runId = input.latest.id
 
   if (status === 'success') {
-    const text = `Success · ${formatDurationMs(input.latest.durationMs ?? 0)}`
+    const text = translate('harness.tasks.success', {
+      duration: formatDurationMs(input.latest.durationMs ?? 0),
+    })
     return {
       kind: 'success',
       text,
@@ -238,7 +215,9 @@ export function presentLastRun(input: {
   }
 
   if (status === 'skipped') {
-    const text = `Skipped · ${formatRelativeTime(input.latest.startedAt, input.now)}`
+    const text = translate('harness.tasks.skipped', {
+      relative: formatRelativeTime(input.latest.startedAt, input.now),
+    })
     return {
       kind: 'terminal',
       text,
@@ -248,21 +227,29 @@ export function presentLastRun(input: {
   }
 
   const steps = input.latest.stepCount ?? 0
-  const stepsText = `${steps} steps`
+  const stepsText = translate(steps === 1 ? 'harness.tasks.steps_one' : 'harness.tasks.steps_other', {
+    count: steps,
+  })
   const relTime = formatRelativeTime(input.latest.startedAt, input.now)
 
   let statusWord: string
   if (status === 'failure') {
-    statusWord = 'Failed'
+    statusWord = translate('harness.tasks.failed')
   } else if (status === 'timeout') {
-    statusWord = 'Timed out'
+    statusWord = translate('harness.tasks.timedOut')
   } else if (status === 'cancelled') {
-    statusWord = 'Cancelled'
+    statusWord = translate('harness.tasks.cancelled')
+  } else if (status === 'completed') {
+    statusWord = translate('harness.tasks.completed')
   } else {
     statusWord = status.charAt(0).toUpperCase() + status.slice(1)
   }
 
-  const text = `${statusWord} · ${relTime} · ${stepsText}`
+  const text = translate('harness.tasks.terminal', {
+    status: statusWord,
+    relative: relTime,
+    steps: stepsText,
+  })
   return {
     kind: 'terminal',
     text,

@@ -1,5 +1,6 @@
+import { translate } from './i18n/index.ts'
 import type { HarnessActiveJob, HarnessJobActivity } from '@aaif/goose-hub-core'
-import { formatDurationMs } from './projectTasks.ts'
+import { formatDurationMs } from './i18n/format.ts'
 import { describeToolCall } from './taskTrajectory.ts'
 
 export interface RunningTaskFields {
@@ -25,7 +26,7 @@ export function runningProjectLabel(
   slug: string | null | undefined,
   titles: Readonly<Record<string, string>>,
 ): string {
-  if (!slug) return 'Harness'
+  if (!slug) return translate('runningTasks.helper.harness')
   const title = titles[slug]?.trim()
   return title || slug
 }
@@ -35,7 +36,9 @@ export function runningStatusKind(status: string): 'queued' | 'running' {
 }
 
 export function runningStatusLabel(status: string): string {
-  return runningStatusKind(status) === 'queued' ? 'Queued' : 'Running'
+  return runningStatusKind(status) === 'queued'
+    ? translate('runningTasks.helper.queued')
+    : translate('runningTasks.helper.running')
 }
 
 export function runningElapsedLabel(startedAt: string, now: number): string {
@@ -46,33 +49,36 @@ export function runningElapsedLabel(startedAt: string, now: number): string {
 
 export function runningStepLabel(stepCount: number | null | undefined): string | undefined {
   if (typeof stepCount !== 'number' || stepCount <= 0) return undefined
-  return stepCount === 1 ? '1 step' : `${stepCount} steps`
+  return translate(
+    stepCount === 1 ? 'runningTasks.helper.steps_one' : 'runningTasks.helper.steps_other',
+    { count: stepCount },
+  )
 }
 
 export function runningActivityText(job: Pick<RunningTaskFields, 'currentStatus' | 'activity'>): string {
   if (runningStatusKind(job.currentStatus) === 'queued') {
-    return 'Waiting for a free slot'
+    return translate('runningTasks.helper.waitingForSlot')
   }
   const activity = job.activity
-  if (!activity) return 'Running'
+  if (!activity) return translate('runningTasks.helper.running')
   switch (activity.phase) {
     case 'thinking':
-      return 'Thinking…'
+      return translate('runningTasks.helper.thinking')
     case 'starting':
-      return 'Starting…'
+      return translate('runningTasks.helper.starting')
     case 'answer':
-      return 'Writing the final answer'
+      return translate('runningTasks.helper.answer')
     case 'waiting': {
       const detail = activity.detail?.trim()
-      return detail || 'Waiting'
+      return detail || translate('runningTasks.helper.waiting')
     }
     case 'tool': {
-      if (!activity.toolName) return 'Running a tool'
+      if (!activity.toolName) return translate('runningTasks.helper.tool')
       const summary = describeToolCall(activity.toolName, activity.toolArguments ?? undefined)
       return summary || activity.toolName
     }
     default:
-      return 'Running'
+      return translate('runningTasks.helper.running')
   }
 }
 

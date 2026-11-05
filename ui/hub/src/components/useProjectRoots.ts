@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ProjectDirectory, ProjectRoot } from '@aaif/goose-hub-core'
+export type RootError = { kind: 'raw'; message: string } | { kind: 'fallback'; key: string }
 
 export interface ProjectRootsApi {
   listProjectRoots: () => Promise<{ roots: ProjectRoot[] }>
@@ -19,12 +20,14 @@ export interface ProjectRootsApi {
   }) => Promise<{ directory: ProjectDirectory; created: boolean }>
 }
 
-function describeRootError(cause: unknown, fallback: string): string {
-  const message = cause instanceof Error && cause.message ? cause.message : fallback
-  if (message.includes('allowUntrustedPath') || message.includes('outside $HOME')) {
-    return 'That folder is outside the home directory. Allow roots outside the home directory, then try again.'
+function describeRootError(cause: unknown, fallbackKey: string): RootError {
+  if (cause instanceof Error && cause.message) {
+    if (cause.message.includes('allowUntrustedPath') || cause.message.includes('outside $HOME')) {
+      return { kind: 'fallback', key: 'projectRoots.errors.outsideHome' }
+    }
+    return { kind: 'raw', message: cause.message }
   }
-  return message
+  return { kind: 'fallback', key: fallbackKey }
 }
 
 function sortRoots(roots: ProjectRoot[]): ProjectRoot[] {
@@ -34,20 +37,20 @@ function sortRoots(roots: ProjectRoot[]): ProjectRoot[] {
 export function useProjectRoots(api: ProjectRootsApi) {
   const [roots, setRoots] = useState<ProjectRoot[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<RootError | null>(null)
 
   useEffect(() => {
     let ignore = false
     const load = async () => {
       setLoading(true)
-      setError('')
+      setError(null)
       try {
         const response = await api.listProjectRoots()
         if (!ignore) setRoots(sortRoots(response.roots))
       } catch (cause) {
         if (!ignore) {
           setRoots([])
-          setError(describeRootError(cause, 'Unable to load project roots'))
+          setError(describeRootError(cause, 'projectRoots.errors.loadFailed'))
         }
       } finally {
         if (!ignore) setLoading(false)
@@ -61,7 +64,7 @@ export function useProjectRoots(api: ProjectRootsApi) {
 
   const addRoot = useCallback(
     async (path: string, allowUntrustedPath: boolean) => {
-      setError('')
+      setError(null)
       try {
         const response = await api.addProjectRoot({ path, allowUntrustedPath })
         setRoots(current =>
@@ -69,9 +72,9 @@ export function useProjectRoots(api: ProjectRootsApi) {
         )
         return response.root
       } catch (cause) {
-        const message = describeRootError(cause, 'Unable to add project root')
+        const message = describeRootError(cause, 'projectRoots.errors.addFailed')
         setError(message)
-        throw new Error(message)
+        throw cause
       }
     },
     [api],
@@ -79,18 +82,18 @@ export function useProjectRoots(api: ProjectRootsApi) {
 
   const removeRoot = useCallback(
     async (path: string) => {
-      setError('')
+      setError(null)
       try {
         await api.removeProjectRoot(path)
         setRoots(current => current.filter(root => root.path !== path))
       } catch (cause) {
-        const message = describeRootError(cause, 'Unable to remove project root')
+        const message = describeRootError(cause, 'projectRoots.errors.removeFailed')
         setError(message)
-        throw new Error(message)
+        throw cause
       }
     },
     [api],
   )
 
-  return { roots, loading, error, addRoot, removeRoot, clearError: () => setError('') }
+  return { roots, loading, error, addRoot, removeRoot, clearError: () => setError(null) }
 }

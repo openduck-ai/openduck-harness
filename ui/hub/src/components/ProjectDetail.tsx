@@ -1,4 +1,5 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { ProjectDetail as ProjectDetailType, createApi } from '@aaif/goose-hub-core'
 import {
   ArrowLeft,
@@ -110,6 +111,7 @@ export function ProjectDetail({
   initialTab,
   onTabChange,
 }: ProjectDetailProps) {
+  const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<ProjectSubTab>(
     initialTab ?? (selectedSessionId ? 'chat' : 'harness'),
   )
@@ -207,7 +209,7 @@ export function ProjectDetail({
       <div className="detail-top-nav">
         <button className="back-btn" onClick={onBack}>
           <ArrowLeft size={16} />
-          <span>All Projects</span>
+          <span>{t('projectDetail.page.allProjects')}</span>
         </button>
       </div>
 
@@ -217,14 +219,14 @@ export function ProjectDetail({
         <div className="detail-head">
           <div className="detail-head-info">
             <div className="eyebrow-row">
-              <span className="eyebrow">PROJECT WORKSPACE</span>
+              <span className="eyebrow">{t('projectDetail.page.eyebrow')}</span>
               <span className="project-slug-badge">{detail.project.slug}</span>
             </div>
             <h2 className="project-detail-title">
               {detail.project.title || detail.project.slug}
             </h2>
             <p className="muted project-detail-desc">
-              {detail.project.description || 'No description provided'}
+              {detail.project.description || t('projectDetail.page.noDescription')}
             </p>
             <div className="project-meta-chips">
               <span className="meta-chip path-chip">
@@ -242,8 +244,14 @@ export function ProjectDetail({
                   className="meta-chip model-chip"
                   title={
                     providerModel.isOverride
-                      ? `Project Policy: ${providerModel.provider} / ${providerModel.model}`
-                      : `Active Provider & Model: ${providerModel.provider} / ${providerModel.model}`
+                      ? t('projectDetail.page.projectPolicy', {
+                          provider: providerModel.provider,
+                          model: providerModel.model,
+                        })
+                      : t('projectDetail.page.activeModel', {
+                          provider: providerModel.provider,
+                          model: providerModel.model,
+                        })
                   }
                 >
                   <Cpu size={12} className="meta-chip-icon" />
@@ -255,7 +263,7 @@ export function ProjectDetail({
                     </>
                   )}
                   {providerModel.isOverride && (
-                    <span className="override-badge">custom</span>
+                    <span className="override-badge">{t('projectDetail.page.customBadge')}</span>
                   )}
                 </span>
               )}
@@ -278,7 +286,7 @@ export function ProjectDetail({
           onFocus={() => preloadTab('harness')}
         >
           <FlaskConical size={15} />
-          <span>Harness</span>
+          <span>{t('tabs.harness')}</span>
         </button>
         <button
           type="button"
@@ -288,7 +296,7 @@ export function ProjectDetail({
           onFocus={() => preloadTab('chat')}
         >
           <MessageSquare size={15} />
-          <span>Chat</span>
+          <span>{t('tabs.chat')}</span>
         </button>
         <button
           type="button"
@@ -298,7 +306,7 @@ export function ProjectDetail({
           onFocus={() => preloadTab('git')}
         >
           <GitBranch size={15} />
-          <span>Git</span>
+          <span>{t('tabs.git')}</span>
         </button>
         <button
           type="button"
@@ -308,7 +316,7 @@ export function ProjectDetail({
           onFocus={() => preloadTab('files')}
         >
           <FolderTree size={15} />
-          <span>Files</span>
+          <span>{t('tabs.files')}</span>
         </button>
         <button
           type="button"
@@ -318,7 +326,7 @@ export function ProjectDetail({
           onFocus={() => preloadTab('rules')}
         >
           <ScrollText size={15} />
-          <span>Rules</span>
+          <span>{t('tabs.rules')}</span>
         </button>
         <button
           type="button"
@@ -328,7 +336,7 @@ export function ProjectDetail({
           onFocus={() => preloadTab('terminal')}
         >
           <Terminal size={15} />
-          <span>Terminal</span>
+          <span>{t('tabs.terminal')}</span>
         </button>
         <button
           type="button"
@@ -338,7 +346,7 @@ export function ProjectDetail({
           onFocus={() => preloadTab('insights')}
         >
           <BarChart3 size={15} />
-          <span>Insights</span>
+          <span>{t('tabs.insights')}</span>
         </button>
         <button
           type="button"
@@ -348,7 +356,7 @@ export function ProjectDetail({
           onFocus={() => preloadTab('settings')}
         >
           <Settings size={15} />
-          <span>Settings</span>
+          <span>{t('tabs.settings')}</span>
         </button>
       </div>
 

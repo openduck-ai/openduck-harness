@@ -5,6 +5,9 @@ import {
   extractCompletedSubtasks,
   type CompletedSubtaskInfo,
 } from './taskTrajectory.ts'
+import { i18nInstance, translate } from './i18n/index.ts'
+import { normalizeLocale } from './i18n/locales.ts'
+import { formatDateTime, formatExportDuration, formatNumber } from './i18n/format.ts'
 
 export interface TaskPdfData {
   taskId: string
@@ -37,15 +40,7 @@ export interface ExportPdfOptions {
  * Formats a millisecond duration into a clean, human-readable string.
  */
 export function formatDuration(ms: number): string {
-  if (ms <= 0) return '0s'
-  if (ms < 1000) return `${ms}ms`
-  const seconds = ms / 1000
-  if (seconds < 60) {
-    return `${seconds.toFixed(2)}s`
-  }
-  const mins = Math.floor(seconds / 60)
-  const remainingSecs = Math.round(seconds % 60)
-  return `${mins}m ${remainingSecs}s`
+  return formatExportDuration(ms)
 }
 
 /**
@@ -291,7 +286,7 @@ export function buildTaskPdfData(
     finalAnswer,
     subtasks,
     error,
-    exportDate: new Date().toLocaleString(),
+    exportDate: formatDateTime(new Date()),
   }
 }
 
@@ -301,9 +296,10 @@ export function buildTaskPdfData(
 export function generateTaskPdfHtml(data: TaskPdfData): string {
   const statusClass = `status-${data.status.toLowerCase()}`
   const finalAnswerHtml = data.finalAnswer ? markdownToHtml(data.finalAnswer) : ''
+  const locale = normalizeLocale(i18nInstance.language || 'en')
 
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="${locale}">
 <head>
   <meta charset="UTF-8">
   <title>Task-${escapeHtml(data.taskId)}-Report</title>
@@ -570,9 +566,9 @@ export function generateTaskPdfHtml(data: TaskPdfData): string {
 <body>
   <div class="report-header">
     <div class="report-title-group">
-      <h1>📋 OpenDuck Task Report / 任务执行报告</h1>
+      <h1>${translate('export.pdf.reportTitle')}</h1>
       <div class="report-subtitle">
-        Project: <strong>${escapeHtml(data.projectSlug)}</strong> &bull; Generated: ${escapeHtml(data.exportDate)}
+        ${translate('export.pdf.headerSubtitle', { project: escapeHtml(data.projectSlug), date: escapeHtml(data.exportDate) })}
       </div>
     </div>
     <div>
@@ -581,44 +577,44 @@ export function generateTaskPdfHtml(data: TaskPdfData): string {
   </div>
 
   <div class="section-title">
-    <span>基本信息 (Basic Information)</span>
+    <span>${translate('export.pdf.basicInfo')}</span>
   </div>
   <div class="info-grid">
     <div class="info-cell">
-      <div class="info-label">任务 ID (Task ID)</div>
+      <div class="info-label">${translate('export.pdf.taskId')}</div>
       <div class="info-value"><code>${escapeHtml(data.taskId)}</code></div>
     </div>
     <div class="info-cell">
-      <div class="info-label">任务名称 (Task Name)</div>
+      <div class="info-label">${translate('export.pdf.taskName')}</div>
       <div class="info-value">${escapeHtml(data.taskName)}</div>
     </div>
     <div class="info-cell">
-      <div class="info-label">所属项目 (Project)</div>
+      <div class="info-label">${translate('export.pdf.project')}</div>
       <div class="info-value">${escapeHtml(data.projectSlug)}</div>
     </div>
     <div class="info-cell">
-      <div class="info-label">执行策略 (Policy)</div>
+      <div class="info-label">${translate('export.pdf.policy')}</div>
       <div class="info-value"><code>${escapeHtml(data.policyName)}</code></div>
     </div>
     <div class="info-cell">
-      <div class="info-label">总执行耗时 (Duration)</div>
+      <div class="info-label">${translate('export.pdf.duration')}</div>
       <div class="info-value">${escapeHtml(data.durationFormatted)}</div>
     </div>
     <div class="info-cell">
-      <div class="info-label">步骤数 / 工具调用 (Steps / Tools)</div>
-      <div class="info-value">${data.totalSteps} 步 / ${data.toolCallsCount} 次调用</div>
+      <div class="info-label">${translate('export.pdf.stepsAndTools')}</div>
+      <div class="info-value">${translate('export.pdf.stepsAndToolsCount', { steps: data.totalSteps, tools: data.toolCallsCount })}</div>
     </div>
     <div class="info-cell">
-      <div class="info-label">开始时间 (Started At)</div>
+      <div class="info-label">${translate('export.pdf.startedAt')}</div>
       <div class="info-value">${data.startedAt ? escapeHtml(data.startedAt) : '—'}</div>
     </div>
     <div class="info-cell">
-      <div class="info-label">完成时间 (Completed At)</div>
+      <div class="info-label">${translate('export.pdf.completedAt')}</div>
       <div class="info-value">${data.completedAt ? escapeHtml(data.completedAt) : '—'}</div>
     </div>
     <div class="info-cell">
-      <div class="info-label">Token 消耗 (Tokens)</div>
-      <div class="info-value">${data.totalTokens > 0 ? `${data.totalTokens.toLocaleString()} (↑${data.inputTokens.toLocaleString()} ↓${data.outputTokens.toLocaleString()})` : '—'}</div>
+      <div class="info-label">${translate('export.pdf.tokens')}</div>
+      <div class="info-value">${data.totalTokens > 0 ? `${formatNumber(data.totalTokens)} (↑${formatNumber(data.inputTokens)} ↓${formatNumber(data.outputTokens)})` : '—'}</div>
     </div>
   </div>
 
@@ -626,23 +622,23 @@ export function generateTaskPdfHtml(data: TaskPdfData): string {
     data.error
       ? `
   <div class="section-title">
-    <span>异常 / 错误信息 (Error Details)</span>
+    <span>${translate('export.pdf.errorDetails')}</span>
   </div>
   <div class="error-card">
-    <strong>Error:</strong> ${escapeHtml(data.error)}
+    <strong>${translate('export.pdf.errorLabel')}:</strong> ${escapeHtml(data.error)}
   </div>
   `
       : ''
   }
 
   <div class="section-title">
-    <span>任务结论 / 最终结果 (Task Conclusion)</span>
+    <span>${translate('export.pdf.taskConclusion')}</span>
   </div>
   <div class="conclusion-box">
     ${
       data.finalAnswer
         ? `<div class="conclusion-content">${finalAnswerHtml}</div>`
-        : `<div class="conclusion-content" style="color:#64748b; font-style:italic;">(无记录的最终回答 / No final answer recorded)</div>`
+        : `<div class="conclusion-content" style="color:#64748b; font-style:italic;">${translate('export.pdf.noFinalAnswer')}</div>`
     }
   </div>
 
@@ -650,7 +646,7 @@ export function generateTaskPdfHtml(data: TaskPdfData): string {
     data.subtasks && data.subtasks.length > 0
       ? `
   <div class="section-title">
-    <span>子任务结论与成果 (Subtask Outcomes & Conclusions)</span>
+    <span>${translate('export.pdf.subtaskOutcomes')}</span>
   </div>
   <div class="subtasks-container">
     ${data.subtasks
@@ -666,7 +662,7 @@ export function generateTaskPdfHtml(data: TaskPdfData): string {
       </div>
       ${
         st.stepsTaken !== undefined || st.stepCount !== undefined
-          ? `<div style="font-size:11px; color:#64748b; margin-bottom:4px;">Execution steps: ${st.stepsTaken ?? st.stepCount}</div>`
+          ? `<div style="font-size:11px; color:#64748b; margin-bottom:4px;">${translate('export.pdf.subtaskExecutionSteps', { steps: (st.stepsTaken ?? st.stepCount)! })}</div>`
           : ''
       }
       ${
@@ -684,8 +680,8 @@ export function generateTaskPdfHtml(data: TaskPdfData): string {
   }
 
   <div class="report-footer">
-    <div>OpenDuck Agent Harness &bull; Project Execution Report</div>
-    <div>Document ID: <code>${escapeHtml(data.taskId)}</code></div>
+    <div>${translate('export.pdf.footerBrand')}</div>
+    <div>${translate('export.pdf.footerDocId', { taskId: escapeHtml(data.taskId) })}</div>
   </div>
 </body>
 </html>`
@@ -854,30 +850,34 @@ export function generateTaskPdfBinary(data: TaskPdfData): Uint8Array {
 
   const lines: PdfLineItem[] = []
   lines.push({ text: '==========================================================================', bold: false, size: 8 })
-  lines.push({ text: 'OPENDUCK AGENT TASK REPORT / 任务执行报告', bold: true, size: 15, leading: 22 })
-  lines.push({ text: `Project: ${data.projectSlug || 'default'}  |  Exported: ${data.exportDate || new Date().toISOString()}`, bold: false, size: 9, leading: 14 })
+  lines.push({ text: translate('export.pdf.binaryTitle'), bold: true, size: 15, leading: 22 })
+  lines.push({ text: translate('export.pdf.binarySubtitle', { project: data.projectSlug || 'default', date: data.exportDate || new Date().toISOString() }), bold: false, size: 9, leading: 14 })
   lines.push({ text: '==========================================================================', bold: false, size: 8, leading: 16 })
 
   // Basic info section
-  lines.push({ text: 'BASIC INFORMATION / 基本信息', bold: true, size: 12, leading: 16 })
-  lines.push({ text: `Task ID (任务 ID):          ${data.taskId}`, bold: false, size: 10 })
+  lines.push({ text: translate('export.pdf.binaryBasicInfo'), bold: true, size: 12, leading: 16 })
+  lines.push({ text: translate('export.pdf.binaryTaskId', { taskId: data.taskId }), bold: false, size: 10 })
   if (data.taskName && data.taskName !== data.taskId) {
-    lines.push({ text: `Task Name (任务名称):      ${data.taskName}`, bold: false, size: 10 })
+    lines.push({ text: translate('export.pdf.binaryTaskName', { taskName: data.taskName }), bold: false, size: 10 })
   }
-  lines.push({ text: `Project (所属项目):        ${data.projectSlug || 'default'}`, bold: false, size: 10 })
-  lines.push({ text: `Status (执行状态):         ${data.status.toUpperCase()}`, bold: true, size: 10 })
-  lines.push({ text: `Policy (执行策略):         ${data.policyName || 'agent'}`, bold: false, size: 10 })
-  lines.push({ text: `Duration (执行耗时):       ${data.durationFormatted}`, bold: false, size: 10 })
-  lines.push({ text: `Steps & Tools (步骤/调用):  ${data.totalSteps} 步 / ${data.toolCallsCount} 次调用`, bold: false, size: 10 })
+  lines.push({ text: translate('export.pdf.binaryProject', { project: data.projectSlug || 'default' }), bold: false, size: 10 })
+  lines.push({ text: translate('export.pdf.binaryStatus', { status: data.status.toUpperCase() }), bold: true, size: 10 })
+  lines.push({ text: translate('export.pdf.binaryPolicy', { policy: data.policyName || 'agent' }), bold: false, size: 10 })
+  lines.push({ text: translate('export.pdf.binaryDuration', { duration: data.durationFormatted }), bold: false, size: 10 })
+  lines.push({ text: translate('export.pdf.binaryStepsAndTools', { steps: data.totalSteps, tools: data.toolCallsCount }), bold: false, size: 10 })
   if (data.startedAt) {
-    lines.push({ text: `Started At (开始时间):     ${data.startedAt}`, bold: false, size: 10 })
+    lines.push({ text: translate('export.pdf.binaryStartedAt', { startedAt: data.startedAt }), bold: false, size: 10 })
   }
   if (data.completedAt) {
-    lines.push({ text: `Completed At (完成时间):   ${data.completedAt}`, bold: false, size: 10 })
+    lines.push({ text: translate('export.pdf.binaryCompletedAt', { completedAt: data.completedAt }), bold: false, size: 10 })
   }
   if (data.totalTokens > 0) {
     lines.push({
-      text: `Tokens (Token 消耗):       ${data.totalTokens.toLocaleString()} (Prompt: ${data.inputTokens.toLocaleString()}, Output: ${data.outputTokens.toLocaleString()})`,
+      text: translate('export.pdf.binaryTokens', {
+        total: formatNumber(data.totalTokens),
+        input: formatNumber(data.inputTokens),
+        output: formatNumber(data.outputTokens),
+      }),
       bold: false,
       size: 10,
     })
@@ -886,7 +886,7 @@ export function generateTaskPdfBinary(data: TaskPdfData): Uint8Array {
 
   // Error section
   if (data.error) {
-    lines.push({ text: 'EXECUTION ERROR / 异常与错误', bold: true, size: 12, leading: 16 })
+    lines.push({ text: translate('export.pdf.binaryErrorHeader'), bold: true, size: 12, leading: 16 })
     for (const l of wrapLines(data.error, 72)) {
       lines.push({ text: `  ${l}`, bold: false, size: 10 })
     }
@@ -894,23 +894,27 @@ export function generateTaskPdfBinary(data: TaskPdfData): Uint8Array {
   }
 
   // Conclusion section
-  lines.push({ text: 'TASK CONCLUSION / 任务结论与最终回答', bold: true, size: 12, leading: 16 })
+  lines.push({ text: translate('export.pdf.binaryConclusionHeader'), bold: true, size: 12, leading: 16 })
   if (data.finalAnswer && data.finalAnswer.trim()) {
     const cleanFinalAnswer = stripMarkdownForPdf(data.finalAnswer)
     for (const l of wrapLines(cleanFinalAnswer, 72)) {
       lines.push({ text: l, bold: false, size: 10 })
     }
   } else {
-    lines.push({ text: '(无记录的最终回答 / No final answer recorded)', bold: false, size: 10 })
+    lines.push({ text: translate('export.pdf.noFinalAnswer'), bold: false, size: 10 })
   }
   lines.push({ text: '', bold: false, size: 10, leading: 10 })
 
   // Subtask outcomes
   if (data.subtasks && data.subtasks.length > 0) {
-    lines.push({ text: 'SUBTASK OUTCOMES / 子任务结论与成果', bold: true, size: 12, leading: 16 })
+    lines.push({ text: translate('export.pdf.binarySubtasksHeader'), bold: true, size: 12, leading: 16 })
     for (const st of data.subtasks) {
       lines.push({
-        text: `[${st.subtaskId}] ${st.title} - Status: ${String(st.status).toUpperCase()}`,
+        text: translate('export.pdf.binarySubtaskItem', {
+          id: st.subtaskId,
+          title: st.title,
+          status: String(st.status).toUpperCase(),
+        }),
         bold: true,
         size: 10,
       })
@@ -998,7 +1002,7 @@ export function generateTaskPdfBinary(data: TaskPdfData): Uint8Array {
     // Footer
     stream += '/F1 9 Tf\n0 Tr 0 w\n'
     stream += '50 35 Td\n'
-    stream += `${encodePdfUtf16Hex(`OpenDuck Harness · Page ${p + 1} of ${totalPages}`)} Tj\n`
+    stream += `${encodePdfUtf16Hex(translate('export.pdf.binaryPageFooter', { page: p + 1, total: totalPages }))} Tj\n`
     stream += 'ET\n'
 
     const streamBytes = new TextEncoder().encode(stream)

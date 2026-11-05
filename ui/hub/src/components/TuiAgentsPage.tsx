@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Trans, useTranslation } from 'react-i18next'
 import type { createApi, ManagedTuiSession, SessionOperation, AgentProfile, TuiAccount, QuotaSnapshot, ProxyItem } from '../api'
+import { formatDateTime, formatTime, formatNumber } from '../i18n/format.ts'
 import {
   Terminal,
   Activity,
@@ -19,9 +21,15 @@ interface TuiAgentsPageProps {
   api: ReturnType<typeof createApi>
 }
 
+type ErrorText = { kind: 'raw'; message: string } | { kind: 'fallback'; key: string }
+type ScreenText =
+  | { kind: 'raw'; text: string }
+  | { kind: 'fallback'; key: string; values?: { message: string } }
+
 type TabType = 'overview' | 'running' | 'history' | 'operations' | 'agents' | 'quotas'
 
 export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
+  const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<TabType>('running')
   const [sessions, setSessions] = useState<ManagedTuiSession[]>([])
   const [operations, setOperations] = useState<SessionOperation[]>([])
@@ -30,11 +38,11 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
   const [quotas, setQuotas] = useState<Record<string, QuotaSnapshot[]>>({})
   const [proxies, setProxies] = useState<ProxyItem[]>([])
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorText | null>(null)
 
   // Dialog & Inspection states
   const [inspectSession, setInspectSession] = useState<ManagedTuiSession | null>(null)
-  const [inspectScreen, setInspectScreen] = useState<string>('')
+  const [inspectScreen, setInspectScreen] = useState<ScreenText>({ kind: 'raw', text: '' })
   const [promptModalSession, setPromptModalSession] = useState<ManagedTuiSession | null>(null)
   const [promptText, setPromptText] = useState('')
   const [promptSending, setPromptSending] = useState(false)
@@ -90,7 +98,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       }
       setQuotas(quotasMap)
     } catch (e: any) {
-      setError(e.message || 'Failed to load TUI agents data')
+      setError(e.message ? { kind: 'raw', message: e.message } : { kind: 'fallback', key: 'tuiAgents.page.loadFailed' })
     } finally {
       setLoading(false)
     }
@@ -140,17 +148,17 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       await api.interruptManagedTuiSession(id)
       loadData()
     } catch (e: any) {
-      alert(`Interrupt failed: ${e.message}`)
+      alert(t('tuiAgents.page.interruptFailed', { message: e.message }))
     }
   }
 
   const handleStop = async (id: string) => {
-    if (!confirm('Are you sure you want to stop this session?')) return
+    if (!confirm(t('tuiAgents.page.confirmStopSession'))) return
     try {
       await api.stopManagedTuiSession(id, 'manual_stop')
       loadData()
     } catch (e: any) {
-      alert(`Stop failed: ${e.message}`)
+      alert(t('tuiAgents.page.stopFailed', { message: e.message }))
     }
   }
 
@@ -159,7 +167,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       await api.extendManagedTuiSession(id, 30)
       loadData()
     } catch (e: any) {
-      alert(`Extend failed: ${e.message}`)
+      alert(t('tuiAgents.page.extendFailed', { message: e.message }))
     }
   }
 
@@ -168,7 +176,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       await api.takeoverManagedTuiSession(id)
       loadData()
     } catch (e: any) {
-      alert(`Takeover failed: ${e.message}`)
+      alert(t('tuiAgents.page.takeoverFailed', { message: e.message }))
     }
   }
 
@@ -180,7 +188,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       setTransferRunId('')
       loadData()
     } catch (e: any) {
-      alert(`Transfer failed: ${e.message}`)
+      alert(t('tuiAgents.page.transferFailed', { message: e.message }))
     }
   }
 
@@ -193,7 +201,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       setPromptText('')
       loadData()
     } catch (e: any) {
-      alert(`Send prompt failed: ${e.message}`)
+      alert(t('tuiAgents.page.sendPromptFailed', { message: e.message }))
     } finally {
       setPromptSending(false)
     }
@@ -208,18 +216,18 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       setKeysInput('')
       loadData()
     } catch (e: any) {
-      alert(`Send keys failed: ${e.message}`)
+      alert(t('tuiAgents.page.sendKeysFailed', { message: e.message }))
     }
   }
 
   const handleOpenScreen = async (session: ManagedTuiSession) => {
     setInspectSession(session)
-    setInspectScreen('Loading terminal screen...')
+    setInspectScreen({ kind: 'fallback', key: 'tuiAgents.page.loadingTerminalScreen' })
     try {
       const res = await api.getManagedTuiSession(session.id)
-      setInspectScreen(res.screen || 'No screen output available')
+      setInspectScreen(res.screen ? { kind: 'raw', text: res.screen } : { kind: 'fallback', key: 'tuiAgents.page.noScreenOutput' })
     } catch (e: any) {
-      setInspectScreen(`Error reading terminal: ${e.message}`)
+      setInspectScreen({ kind: 'fallback', key: 'tuiAgents.page.errorReadingTerminal', values: { message: e.message } })
     }
   }
 
@@ -229,7 +237,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       setEditProfileModal(null)
       loadData()
     } catch (e: any) {
-      alert(`Save profile failed: ${e.message}`)
+      alert(t('tuiAgents.page.saveProfileFailed', { message: e.message }))
     }
   }
 
@@ -246,7 +254,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       setNewAccountName('')
       loadData()
     } catch (e: any) {
-      alert(`Create account failed: ${e.message}`)
+      alert(t('tuiAgents.page.createAccountFailed', { message: e.message }))
     }
   }
 
@@ -255,7 +263,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       await api.refreshTuiQuotas(accountId)
       loadData()
     } catch (e: any) {
-      alert(`Refresh quotas failed: ${e.message}`)
+      alert(t('tuiAgents.page.refreshQuotasFailed', { message: e.message }))
     }
   }
 
@@ -264,19 +272,19 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       const match = proxies.find(p => p.id === effectiveProxy || p.url === effectiveProxy)
       return match ? `${match.id} (${match.url})` : effectiveProxy
     }
-    if (proxyMode === 'direct') return 'Direct (No Proxy)'
-    if (proxyMode === 'custom') return proxyId ? `Custom (${proxyId})` : 'Custom URL'
+    if (proxyMode === 'direct') return t('tuiAgents.page.proxyDirect')
+    if (proxyMode === 'custom') return proxyId ? t('tuiAgents.page.proxyCustomWithId', { id: proxyId }) : t('tuiAgents.page.proxyCustom')
     if (proxyMode === 'named' && proxyId) {
       const match = proxies.find(p => p.id === proxyId)
-      return match ? `${match.id} (${match.url})` : `Named: ${proxyId}`
+      return match ? `${match.id} (${match.url})` : t('tuiAgents.page.proxyNamedWithId', { id: proxyId })
     }
-    return 'Inherit (Global/Default)'
+    return t('tuiAgents.page.proxyInherit')
   }
 
   const handleStartSession = async () => {
     const agentKind = newSessionAgent === 'custom' ? newSessionCustomAgent.trim() : newSessionAgent
     if (!agentKind) {
-      alert('Please specify an agent to start')
+      alert(t('tuiAgents.page.specifyAgentAlert'))
       return
     }
     setNewSessionStarting(true)
@@ -313,7 +321,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       setNewSessionInitialPrompt('')
       loadData()
     } catch (e: any) {
-      alert(`Start session failed: ${e.message}`)
+      alert(t('tuiAgents.page.startSessionFailed', { message: e.message }))
     } finally {
       setNewSessionStarting(false)
     }
@@ -325,10 +333,10 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
         <div>
           <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px', fontSize: '22px' }}>
             <Terminal size={24} />
-            <span>TUI Agent Unified Management</span>
+            <span>{t('tuiAgents.page.headerTitle')}</span>
           </h2>
           <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted, #888)', fontSize: '14px' }}>
-            Track interactive agent CLI sessions, attribution, quotas, operations ledger, and automated lifecycle.
+            {t('tuiAgents.page.headerSubtitle')}
           </p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
@@ -349,7 +357,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
             }}
           >
             <Plus size={14} />
-            <span>Launch Agent</span>
+            <span>{t('tuiAgents.page.launchAgentButton')}</span>
           </button>
           <button
             type="button"
@@ -367,7 +375,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
             }}
           >
             <RefreshCw size={14} className={loading ? 'spin' : ''} />
-            <span>Refresh</span>
+            <span>{t('tuiAgents.page.refreshButton')}</span>
           </button>
         </div>
       </div>
@@ -375,19 +383,19 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       {error && (
         <div style={{ padding: '12px 16px', marginBottom: '16px', background: '#ffebee', color: '#c62828', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <AlertCircle size={18} />
-          <span>{error}</span>
+          <span>{error.kind === 'raw' ? error.message : t(error.key)}</span>
         </div>
       )}
 
       {/* Navigation Tabs */}
       <div style={{ display: 'flex', gap: '4px', borderBottom: '1px solid var(--border-color, #e0e0e0)', marginBottom: '20px' }}>
         {[
-          { key: 'running', label: `Running Sessions (${runningSessions.length})`, icon: Activity },
-          { key: 'overview', label: 'Overview', icon: Shield },
-          { key: 'history', label: `Session History (${historicalSessions.length})`, icon: History },
-          { key: 'operations', label: `Operations Ledger (${operations.length})`, icon: ListOrdered },
-          { key: 'agents', label: `Agent Profiles (${agents.length})`, icon: Cpu },
-          { key: 'quotas', label: `Accounts & Quotas (${accounts.length})`, icon: CreditCard },
+          { key: 'running', label: t('tuiAgents.page.tabRunningSessions', { count: runningSessions.length }), icon: Activity },
+          { key: 'overview', label: t('tuiAgents.page.tabOverview'), icon: Shield },
+          { key: 'history', label: t('tuiAgents.page.tabSessionHistory', { count: historicalSessions.length }), icon: History },
+          { key: 'operations', label: t('tuiAgents.page.tabOperationsLedger', { count: operations.length }), icon: ListOrdered },
+          { key: 'agents', label: t('tuiAgents.page.tabAgentProfiles', { count: agents.length }), icon: Cpu },
+          { key: 'quotas', label: t('tuiAgents.page.tabAccountsQuotas', { count: accounts.length }), icon: CreditCard },
         ].map(tab => {
           const Icon = tab.icon
           const isActive = activeTab === tab.key
@@ -421,39 +429,39 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
         <div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '24px' }}>
             <div style={{ padding: '16px', borderRadius: '8px', background: 'var(--bg-card, #f9f9f9)', border: '1px solid var(--border-color, #eee)' }}>
-              <div style={{ fontSize: '13px', color: 'var(--text-muted, #777)' }}>Active Sessions</div>
+              <div style={{ fontSize: '13px', color: 'var(--text-muted, #777)' }}>{t('tuiAgents.page.activeSessions')}</div>
               <div style={{ fontSize: '28px', fontWeight: 700, margin: '4px 0' }}>{metrics.activeTotal}</div>
-              <div style={{ fontSize: '12px', color: '#2e7d32' }}>{metrics.working} working, {metrics.idle} idle</div>
+              <div style={{ fontSize: '12px', color: '#2e7d32' }}>{t('tuiAgents.page.activeWorkingIdle', { working: metrics.working, idle: metrics.idle })}</div>
             </div>
             <div style={{ padding: '16px', borderRadius: '8px', background: 'var(--bg-card, #f9f9f9)', border: '1px solid var(--border-color, #eee)' }}>
-              <div style={{ fontSize: '13px', color: 'var(--text-muted, #777)' }}>Waiting Approval</div>
+              <div style={{ fontSize: '13px', color: 'var(--text-muted, #777)' }}>{t('tuiAgents.page.waitingApproval')}</div>
               <div style={{ fontSize: '28px', fontWeight: 700, margin: '4px 0', color: metrics.waiting > 0 ? '#ed6c02' : 'inherit' }}>
                 {metrics.waiting}
               </div>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted, #777)' }}>Needs keys / user confirmation</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted, #777)' }}>{t('tuiAgents.page.needsKeysConfirmation')}</div>
             </div>
             <div style={{ padding: '16px', borderRadius: '8px', background: 'var(--bg-card, #f9f9f9)', border: '1px solid var(--border-color, #eee)' }}>
-              <div style={{ fontSize: '13px', color: 'var(--text-muted, #777)' }}>Retained / Pending Reclaim</div>
+              <div style={{ fontSize: '13px', color: 'var(--text-muted, #777)' }}>{t('tuiAgents.page.retainedPendingReclaim')}</div>
               <div style={{ fontSize: '28px', fontWeight: 700, margin: '4px 0', color: metrics.retained > 0 ? '#0288d1' : 'inherit' }}>
                 {metrics.retained}
               </div>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted, #777)' }}>10m grace period after run end</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted, #777)' }}>{t('tuiAgents.page.gracePeriodNotice')}</div>
             </div>
             <div style={{ padding: '16px', borderRadius: '8px', background: 'var(--bg-card, #f9f9f9)', border: '1px solid var(--border-color, #eee)' }}>
-              <div style={{ fontSize: '13px', color: 'var(--text-muted, #777)' }}>Configured Agents & Accounts</div>
+              <div style={{ fontSize: '13px', color: 'var(--text-muted, #777)' }}>{t('tuiAgents.page.configuredAgentsAccounts')}</div>
               <div style={{ fontSize: '28px', fontWeight: 700, margin: '4px 0' }}>{metrics.agentsCount} / {metrics.accountsCount}</div>
-              <div style={{ fontSize: '12px', color: 'var(--text-muted, #777)' }}>Profiles & Provider pools</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted, #777)' }}>{t('tuiAgents.page.profilesProviderPools')}</div>
             </div>
           </div>
 
           <div style={{ padding: '20px', borderRadius: '8px', background: 'var(--bg-card, #f9f9f9)', border: '1px solid var(--border-color, #eee)' }}>
-            <h3 style={{ margin: '0 0 12px 0', fontSize: '16px' }}>Lifecycle & Reclamation Policy Summary</h3>
+            <h3 style={{ margin: '0 0 12px 0', fontSize: '16px' }}>{t('tuiAgents.page.policySummaryTitle')}</h3>
             <ul style={{ margin: 0, paddingLeft: '20px', lineHeight: '1.8', fontSize: '14px', color: 'var(--text-muted, #555)' }}>
-              <li><strong>Run Stop / Cancel:</strong> Immediately interrupts the assigned TUI session and terminates tmux pane within 30 seconds.</li>
-              <li><strong>Run Success:</strong> Preserves idle session for 10 minutes for review or follow-up before auto-reclaiming.</li>
-              <li><strong>Run Failure:</strong> Freezes static terminal snapshot and retains for 10 minutes for inspection.</li>
-              <li><strong>Manual / Idle Sessions:</strong> Reclaimed automatically after 30 minutes of inactivity unless extended.</li>
-              <li><strong>Ownership:</strong> Sessions are bound to immutable task runs, preventing rogue turns after run completion.</li>
+              <li><strong>{t('tuiAgents.page.policyRunStopLabel')}</strong> {t('tuiAgents.page.policyRunStopDesc')}</li>
+              <li><strong>{t('tuiAgents.page.policyRunSuccessLabel')}</strong> {t('tuiAgents.page.policyRunSuccessDesc')}</li>
+              <li><strong>{t('tuiAgents.page.policyRunFailureLabel')}</strong> {t('tuiAgents.page.policyRunFailureDesc')}</li>
+              <li><strong>{t('tuiAgents.page.policyManualIdleLabel')}</strong> {t('tuiAgents.page.policyManualIdleDesc')}</li>
+              <li><strong>{t('tuiAgents.page.policyOwnershipLabel')}</strong> {t('tuiAgents.page.policyOwnershipDesc')}</li>
             </ul>
           </div>
         </div>
@@ -465,20 +473,20 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           {runningSessions.length === 0 ? (
             <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted, #888)' }}>
               <Terminal size={48} style={{ opacity: 0.3, marginBottom: '12px' }} />
-              <div>No active TUI agent sessions currently running.</div>
+              <div>{t('tuiAgents.page.noRunningSessions')}</div>
             </div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
                 <thead>
                   <tr style={{ borderBottom: '2px solid var(--border-color, #eee)', color: 'var(--text-muted, #777)' }}>
-                    <th style={{ padding: '10px 12px' }}>Session / Agent</th>
-                    <th style={{ padding: '10px 12px' }}>Attribution</th>
-                    <th style={{ padding: '10px 12px' }}>Model & Proxy</th>
-                    <th style={{ padding: '10px 12px' }}>State</th>
-                    <th style={{ padding: '10px 12px' }}>Last Op / Activity</th>
-                    <th style={{ padding: '10px 12px' }}>Reclaim Countdown</th>
-                    <th style={{ padding: '10px 12px' }}>Actions</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thSessionAgent')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thAttribution')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thModelProxy')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thState')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thLastOpActivity')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thReclaimCountdown')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thActions')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -490,19 +498,19 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                         <td style={{ padding: '12px' }}>
                           <div style={{ fontWeight: 600 }}>{s.sessionName}</div>
                           <div style={{ fontSize: '11px', color: 'var(--text-muted, #888)' }}>
-                            CLI: <span style={{ textTransform: 'uppercase' }}>{s.agentKind}</span> (id: {s.id.slice(0, 10)}...)
+                            {t('tuiAgents.page.cliLabel')} <span style={{ textTransform: 'uppercase' }}>{s.agentKind}</span> {t('tuiAgents.page.sessionShortId', { id: s.id.slice(0, 10) })}
                           </div>
                         </td>
                         <td style={{ padding: '12px' }}>
-                          <div>Project: {s.createdByProjectId || 'Global'}</div>
+                          <div>{t('tuiAgents.page.projectAttribution', { project: s.createdByProjectId || t('tuiAgents.page.global') })}</div>
                           <div style={{ fontSize: '11px', color: 'var(--text-muted, #888)' }}>
-                            Owner Run: {s.ownerRunId ? `${s.ownerRunId.slice(0, 14)}...` : 'Manual'} ({s.ownershipMode})
+                            {t('tuiAgents.page.ownerRunAttribution', { run: s.ownerRunId ? `${s.ownerRunId.slice(0, 14)}...` : t('tuiAgents.page.manual'), mode: s.ownershipMode })}
                           </div>
                         </td>
                         <td style={{ padding: '12px' }}>
-                          <div>{s.model || 'Default'}</div>
+                          <div>{s.model || t('tuiAgents.page.default')}</div>
                           <div style={{ fontSize: '11px', color: 'var(--text-muted, #888)' }}>
-                            Proxy: {s.effectiveProxy || s.proxyMode}
+                            {t('tuiAgents.page.proxyLabel', { proxy: s.effectiveProxy || s.proxyMode })}
                           </div>
                         </td>
                         <td style={{ padding: '12px' }}>
@@ -521,18 +529,18 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                           </span>
                         </td>
                         <td style={{ padding: '12px' }}>
-                          <div style={{ fontSize: '12px' }}>{s.lastOperationAt ? new Date(s.lastOperationAt).toLocaleTimeString() : 'None'}</div>
+                          <div style={{ fontSize: '12px' }}>{s.lastOperationAt ? formatTime(s.lastOperationAt) : t('tuiAgents.page.none')}</div>
                           <div style={{ fontSize: '11px', color: 'var(--text-muted, #888)' }}>
-                            Input: {s.lastInputAt ? new Date(s.lastInputAt).toLocaleTimeString() : 'N/A'}
+                            {t('tuiAgents.page.lastInput', { time: s.lastInputAt ? formatTime(s.lastInputAt) : t('tuiAgents.page.notAvailable') })}
                           </div>
                         </td>
                         <td style={{ padding: '12px' }}>
                           {s.reclaimAfter ? (
                             <span style={{ color: '#d32f2f', fontWeight: 500 }}>
-                              {new Date(s.reclaimAfter).toLocaleTimeString()}
+                              {formatTime(s.reclaimAfter)}
                             </span>
                           ) : (
-                            <span style={{ color: 'var(--text-muted, #888)' }}>30m idle sweep</span>
+                            <span style={{ color: 'var(--text-muted, #888)' }}>{t('tuiAgents.page.idleSweep')}</span>
                           )}
                         </td>
                         <td style={{ padding: '12px' }}>
@@ -540,50 +548,50 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                             <button
                               type="button"
                               onClick={() => handleOpenScreen(s)}
-                              title="View Screen"
+                              title={t('tuiAgents.page.actionViewScreen')}
                               style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
                             >
-                              Screen
+                              {t('tuiAgents.page.btnScreen')}
                             </button>
                             <button
                               type="button"
                               onClick={() => setPromptModalSession(s)}
-                              title="Send Prompt"
+                              title={t('tuiAgents.page.actionSendPrompt')}
                               style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
                             >
-                              Prompt
+                              {t('tuiAgents.page.btnPrompt')}
                             </button>
                             <button
                               type="button"
                               onClick={() => setKeysModalSession(s)}
-                              title="Send Keys"
+                              title={t('tuiAgents.page.actionSendKeys')}
                               style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
                             >
-                              Keys
+                              {t('tuiAgents.page.btnKeys')}
                             </button>
                             <button
                               type="button"
                               onClick={() => handleExtend(s.id)}
-                              title="Extend 30m"
+                              title={t('tuiAgents.page.actionExtend30m')}
                               style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
                             >
-                              +30m
+                              {t('tuiAgents.page.btnExtend30m')}
                             </button>
                             <button
                               type="button"
                               onClick={() => handleInterrupt(s.id)}
-                              title="Interrupt (C-c)"
+                              title={t('tuiAgents.page.actionInterrupt')}
                               style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ff9800', color: '#e65100' }}
                             >
-                              Interrupt
+                              {t('tuiAgents.page.btnInterrupt')}
                             </button>
                             <button
                               type="button"
                               onClick={() => handleTakeover(s.id)}
-                              title="Manual Takeover"
+                              title={t('tuiAgents.page.actionTakeover')}
                               style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
                             >
-                              Takeover
+                              {t('tuiAgents.page.btnTakeover')}
                             </button>
                             <button
                               type="button"
@@ -591,18 +599,18 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                                 setTransferModalSession(s)
                                 setTransferRunId('')
                               }}
-                              title="Transfer to Run"
+                              title={t('tuiAgents.page.actionTransfer')}
                               style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
                             >
-                              Transfer
+                              {t('tuiAgents.page.btnTransfer')}
                             </button>
                             <button
                               type="button"
                               onClick={() => handleStop(s.id)}
-                              title="Stop Session"
+                              title={t('tuiAgents.page.actionStop')}
                               style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #f44336', color: '#d32f2f' }}
                             >
-                              Stop
+                              {t('tuiAgents.page.btnStop')}
                             </button>
                           </div>
                         </td>
@@ -622,20 +630,20 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           {historicalSessions.length === 0 ? (
             <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted, #888)' }}>
               <History size={48} style={{ opacity: 0.3, marginBottom: '12px' }} />
-              <div>No terminated or reclaimed sessions recorded.</div>
+              <div>{t('tuiAgents.page.noHistorySessions')}</div>
             </div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
                 <thead>
                   <tr style={{ borderBottom: '2px solid var(--border-color, #eee)', color: 'var(--text-muted, #777)' }}>
-                    <th style={{ padding: '10px 12px' }}>Session</th>
-                    <th style={{ padding: '10px 12px' }}>Agent</th>
-                    <th style={{ padding: '10px 12px' }}>Project / Run</th>
-                    <th style={{ padding: '10px 12px' }}>Created At</th>
-                    <th style={{ padding: '10px 12px' }}>Reclaimed At</th>
-                    <th style={{ padding: '10px 12px' }}>Stop Reason</th>
-                    <th style={{ padding: '10px 12px' }}>Actions</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thSession')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thAgent')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thProjectRun')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thCreatedAt')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thReclaimedAt')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thStopReason')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thActions')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -644,11 +652,11 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       <td style={{ padding: '12px', fontWeight: 600 }}>{s.sessionName}</td>
                       <td style={{ padding: '12px', textTransform: 'uppercase' }}>{s.agentKind}</td>
                       <td style={{ padding: '12px' }}>
-                        <div>{s.createdByProjectId || 'Global'}</div>
-                        <div style={{ fontSize: '11px', color: 'var(--text-muted, #888)' }}>{s.createdByRunId || 'Manual'}</div>
+                        <div>{s.createdByProjectId || t('tuiAgents.page.global')}</div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted, #888)' }}>{s.createdByRunId || t('tuiAgents.page.manual')}</div>
                       </td>
-                      <td style={{ padding: '12px' }}>{new Date(s.createdAt).toLocaleString()}</td>
-                      <td style={{ padding: '12px' }}>{s.reclaimedAt ? new Date(s.reclaimedAt).toLocaleString() : s.stoppedAt ? new Date(s.stoppedAt).toLocaleString() : 'N/A'}</td>
+                      <td style={{ padding: '12px' }}>{formatDateTime(s.createdAt)}</td>
+                      <td style={{ padding: '12px' }}>{s.reclaimedAt ? formatDateTime(s.reclaimedAt) : s.stoppedAt ? formatDateTime(s.stoppedAt) : t('tuiAgents.page.notAvailable')}</td>
                       <td style={{ padding: '12px' }}>
                         <span style={{ padding: '2px 6px', borderRadius: '4px', background: '#f5f5f5', fontSize: '11px' }}>
                           {s.stopIntent || s.lifecycleState}
@@ -660,7 +668,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                           onClick={() => handleOpenScreen(s)}
                           style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
                         >
-                          View Snapshot
+                          {t('tuiAgents.page.btnViewSnapshot')}
                         </button>
                       </td>
                     </tr>
@@ -678,21 +686,21 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           {operations.length === 0 ? (
             <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted, #888)' }}>
               <ListOrdered size={48} style={{ opacity: 0.3, marginBottom: '12px' }} />
-              <div>No operations recorded yet.</div>
+              <div>{t('tuiAgents.page.noOperations')}</div>
             </div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
                 <thead>
                   <tr style={{ borderBottom: '2px solid var(--border-color, #eee)', color: 'var(--text-muted, #777)' }}>
-                    <th style={{ padding: '10px 12px' }}>Time</th>
-                    <th style={{ padding: '10px 12px' }}>Type</th>
-                    <th style={{ padding: '10px 12px' }}>Session</th>
-                    <th style={{ padding: '10px 12px' }}>Operator</th>
-                    <th style={{ padding: '10px 12px' }}>Run / Task</th>
-                    <th style={{ padding: '10px 12px' }}>Status</th>
-                    <th style={{ padding: '10px 12px' }}>Duration</th>
-                    <th style={{ padding: '10px 12px' }}>Summary</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thTime')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thType')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thSession')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thOperator')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thRunTask')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thStatus')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thDuration')}</th>
+                    <th style={{ padding: '10px 12px' }}>{t('tuiAgents.page.thSummary')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -701,14 +709,14 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                     const isFailed = op.status === 'failed'
                     return (
                       <tr key={op.id} style={{ borderBottom: '1px solid var(--border-color, #f0f0f0)' }}>
-                        <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>{new Date(op.startedAt).toLocaleTimeString()}</td>
+                        <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>{formatTime(op.startedAt)}</td>
                         <td style={{ padding: '10px 12px' }}>
                           <span style={{ fontWeight: 600, textTransform: 'uppercase', fontSize: '11px' }}>{op.operationType}</span>
                         </td>
                         <td style={{ padding: '10px 12px' }}>{op.sessionName}</td>
                         <td style={{ padding: '10px 12px' }}>{op.operator}</td>
                         <td style={{ padding: '10px 12px', fontSize: '11px', color: 'var(--text-muted, #888)' }}>
-                          {op.runId ? `${op.runId.slice(0, 12)}...` : 'N/A'}
+                          {op.runId ? `${op.runId.slice(0, 12)}...` : t('tuiAgents.page.notAvailable')}
                         </td>
                         <td style={{ padding: '10px 12px' }}>
                           <span
@@ -778,21 +786,21 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       }
                       style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '4px', border: '1px solid #ccc', cursor: 'pointer' }}
                     >
-                      Configure
+                      {t('tuiAgents.page.btnConfigure')}
                     </button>
                   </div>
                   <div style={{ fontSize: '13px', lineHeight: '1.8' }}>
-                    <div><strong>Default Model:</strong> {profile?.defaultModel || 'CLI Default'}</div>
-                    <div><strong>Default Effort:</strong> {profile?.defaultEffort || 'Default'}</div>
+                    <div><strong>{t('tuiAgents.page.labelDefaultModel')}</strong> {profile?.defaultModel || t('tuiAgents.page.cliDefault')}</div>
+                    <div><strong>{t('tuiAgents.page.labelDefaultEffort')}</strong> {profile?.defaultEffort || t('tuiAgents.page.default')}</div>
                     <div>
-                      <strong>Network Proxy:</strong>{' '}
+                      <strong>{t('tuiAgents.page.labelNetworkProxy')}</strong>{' '}
                       <span style={{ fontFamily: 'monospace' }}>
                         {resolveProxyDisplay(profile?.proxyMode, profile?.proxyId)}
                       </span>
                     </div>
-                    <div><strong>Account Binding:</strong> {profile?.accountId || 'None (System)'}</div>
-                    <div><strong>Max Concurrency:</strong> {profile?.maxConcurrency || 'Unlimited'}</div>
-                    <div><strong>Idle Timeout:</strong> {profile?.idleTimeoutMins ? `${profile.idleTimeoutMins} mins` : '30 mins (default)'}</div>
+                    <div><strong>{t('tuiAgents.page.labelAccountBinding')}</strong> {profile?.accountId || t('tuiAgents.page.noneSystem')}</div>
+                    <div><strong>{t('tuiAgents.page.labelMaxConcurrency')}</strong> {profile?.maxConcurrency || t('tuiAgents.page.unlimited')}</div>
+                    <div><strong>{t('tuiAgents.page.labelIdleTimeout')}</strong> {profile?.idleTimeoutMins ? t('tuiAgents.page.timeoutMins', { mins: profile.idleTimeoutMins }) : t('tuiAgents.page.timeoutDefault')}</div>
                   </div>
                 </div>
               )
@@ -805,7 +813,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       {activeTab === 'quotas' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <h3 style={{ margin: 0, fontSize: '16px' }}>Provider Accounts & Quota Pools</h3>
+            <h3 style={{ margin: 0, fontSize: '16px' }}>{t('tuiAgents.page.providerAccountsTitle')}</h3>
             <button
               type="button"
               onClick={() => setNewAccountModal(true)}
@@ -823,14 +831,14 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
               }}
             >
               <Plus size={14} />
-              <span>Add Account</span>
+              <span>{t('tuiAgents.page.btnAddAccount')}</span>
             </button>
           </div>
 
           {accounts.length === 0 ? (
             <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted, #888)' }}>
               <CreditCard size={48} style={{ opacity: 0.3, marginBottom: '12px' }} />
-              <div>No provider accounts configured yet.</div>
+              <div>{t('tuiAgents.page.noAccountsConfigured')}</div>
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '16px' }}>
@@ -849,28 +857,28 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                       <div>
                         <h4 style={{ margin: 0, fontSize: '15px' }}>{acc.accountName}</h4>
-                        <div style={{ fontSize: '12px', color: 'var(--text-muted, #888)' }}>Provider: {acc.provider}</div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-muted, #888)' }}>{t('tuiAgents.page.providerLabel', { provider: acc.provider })}</div>
                       </div>
                       <button
                         type="button"
                         onClick={() => handleRefreshQuotas(acc.id)}
                         style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '4px', border: '1px solid #ccc', cursor: 'pointer' }}
                       >
-                        Refresh Quota
+                        {t('tuiAgents.page.btnRefreshQuota')}
                       </button>
                     </div>
 
                     {accQuotas.length === 0 ? (
                       <div style={{ fontSize: '12px', color: 'var(--text-muted, #888)', fontStyle: 'italic' }}>
-                        No quota snapshots recorded.
+                        {t('tuiAgents.page.noQuotaSnapshots')}
                       </div>
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                         {accQuotas.map(q => (
                           <div key={q.id} style={{ padding: '8px', background: '#fff', borderRadius: '6px', border: '1px solid #eee' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
-                              <span style={{ fontWeight: 600 }}>{q.quotaType} quota ({q.unit})</span>
-                              <span>{q.remainingPercent !== undefined ? `${q.remainingPercent.toFixed(1)}% left` : 'Unknown'}</span>
+                              <span style={{ fontWeight: 600 }}>{t('tuiAgents.page.quotaHeading', { type: q.quotaType, unit: q.unit })}</span>
+                              <span>{q.remainingPercent !== undefined ? t('tuiAgents.page.percentLeft', { percent: formatNumber(q.remainingPercent, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }) : t('tuiAgents.page.unknown')}</span>
                             </div>
                             <div style={{ height: '6px', width: '100%', background: '#eee', borderRadius: '3px', overflow: 'hidden' }}>
                               <div
@@ -882,8 +890,8 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                               />
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#888', marginTop: '4px' }}>
-                              <span>Used: {q.usedAmount}</span>
-                              <span>Observed: {new Date(q.observedAt).toLocaleTimeString()}</span>
+                              <span>{t('tuiAgents.page.usedAmount', { amount: q.usedAmount })}</span>
+                              <span>{t('tuiAgents.page.observedTime', { time: formatTime(q.observedAt) })}</span>
                             </div>
                           </div>
                         ))}
@@ -925,11 +933,12 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           >
             <div style={{ padding: '14px 18px', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ fontWeight: 600 }}>
-                Terminal Capture: {inspectSession.sessionName} ({inspectSession.agentKind})
+                {t('tuiAgents.page.terminalCaptureTitle', { name: inspectSession.sessionName, agent: inspectSession.agentKind })}
               </div>
               <button
                 type="button"
                 onClick={() => setInspectSession(null)}
+                aria-label={t('tuiAgents.page.btnClose')}
                 style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: '18px' }}
               >
                 ✕
@@ -948,7 +957,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 wordBreak: 'break-all',
               }}
             >
-              {inspectScreen}
+              {inspectScreen.kind === 'raw' ? inspectScreen.text : t(inspectScreen.key, inspectScreen.values)}
             </pre>
             <div style={{ padding: '12px 18px', borderTop: '1px solid #333', display: 'flex', justifyContent: 'flex-end' }}>
               <button
@@ -956,7 +965,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 onClick={() => setInspectSession(null)}
                 style={{ padding: '6px 14px', borderRadius: '4px', border: '1px solid #555', background: '#333', color: '#fff', cursor: 'pointer' }}
               >
-                Close
+                {t('tuiAgents.page.btnClose')}
               </button>
             </div>
           </div>
@@ -977,12 +986,12 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           }}
         >
           <div style={{ width: '90%', maxWidth: '500px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>Send Prompt to {promptModalSession.sessionName}</h3>
+            <h3 style={{ margin: '0 0 12px 0' }}>{t('tuiAgents.page.sendPromptTitle', { name: promptModalSession.sessionName })}</h3>
             <textarea
               rows={4}
               value={promptText}
               onChange={e => setPromptText(e.target.value)}
-              placeholder="Enter message or prompt to send to the interactive agent..."
+              placeholder={t('tuiAgents.page.promptPlaceholder')}
               style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
@@ -991,7 +1000,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 onClick={() => setPromptModalSession(null)}
                 style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
               >
-                Cancel
+                {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
@@ -999,7 +1008,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 disabled={promptSending || !promptText.trim()}
                 style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer' }}
               >
-                {promptSending ? 'Submitting...' : 'Send Prompt'}
+                {promptSending ? t('tuiAgents.page.btnSubmitting') : t('tuiAgents.page.btnSendPrompt')}
               </button>
             </div>
           </div>
@@ -1020,15 +1029,15 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           }}
         >
           <div style={{ width: '90%', maxWidth: '400px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>Send Keys to {keysModalSession.sessionName}</h3>
+            <h3 style={{ margin: '0 0 12px 0' }}>{t('tuiAgents.page.sendKeysTitle', { name: keysModalSession.sessionName })}</h3>
             <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: '#666' }}>
-              Common keys: Enter, y, n, Escape, Down, Up, Space
+              {t('tuiAgents.page.commonKeysHint')}
             </p>
             <input
               type="text"
               value={keysInput}
               onChange={e => setKeysInput(e.target.value)}
-              placeholder="e.g. Enter or y Enter"
+              placeholder={t('tuiAgents.page.keysPlaceholder')}
               style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
@@ -1037,7 +1046,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 onClick={() => setKeysModalSession(null)}
                 style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
               >
-                Cancel
+                {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
@@ -1045,7 +1054,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 disabled={!keysInput.trim()}
                 style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer' }}
               >
-                Send Keys
+                {t('tuiAgents.page.btnSendKeys')}
               </button>
             </div>
           </div>
@@ -1066,15 +1075,15 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           }}
         >
           <div style={{ width: '90%', maxWidth: '450px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>Transfer Session Ownership</h3>
+            <h3 style={{ margin: '0 0 12px 0' }}>{t('tuiAgents.page.transferTitle')}</h3>
             <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: '#666' }}>
-              Assign session <strong>{transferModalSession.sessionName}</strong> to a target Task Run ID.
+              <Trans i18nKey="tuiAgents.page.transferAssign" values={{ name: transferModalSession.sessionName }} components={{ strong: <strong /> }} />
             </p>
             <input
               type="text"
               value={transferRunId}
               onChange={e => setTransferRunId(e.target.value)}
-              placeholder="Target Run ID (e.g. task_run_12345)"
+              placeholder={t('tuiAgents.page.targetRunIdPlaceholder')}
               style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
@@ -1083,7 +1092,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 onClick={() => setTransferModalSession(null)}
                 style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
               >
-                Cancel
+                {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
@@ -1091,7 +1100,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 disabled={!transferRunId.trim()}
                 style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer' }}
               >
-                Transfer
+                {t('tuiAgents.page.btnTransfer')}
               </button>
             </div>
           </div>
@@ -1112,30 +1121,30 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           }}
         >
           <div style={{ width: '90%', maxWidth: '480px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 16px 0' }}>Configure Profile: {editProfileModal.agentKind.toUpperCase()}</h3>
+            <h3 style={{ margin: '0 0 16px 0' }}>{t('tuiAgents.page.configureProfileTitle', { kind: editProfileModal.agentKind.toUpperCase() })}</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Default Model</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formDefaultModel')}</label>
                 <input
                   type="text"
                   value={editProfileModal.defaultModel || ''}
                   onChange={e => setEditProfileModal({ ...editProfileModal, defaultModel: e.target.value })}
-                  placeholder="e.g. claude-3-7-sonnet or gpt-4o"
+                  placeholder={t('tuiAgents.page.modelPlaceholder')}
                   style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                 />
               </div>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Default Effort</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formDefaultEffort')}</label>
                 <input
                   type="text"
                   value={editProfileModal.defaultEffort || ''}
                   onChange={e => setEditProfileModal({ ...editProfileModal, defaultEffort: e.target.value })}
-                  placeholder="e.g. high / medium / low"
+                  placeholder={t('tuiAgents.page.effortPlaceholder')}
                   style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                 />
               </div>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Proxy Mode</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formProxyMode')}</label>
                 <select
                   value={editProfileModal.proxyMode || 'inherit'}
                   onChange={e => {
@@ -1148,22 +1157,22 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                   }}
                   style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                 >
-                  <option value="inherit">Inherit (Global/Default)</option>
-                  <option value="direct">Direct (No Proxy)</option>
-                  <option value="named">Named Proxy (Configured)</option>
-                  <option value="custom">Custom Proxy URL</option>
+                  <option value="inherit">{t('tuiAgents.page.optProxyInherit')}</option>
+                  <option value="direct">{t('tuiAgents.page.optProxyDirect')}</option>
+                  <option value="named">{t('tuiAgents.page.optProxyNamed')}</option>
+                  <option value="custom">{t('tuiAgents.page.optProxyCustom')}</option>
                 </select>
               </div>
               {editProfileModal.proxyMode === 'named' && (
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Configured Proxy</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formConfiguredProxy')}</label>
                   {proxies.length > 0 ? (
                     <select
                       value={editProfileModal.proxyId || ''}
                       onChange={e => setEditProfileModal({ ...editProfileModal, proxyId: e.target.value })}
                       style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                     >
-                      <option value="">-- Select a proxy --</option>
+                      <option value="">{t('tuiAgents.page.optSelectProxy')}</option>
                       {proxies.map(p => (
                         <option key={p.id} value={p.id}>
                           {p.id} ({p.url}){p.description ? ` - ${p.description}` : ''}
@@ -1175,39 +1184,39 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       type="text"
                       value={editProfileModal.proxyId || ''}
                       onChange={e => setEditProfileModal({ ...editProfileModal, proxyId: e.target.value })}
-                      placeholder="e.g. clash"
+                      placeholder={t('tuiAgents.page.proxyIdPlaceholder')}
                       style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                     />
                   )}
                   {proxies.length === 0 && (
                     <small style={{ color: 'var(--text-muted, #888)', display: 'block', marginTop: '4px' }}>
-                      No named proxies in Settings → Network Proxies. You can enter a Proxy ID or switch to Custom URL.
+                      {t('tuiAgents.page.noNamedProxiesHint')}
                     </small>
                   )}
                 </div>
               )}
               {editProfileModal.proxyMode === 'custom' && (
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Custom Proxy URL</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formCustomProxyUrl')}</label>
                   <input
                     type="text"
                     value={editProfileModal.proxyId || ''}
                     onChange={e => setEditProfileModal({ ...editProfileModal, proxyId: e.target.value })}
-                    placeholder="http://127.0.0.1:7890 or socks5://127.0.0.1:1088"
+                    placeholder={t('tuiAgents.page.customProxyPlaceholder')}
                     style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                   />
                   <small style={{ color: 'var(--text-muted, #888)', display: 'block', marginTop: '4px' }}>
-                    Directly overrides HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY for this agent.
+                    {t('tuiAgents.page.customProxyHint')}
                   </small>
                 </div>
               )}
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Idle Timeout (minutes)</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formIdleTimeout')}</label>
                 <input
                   type="number"
                   value={editProfileModal.idleTimeoutMins || ''}
                   onChange={e => setEditProfileModal({ ...editProfileModal, idleTimeoutMins: Number(e.target.value) || undefined })}
-                  placeholder="Default 30"
+                  placeholder={t('tuiAgents.page.idleTimeoutPlaceholder')}
                   style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                 />
               </div>
@@ -1218,14 +1227,14 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 onClick={() => setEditProfileModal(null)}
                 style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
               >
-                Cancel
+                {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
                 onClick={() => handleSaveProfile(editProfileModal)}
                 style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer' }}
               >
-                Save Profile
+                {t('tuiAgents.page.btnSaveProfile')}
               </button>
             </div>
           </div>
@@ -1248,32 +1257,32 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           <div style={{ width: '90%', maxWidth: '520px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
             <h3 style={{ margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Play size={18} />
-              <span>Launch Persistent TUI Agent Session</span>
+              <span>{t('tuiAgents.page.launchSessionTitle')}</span>
             </h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Agent CLI</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formAgentCli')}</label>
                 <select
                   value={newSessionAgent}
                   onChange={e => setNewSessionAgent(e.target.value)}
                   style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                 >
-                  <option value="agy">agy (Google Antigravity)</option>
-                  <option value="grok">grok (xAI Grok Build)</option>
-                  <option value="codex">codex (OpenAI Codex)</option>
-                  <option value="claude">claude (Claude Code)</option>
-                  <option value="custom">custom (Custom CLI)</option>
+                  <option value="agy">{t('tuiAgents.page.optAgentAgy')}</option>
+                  <option value="grok">{t('tuiAgents.page.optAgentGrok')}</option>
+                  <option value="codex">{t('tuiAgents.page.optAgentCodex')}</option>
+                  <option value="claude">{t('tuiAgents.page.optAgentClaude')}</option>
+                  <option value="custom">{t('tuiAgents.page.optAgentCustom')}</option>
                 </select>
               </div>
 
               {newSessionAgent === 'custom' && (
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Custom CLI Command</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formCustomCliCommand')}</label>
                   <input
                     type="text"
                     value={newSessionCustomAgent}
                     onChange={e => setNewSessionCustomAgent(e.target.value)}
-                    placeholder="e.g. cursor-cli or custom_agent"
+                    placeholder={t('tuiAgents.page.customCliPlaceholder')}
                     style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                   />
                 </div>
@@ -1281,22 +1290,22 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Session Name (Optional)</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formSessionNameOptional')}</label>
                   <input
                     type="text"
                     value={newSessionName}
                     onChange={e => setNewSessionName(e.target.value)}
-                    placeholder="Auto-generated if blank"
+                    placeholder={t('tuiAgents.page.sessionNamePlaceholder')}
                     style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Working Directory</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formWorkingDirectory')}</label>
                   <input
                     type="text"
                     value={newSessionCwd}
                     onChange={e => setNewSessionCwd(e.target.value)}
-                    placeholder="Defaults to workspace"
+                    placeholder={t('tuiAgents.page.workingDirPlaceholder')}
                     style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                   />
                 </div>
@@ -1304,22 +1313,22 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Model Override</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formModelOverride')}</label>
                   <input
                     type="text"
                     value={newSessionModel}
                     onChange={e => setNewSessionModel(e.target.value)}
-                    placeholder="Defaults to agent profile"
+                    placeholder={t('tuiAgents.page.modelOverridePlaceholder')}
                     style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Effort</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formEffort')}</label>
                   <input
                     type="text"
                     value={newSessionEffort}
                     onChange={e => setNewSessionEffort(e.target.value)}
-                    placeholder="low / medium / high"
+                    placeholder={t('tuiAgents.page.effortLevelsPlaceholder')}
                     style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                   />
                 </div>
@@ -1329,11 +1338,11 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
               <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', fontWeight: 600 }}>
                   <Globe size={16} />
-                  <span>Network Proxy Setting</span>
+                  <span>{t('tuiAgents.page.networkProxySetting')}</span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: newSessionProxyMode === 'named' || newSessionProxyMode === 'custom' ? '1fr 1fr' : '1fr', gap: '10px' }}>
                   <div>
-                    <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#64748b' }}>Proxy Mode</label>
+                    <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#64748b' }}>{t('tuiAgents.page.formProxyMode')}</label>
                     <select
                       value={newSessionProxyMode}
                       onChange={e => {
@@ -1347,23 +1356,23 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       }}
                       style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                     >
-                      <option value="inherit">Inherit (From Agent Profile)</option>
-                      <option value="direct">Direct (No Proxy)</option>
-                      <option value="named">Named Proxy</option>
-                      <option value="custom">Custom URL</option>
+                      <option value="inherit">{t('tuiAgents.page.optProxyInheritFromProfile')}</option>
+                      <option value="direct">{t('tuiAgents.page.optProxyDirect')}</option>
+                      <option value="named">{t('tuiAgents.page.optProxyNamedShort')}</option>
+                      <option value="custom">{t('tuiAgents.page.optProxyCustomShort')}</option>
                     </select>
                   </div>
 
                   {newSessionProxyMode === 'named' && (
                     <div>
-                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#64748b' }}>Configured Proxy</label>
+                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#64748b' }}>{t('tuiAgents.page.formConfiguredProxy')}</label>
                       {proxies.length > 0 ? (
                         <select
                           value={newSessionProxyId}
                           onChange={e => setNewSessionProxyId(e.target.value)}
                           style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                         >
-                          <option value="">-- Select Proxy --</option>
+                          <option value="">{t('tuiAgents.page.optSelectProxyShort')}</option>
                           {proxies.map(p => (
                             <option key={p.id} value={p.id}>
                               {p.id} ({p.url})
@@ -1375,7 +1384,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                           type="text"
                           value={newSessionProxyId}
                           onChange={e => setNewSessionProxyId(e.target.value)}
-                          placeholder="e.g. clash"
+                          placeholder={t('tuiAgents.page.proxyIdPlaceholder')}
                           style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                         />
                       )}
@@ -1384,12 +1393,12 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
 
                   {newSessionProxyMode === 'custom' && (
                     <div>
-                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#64748b' }}>Proxy URL</label>
+                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#64748b' }}>{t('tuiAgents.page.formProxyUrl')}</label>
                       <input
                         type="text"
                         value={newSessionProxyId}
                         onChange={e => setNewSessionProxyId(e.target.value)}
-                        placeholder="http://127.0.0.1:7890"
+                        placeholder={t('tuiAgents.page.proxyUrlPlaceholder')}
                         style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                       />
                     </div>
@@ -1398,11 +1407,11 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
               </div>
 
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Initial Prompt (Optional)</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formInitialPromptOptional')}</label>
                 <textarea
                   value={newSessionInitialPrompt}
                   onChange={e => setNewSessionInitialPrompt(e.target.value)}
-                  placeholder="Task or question to execute immediately..."
+                  placeholder={t('tuiAgents.page.initialPromptPlaceholder')}
                   rows={3}
                   style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }}
                 />
@@ -1415,7 +1424,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                     checked={newSessionAutoApprove}
                     onChange={e => setNewSessionAutoApprove(e.target.checked)}
                   />
-                  <span>Auto-approve tool execution and permission prompts</span>
+                  <span>{t('tuiAgents.page.autoApproveLabel')}</span>
                 </label>
               </div>
             </div>
@@ -1427,7 +1436,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 disabled={newSessionStarting}
                 style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
               >
-                Cancel
+                {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
@@ -1435,7 +1444,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 disabled={newSessionStarting}
                 style={{ padding: '6px 16px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer', fontWeight: 500 }}
               >
-                {newSessionStarting ? 'Starting…' : 'Start Session'}
+                {newSessionStarting ? t('tuiAgents.page.btnStarting') : t('tuiAgents.page.btnStartSession')}
               </button>
             </div>
           </div>
@@ -1456,25 +1465,25 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           }}
         >
           <div style={{ width: '90%', maxWidth: '420px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 16px 0' }}>Add Provider Account</h3>
+            <h3 style={{ margin: '0 0 16px 0' }}>{t('tuiAgents.page.addAccountTitle')}</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Provider</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formProvider')}</label>
                 <input
                   type="text"
                   value={newAccountProvider}
                   onChange={e => setNewAccountProvider(e.target.value)}
-                  placeholder="e.g. anthropic, openai, google"
+                  placeholder={t('tuiAgents.page.providerPlaceholder')}
                   style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                 />
               </div>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>Account Identifier / Name</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formAccountIdentifierName')}</label>
                 <input
                   type="text"
                   value={newAccountName}
                   onChange={e => setNewAccountName(e.target.value)}
-                  placeholder="e.g. Work-Anthropic-1"
+                  placeholder={t('tuiAgents.page.accountNamePlaceholder')}
                   style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                 />
               </div>
@@ -1485,7 +1494,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 onClick={() => setNewAccountModal(false)}
                 style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
               >
-                Cancel
+                {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
@@ -1493,7 +1502,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 disabled={!newAccountProvider.trim() || !newAccountName.trim()}
                 style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer' }}
               >
-                Create Account
+                {t('tuiAgents.page.btnCreateAccount')}
               </button>
             </div>
           </div>

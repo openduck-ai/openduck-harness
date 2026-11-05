@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback, Suspense } from 'react'
+import { Trans, useTranslation } from 'react-i18next'
+import { formatNumber, formatTime } from '../i18n/format.ts'
 import type {
   HarnessRunResponse,
   HarnessActiveJob,
@@ -124,6 +126,27 @@ export function TaskTrajectoryViewer({
   maxTurnsLimit = 500,
   onPageChange,
 }: TaskTrajectoryViewerProps) {
+  const { t, i18n } = useTranslation()
+  const statusLabel = (status: string) => {
+    switch (status.toLowerCase()) {
+      case 'success':
+        return t('trajectory.viewer.statusSuccess')
+      case 'failure':
+        return t('trajectory.viewer.statusFailure')
+      case 'timeout':
+        return t('trajectory.viewer.statusTimeout')
+      case 'error':
+        return t('trajectory.viewer.statusError')
+      case 'running':
+        return t('trajectory.viewer.statusRunning')
+      case 'cancelled':
+        return t('trajectory.viewer.statusCancelled')
+      case 'skipped':
+        return t('trajectory.viewer.statusSkipped')
+      default:
+        return status.toUpperCase()
+    }
+  }
   const effectiveProjectSlug = projectSlug || run.projectSlug || undefined
   const finalAnswerRef = useRef<HTMLDivElement>(null)
   const dynamicTasks = useDynamicPromptTasks(api, effectiveProjectSlug)
@@ -197,11 +220,11 @@ export function TaskTrajectoryViewer({
 
   const steps = useMemo(() => run.trajectory?.steps ?? [], [run.trajectory?.steps])
   const metrics = useMemo(() => calculateTrajectoryMetrics(run), [run])
-  const agentLog = useMemo(() => buildAgentLog(run), [run])
-  const completedSubtasks = useMemo(() => extractCompletedSubtasks(run), [run])
+  const agentLog = useMemo(() => buildAgentLog(run), [run, i18n.language])
+  const completedSubtasks = useMemo(() => extractCompletedSubtasks(run), [run, i18n.language])
   const filteredLogTurns = useMemo(
     () => filterAgentLogTurns(agentLog, filterType, searchQuery),
-    [agentLog, filterType, searchQuery],
+    [agentLog, filterType, searchQuery, i18n.language],
   )
   const [logPage, setLogPage] = useState(() => run.pagination?.page ?? 1)
   const [logPageSize, setLogPageSize] = useState<number>(() => {
@@ -327,7 +350,7 @@ export function TaskTrajectoryViewer({
   // Filtered steps
   const filteredSteps = useMemo(
     () => filterTrajectorySteps(steps, filterType, searchQuery),
-    [steps, filterType, searchQuery],
+    [steps, filterType, searchQuery, i18n.language],
   )
 
   // Ensure selectedStepIdx is within bounds
@@ -724,7 +747,7 @@ export function TaskTrajectoryViewer({
   const telemetryStepCount = steps.filter(step => Boolean(step.llmRequest || step.llmResponse || step.tokenUsage)).length
 
   const finalAnswer = extractFinalAnswer(run)
-  const failureReason = useMemo(() => extractFailureReason(run), [run])
+  const failureReason = useMemo(() => extractFailureReason(run), [run, i18n.language])
   const resumeSubtaskId = run.continuation?.resumeSubtaskId
   const resumeSubtask = useMemo(() => {
     if (!resumeSubtaskId || !Array.isArray(run.continuation?.subtaskPlan)) return undefined
@@ -745,19 +768,20 @@ export function TaskTrajectoryViewer({
           <div className="trajectory-header-title-group">
             <h3 className="section-title">
               {viewMode === 'log' ? '🧠' : '🔍'}{' '}
-              {liveInspect ? 'Live' : viewMode === 'log' ? 'Agent' : 'Execution'}{' '}
-              {viewMode === 'log' ? 'Log' : 'Trajectory'}:{' '}
+              {liveInspect
+                ? t(viewMode === 'log' ? 'trajectory.viewer.liveLogTitle' : 'trajectory.viewer.liveTrajectoryTitle')
+                : t(viewMode === 'log' ? 'trajectory.viewer.agentLogTitle' : 'trajectory.viewer.executionTrajectoryTitle')}{' '}
               <span className="task-id-highlight">{run.taskId}</span>
               {liveInspect && (
                 <span className="live-badge">
-                  <span className="live-dot" /> LIVE RUNNING
+                  <span className="live-dot" /> {t('trajectory.viewer.liveRunning')}
                 </span>
               )}
             </h3>
             <div className="trajectory-meta-row">
               {selectedHistoryId && !liveInspect && (
                 <span className="meta-pill run-id-pill">
-                  Run ID: <code>{selectedHistoryId}</code>
+                  {t('trajectory.viewer.runId')} <code>{selectedHistoryId}</code>
                   <button
                     type="button"
                     className="history-copy-btn run-id-copy-btn"
@@ -771,8 +795,8 @@ export function TaskTrajectoryViewer({
                         // ignore clipboard error
                       }
                     }}
-                    title="Copy Run ID"
-                    aria-label="Copy Run ID"
+                    title={t('trajectory.viewer.copyRunId')}
+                    aria-label={t('trajectory.viewer.copyRunId')}
                   >
                     {copiedRunId ? <Check size={11} /> : <Copy size={11} />}
                   </button>
@@ -780,20 +804,20 @@ export function TaskTrajectoryViewer({
               )}
               {liveInspect && inspectingJobId && (
                 <span className="meta-pill">
-                  Job ID: <code>{inspectingJobId}</code>
+                  {t('trajectory.viewer.jobId')} <code>{inspectingJobId}</code>
                 </span>
               )}
               <span className="meta-pill">
-                Policy: <code>{run.trajectory?.policyName || 'agent'}</code>
+                {t('trajectory.viewer.policy')} <code>{run.trajectory?.policyName || 'agent'}</code>
               </span>
               <span
                 className={`status-badge ${liveInspect ? 'running' : String(run.status).toLowerCase()}`}
               >
-                {liveInspect ? 'RUNNING' : String(run.status).toUpperCase()}
+                {statusLabel(liveInspect ? 'running' : String(run.status))}
               </span>
               {run.recordedCassettePath && (
                 <span className="meta-pill cassette-pill" title={run.recordedCassettePath}>
-                  📼 Cassette recorded
+                  {t('trajectory.viewer.cassetteRecorded')}
                 </span>
               )}
             </div>
@@ -815,9 +839,9 @@ export function TaskTrajectoryViewer({
                   void onStopTask(run.taskId)
                 }}
                 disabled={stoppingTaskId !== null}
-                title="Stop this running task"
+                title={t('trajectory.viewer.stopTaskHint')}
               >
-                {stoppingTaskId ? '⏳ Stopping…' : '⏹ Stop Task'}
+                {stoppingTaskId ? t('trajectory.viewer.stopping') : t('trajectory.viewer.stopTask')}
               </button>
             )}
             <button
@@ -843,18 +867,18 @@ export function TaskTrajectoryViewer({
                 }
                 downloadTrajectoryJson(run)
               }}
-              title="Download complete trajectory log as JSON"
+              title={t('trajectory.viewer.exportJsonHint')}
             >
-              <Download size={14} /> Export JSON
+              <Download size={14} /> {t('trajectory.viewer.exportJson')}
             </button>
             <div className="export-pdf-dropdown-wrapper" ref={exportMenuRef}>
               <button
                 type="button"
                 className="btn-secondary export-btn"
                 onClick={() => setExportMenuOpen(prev => !prev)}
-                title="Export task basic info and conclusion as PDF"
+                title={t('trajectory.viewer.exportPdfHint')}
               >
-                <FileText size={14} /> Export PDF <ChevronDown size={12} className="export-dropdown-icon" />
+                <FileText size={14} /> {t('trajectory.viewer.exportPdf')} <ChevronDown size={12} className="export-dropdown-icon" />
               </button>
               {exportMenuOpen && (
                 <div className="export-pdf-dropdown-menu">
@@ -865,12 +889,12 @@ export function TaskTrajectoryViewer({
                       setExportMenuOpen(false)
                       await handleExportPdf('print')
                     }}
-                    title="Open browser print preview to save as PDF with full styling"
+                    title={t('trajectory.viewer.printPdfHint')}
                   >
                     <Printer size={14} />
                     <div className="export-item-text">
-                      <span className="export-item-title">Print / Save as PDF</span>
-                      <span className="export-item-desc">High-quality vector PDF with Markdown</span>
+                      <span className="export-item-title">{t('trajectory.viewer.printPdf')}</span>
+                      <span className="export-item-desc">{t('trajectory.viewer.vectorPdf')}</span>
                     </div>
                   </button>
                   <button
@@ -880,12 +904,12 @@ export function TaskTrajectoryViewer({
                       setExportMenuOpen(false)
                       await handleExportPdf('download')
                     }}
-                    title="Directly download a .pdf document file"
+                    title={t('trajectory.viewer.downloadPdfHint')}
                   >
                     <Download size={14} />
                     <div className="export-item-text">
-                      <span className="export-item-title">Download PDF File</span>
-                      <span className="export-item-desc">Direct .pdf file download</span>
+                      <span className="export-item-title">{t('trajectory.viewer.downloadPdf')}</span>
+                      <span className="export-item-desc">{t('trajectory.viewer.directPdf')}</span>
                     </div>
                   </button>
                   <button
@@ -895,12 +919,12 @@ export function TaskTrajectoryViewer({
                       setExportMenuOpen(false)
                       await handleExportPdf('preview')
                     }}
-                    title="Preview formatted report in a new browser tab"
+                    title={t('trajectory.viewer.previewHint')}
                   >
                     <ExternalLink size={14} />
                     <div className="export-item-text">
-                      <span className="export-item-title">Preview in New Tab</span>
-                      <span className="export-item-desc">View full HTML report before printing</span>
+                      <span className="export-item-title">{t('trajectory.viewer.previewTab')}</span>
+                      <span className="export-item-desc">{t('trajectory.viewer.previewDescription')}</span>
                     </div>
                   </button>
                 </div>
@@ -910,9 +934,9 @@ export function TaskTrajectoryViewer({
               type="button"
               className="btn-secondary"
               onClick={onBackToTasks}
-              title="Return to origin screen"
+              title={t('trajectory.viewer.backHint')}
             >
-              ← {backLabel || 'Back to tasks'}
+              ← {backLabel || t('trajectory.viewer.back')}
             </button>
           </div>
         </div>
@@ -920,36 +944,36 @@ export function TaskTrajectoryViewer({
         {/* Aggregate Metrics Bar */}
         <div className="trajectory-metrics-strip">
           <div className="metric-item">
-            <span className="metric-label">Total Steps</span>
+            <span className="metric-label">{t('trajectory.viewer.totalSteps')}</span>
             <span className="metric-value">{metrics.totalSteps}</span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">Tool Calls</span>
+            <span className="metric-label">{t('trajectory.viewer.toolCalls')}</span>
             <span className="metric-value">{metrics.toolCallsCount}</span>
           </div>
           <div className="metric-item">
-            <span className="metric-label">Total Duration</span>
-            <span className="metric-value">{(metrics.durationMs / 1000).toFixed(2)}s</span>
+            <span className="metric-label">{t('trajectory.viewer.totalDuration')}</span>
+            <span className="metric-value">{t('trajectory.viewer.durationSeconds', { seconds: formatNumber(metrics.durationMs / 1000, { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }) })}</span>
           </div>
           {metrics.providerStats && metrics.providerStats.totalCalls > 0 && (
             <div
               className={`metric-item clickable-metric ${viewMode === 'providers' ? 'active' : ''}`}
               onClick={() => setViewMode('providers')}
-              title="Click to view LLM provider call statistics and ledger"
+              title={t('trajectory.viewer.providerStatsHint')}
               role="button"
               tabIndex={0}
             >
-              <span className="metric-label">Provider Calls</span>
+              <span className="metric-label">{t('trajectory.viewer.providerCalls')}</span>
               <div className="metric-value provider-calls-val">
                 <span>{metrics.providerStats.totalCalls}</span>
                 {metrics.providerStats.failedCalls > 0 && (
-                  <span className="metric-badge err" title={`${metrics.providerStats.failedCalls} failed calls`}>
-                    {metrics.providerStats.failedCalls} failed
+                  <span className="metric-badge err" title={t('trajectory.viewer.failedCallsHint', { count: metrics.providerStats.failedCalls })}>
+                    {t('trajectory.viewer.failedCallsCount', { count: metrics.providerStats.failedCalls })}
                   </span>
                 )}
                 {metrics.providerStats.totalRetries > 0 && (
-                  <span className="metric-badge warn" title={`${metrics.providerStats.totalRetries} retries`}>
-                    {metrics.providerStats.totalRetries} retry
+                  <span className="metric-badge warn" title={t('trajectory.viewer.retriesHint', { count: metrics.providerStats.totalRetries })}>
+                    {t('trajectory.viewer.retryCount', { count: metrics.providerStats.totalRetries })}
                   </span>
                 )}
               </div>
@@ -958,23 +982,22 @@ export function TaskTrajectoryViewer({
           {metrics.totalTokens > 0 && (
             <>
               <div className="metric-item">
-                <span className="metric-label">Total Tokens</span>
+                <span className="metric-label">{t('trajectory.viewer.totalTokens')}</span>
                 <span className="metric-value token-total">
-                  {metrics.totalTokens.toLocaleString()}
+                  {formatNumber(metrics.totalTokens)}
                 </span>
               </div>
               <div className="metric-item token-breakdown-item">
-                <span className="metric-label">Token Breakdown</span>
+                <span className="metric-label">{t('trajectory.viewer.tokenBreakdown')}</span>
                 <span className="metric-subtext">
-                  ↑ {metrics.inputTokens.toLocaleString()} prompt • ↓{' '}
-                  {metrics.outputTokens.toLocaleString()} output
+                  {t('trajectory.viewer.tokenBreakdownValue', { input: formatNumber(metrics.inputTokens), output: formatNumber(metrics.outputTokens) })}
                 </span>
               </div>
             </>
           )}
           {metrics.providerStats && Object.keys(metrics.providerStats.byProvider).length > 0 && (
             <div className="metric-item provider-breakdown-item">
-              <span className="metric-label">Providers</span>
+              <span className="metric-label">{t('trajectory.viewer.providers')}</span>
               <div className="tool-freq-chips">
                 {Object.entries(metrics.providerStats.byProvider).map(([pName, pStat]) => (
                   <button
@@ -982,7 +1005,7 @@ export function TaskTrajectoryViewer({
                     type="button"
                     className="tool-freq-chip provider-chip"
                     onClick={() => setViewMode('providers')}
-                    title={`${pName}: ${pStat.totalCalls} calls (${pStat.successfulCalls} ok, ${pStat.failedCalls} fail, ${pStat.retries} retries), avg ${Math.round(pStat.avgDurationMs)}ms`}
+                    title={t('trajectory.viewer.providerSummary', { provider: pName, calls: pStat.totalCalls, successful: pStat.successfulCalls, failed: pStat.failedCalls, retries: pStat.retries, duration: Math.round(pStat.avgDurationMs) })}
                   >
                     <code>{pName}</code> ×{pStat.totalCalls}
                     {pStat.failedCalls > 0 && <span className="chip-badge err">!{pStat.failedCalls}</span>}
@@ -994,10 +1017,10 @@ export function TaskTrajectoryViewer({
           )}
           {Object.keys(metrics.toolUsageFrequencies).length > 0 && (
             <div className="metric-item tool-freq-item">
-              <span className="metric-label">Tools Used</span>
+              <span className="metric-label">{t('trajectory.viewer.toolsUsed')}</span>
               <div className="tool-freq-chips">
                 {Object.entries(metrics.toolUsageFrequencies).map(([name, count]) => (
-                  <span key={name} className="tool-freq-chip" title={`${name}: ${count} calls`}>
+                  <span key={name} className="tool-freq-chip" title={t('trajectory.viewer.toolSummary', { name, count })}>
                     <code>{name}</code> ×{count}
                   </span>
                 ))}
@@ -1011,20 +1034,19 @@ export function TaskTrajectoryViewer({
       {isContinuableStatus(String(run.status)) && !liveInspect && onContinueTask && onOpenContinueModal && (
         <div className="cancelled-warning-banner">
           <div className="cancelled-warning-content">
-            <h4>⚠️ Incomplete run — continue from saved progress summary</h4>
+            <h4>{t('trajectory.viewer.incompleteRun')}</h4>
             {failureReason && (
               <p style={{ marginTop: 4, marginBottom: 8, color: '#f87171', fontWeight: 500 }}>
-                <strong>Failure Reason:</strong> {failureReason}
+                <strong>{t('trajectory.viewer.failureReason')}</strong> {failureReason}
               </p>
             )}
             {resumeSubtaskTitle && (
               <p style={{ marginTop: 2, marginBottom: 6, color: '#93c5fd' }}>
-                Target Subtask to Resume: <strong style={{ color: '#60a5fa' }}>{resumeSubtaskTitle}</strong> {resumeSubtaskId ? `(${resumeSubtaskId})` : ''}
+                {t('trajectory.viewer.resumeTarget')} <strong style={{ color: '#60a5fa' }}>{resumeSubtaskTitle}</strong> {resumeSubtaskId ? `(${resumeSubtaskId})` : ''}
               </p>
             )}
             <p>
-              This execution took {metrics.totalSteps} steps and stopped before completion.
-              Continue starts a <strong>new</strong> run seeded with the summary below.
+              <Trans t={t} i18nKey="trajectory.viewer.continuationDescription" values={{ steps: metrics.totalSteps }} components={{ strong: <strong /> }} />
             </p>
             {run.continuation?.compactedSummary && (
               <div className="continuation-summary-panel">
@@ -1039,7 +1061,7 @@ export function TaskTrajectoryViewer({
                 className="btn-action continue-btn continue-btn-highlight"
                 onClick={() => onContinueTask(run.taskId, 25)}
                 disabled={runningTaskId === run.taskId}
-                title={`Resume subtask "${resumeSubtaskTitle}" with +25 turns`}
+                title={t('trajectory.viewer.resumeHint', { title: resumeSubtaskTitle })}
                 style={{
                   fontWeight: 600,
                   background: '#2563eb',
@@ -1047,7 +1069,7 @@ export function TaskTrajectoryViewer({
                   padding: '6px 14px',
                 }}
               >
-                ⏩ Resume Subtask: {resumeSubtaskTitle} (+25 Turns)
+                {t('trajectory.viewer.resumeSubtask', { title: resumeSubtaskTitle })}
               </button>
             )}
             {[10, 25, 50, 100].map(n => (
@@ -1057,13 +1079,13 @@ export function TaskTrajectoryViewer({
                 className="btn-action continue-btn"
                 onClick={() => onContinueTask(run.taskId, n)}
                 disabled={runningTaskId === run.taskId}
-                title={`New run with +${n} extra turns on this task`}
+                title={t('trajectory.viewer.extraTaskTurnsHint', { count: n })}
               >
-                ⏩ +{n} Turns
+                {t('trajectory.viewer.extraTurns', { count: n })}
               </button>
             ))}
             <div className="banner-turns-control">
-              <label htmlFor="banner-extra-turns-nav">Extra:</label>
+              <label htmlFor="banner-extra-turns-nav">{t('trajectory.viewer.extra')}</label>
               <input
                 id="banner-extra-turns-nav"
                 type="number"
@@ -1082,9 +1104,9 @@ export function TaskTrajectoryViewer({
                 className="btn-action continue-btn"
                 onClick={() => onContinueTask(run.taskId, Math.max(1, bannerCustomTurns))}
                 disabled={runningTaskId === run.taskId}
-                title={`New run with +${bannerCustomTurns} extra turns`}
+                title={t('trajectory.viewer.extraTurnsHint', { count: bannerCustomTurns })}
               >
-                ⏩ Run (+{bannerCustomTurns})
+                {t('trajectory.viewer.runExtra', { count: bannerCustomTurns })}
               </button>
             </div>
             <button
@@ -1103,9 +1125,9 @@ export function TaskTrajectoryViewer({
                 )
               }
               disabled={runningTaskId === run.taskId}
-              title="Configure custom turn budget and options"
+              title={t('trajectory.viewer.customTurnsHint')}
             >
-              ⚙️ Specified Turns...
+              {t('trajectory.viewer.specifiedTurns')}
             </button>
           </div>
         </div>
@@ -1118,9 +1140,9 @@ export function TaskTrajectoryViewer({
             <div className="prompt-inspector-title-group">
               <div className="prompt-inspector-icon">🧠</div>
               <div>
-                <h4 className="prompt-inspector-title">Composed System Prompt & Active Rules</h4>
+                <h4 className="prompt-inspector-title">{t('trajectory.viewer.promptRules')}</h4>
                 <span className="prompt-inspector-subtitle">
-                  Inspect the exact system instructions and active rules injected into this task
+                  {t('trajectory.viewer.promptRulesDescription')}
                 </span>
               </div>
             </div>
@@ -1129,7 +1151,7 @@ export function TaskTrajectoryViewer({
               className="btn-secondary prompt-inspector-toggle-btn"
               onClick={() => setShowPromptInspector(!showPromptInspector)}
             >
-              {showPromptInspector ? '▲ Hide Prompt & Rules' : '▼ Inspect Prompt & Rules'}
+              {showPromptInspector ? t('trajectory.viewer.hidePromptRules') : t('trajectory.viewer.inspectPromptRules')}
             </button>
           </div>
 
@@ -1137,7 +1159,7 @@ export function TaskTrajectoryViewer({
             <div className="prompt-inspector-body">
               {activeRules && activeRules.length > 0 && (
                 <div className="prompt-rules-section">
-                  <h5 className="prompt-rules-title">Active Rules Applied ({activeRules.length}):</h5>
+                  <h5 className="prompt-rules-title">{t('trajectory.viewer.activeRules', { count: activeRules.length })}</h5>
                   <div className="prompt-rules-chips">
                     {activeRules.map((rule, rIdx) => (
                       <div
@@ -1145,7 +1167,7 @@ export function TaskTrajectoryViewer({
                         className={`prompt-rule-chip ${rule.global ? 'global' : 'project'}`}
                       >
                         <span className="rule-badge-type">
-                          {rule.global ? '🌍 Global' : '📁 Project'}
+                          {rule.global ? t('trajectory.viewer.globalRule') : t('trajectory.viewer.projectRule')}
                         </span>
                         <span className="rule-badge-name">{rule.name}</span>
                         {rule.description && (
@@ -1168,23 +1190,23 @@ export function TaskTrajectoryViewer({
                         className={`prompt-tab-btn ${promptInspectorMode === 'markdown' ? 'active' : ''}`}
                         onClick={() => setPromptInspectorMode('markdown')}
                       >
-                        Markdown Preview
+                        {t('trajectory.viewer.markdownPreview')}
                       </button>
                       <button
                         type="button"
                         className={`prompt-tab-btn ${promptInspectorMode === 'raw' ? 'active' : ''}`}
                         onClick={() => setPromptInspectorMode('raw')}
                       >
-                        Raw Monospace
+                        {t('trajectory.viewer.rawMonospace')}
                       </button>
                     </div>
                     <button
                       type="button"
                       className={`prompt-copy-btn ${copiedSystemPrompt ? 'copied' : ''}`}
                       onClick={() => handleCopySystemPrompt(systemPrompt)}
-                      title="Copy full system prompt"
+                      title={t('trajectory.viewer.copyFullSystemPrompt')}
                     >
-                      {copiedSystemPrompt ? '✓ Copied Prompt' : '📋 Copy Prompt'}
+                      {copiedSystemPrompt ? t('trajectory.viewer.copiedPrompt') : t('trajectory.viewer.copyPrompt')}
                     </button>
                   </div>
 
@@ -1213,15 +1235,15 @@ export function TaskTrajectoryViewer({
             <div className="final-answer-title-group">
               <h4 className="final-answer-title">
                 {String(run.status).toLowerCase() === 'success' || liveInspect
-                  ? '🏁 Final Agent Answer'
-                  : '❌ Task Conclusion / Failure Report'}
+                  ? t('trajectory.viewer.finalAgentAnswer')
+                  : t('trajectory.viewer.failureReport')}
               </h4>
               <span
                 className={`status-badge ${
                   liveInspect ? 'running' : String(run.status).toLowerCase()
                 }`}
               >
-                {liveInspect ? 'RUNNING' : String(run.status).toUpperCase()}
+                {statusLabel(liveInspect ? 'running' : String(run.status))}
               </span>
             </div>
             <div className="final-answer-actions">
@@ -1230,34 +1252,34 @@ export function TaskTrajectoryViewer({
                   type="button"
                   className={`final-answer-tab-btn ${finalAnswerMode === 'markdown' ? 'active' : ''}`}
                   onClick={() => setFinalAnswerMode('markdown')}
-                  title="View formatted Markdown"
+                  title={t('trajectory.viewer.markdownHint')}
                 >
-                  Markdown
+                  {t('trajectory.viewer.markdown')}
                 </button>
                 <button
                   type="button"
                   className={`final-answer-tab-btn ${finalAnswerMode === 'raw' ? 'active' : ''}`}
                   onClick={() => setFinalAnswerMode('raw')}
-                  title="View raw monospace text"
+                  title={t('trajectory.viewer.rawTextHint')}
                 >
-                  Raw Text
+                  {t('trajectory.viewer.rawText')}
                 </button>
               </div>
               <button
                 type="button"
                 className={`final-answer-copy-btn ${copiedFinalAnswer ? 'copied' : ''}`}
                 onClick={() => handleCopyFinalAnswer(finalAnswer)}
-                title="Copy final answer to clipboard"
+                title={t('trajectory.viewer.copyFinalAnswer')}
               >
-                {copiedFinalAnswer ? '✓ Copied' : '📋 Copy'}
+                {copiedFinalAnswer ? t('trajectory.viewer.copied') : t('trajectory.viewer.copy')}
               </button>
               <button
                 type="button"
                 className="final-answer-copy-btn export-pdf-btn"
                 onClick={() => void handleExportPdf('print')}
-                title="Export basic info and conclusion as PDF"
+                title={t('trajectory.viewer.exportConclusionHint')}
               >
-                <FileText size={12} /> Export PDF
+                <FileText size={12} /> {t('trajectory.viewer.exportPdf')}
               </button>
             </div>
           </div>
@@ -1266,7 +1288,7 @@ export function TaskTrajectoryViewer({
           {mentionedFiles.length > 0 && (
             <div className="final-answer-mentioned-files">
               <div className="mentioned-files-label">
-                <span>📎 Mentioned Files ({mentionedFiles.length}):</span>
+                <span>{t('trajectory.viewer.mentionedFiles', { count: mentionedFiles.length })}</span>
               </div>
               <div className="mentioned-files-chips">
                 {mentionedFiles.map((file) => {
@@ -1278,7 +1300,7 @@ export function TaskTrajectoryViewer({
                       type="button"
                       className="mentioned-file-chip"
                       onClick={() => setPreviewFilePath(file)}
-                      title={`Click to preview file: ${file}`}
+                      title={t('trajectory.viewer.previewFileHint', { file })}
                     >
                       <span className="file-chip-icon">{icon}</span>
                       <span className="file-chip-name">{fileName}</span>
@@ -1317,7 +1339,7 @@ export function TaskTrajectoryViewer({
             api={api}
             projectSlug={effectiveProjectSlug}
             onSelect={(task, text) => {
-              void runWithSelection(task, formatSelectionExtraPrompt('Final Agent Answer', text))
+              void runWithSelection(task, formatSelectionExtraPrompt(t('trajectory.viewer.selectionSource'), text))
             }}
           />
         </div>
@@ -1332,33 +1354,33 @@ export function TaskTrajectoryViewer({
               type="button"
               className={`view-mode-btn ${viewMode === 'log' ? 'active' : ''}`}
               onClick={() => setViewMode('log')}
-              title="Agent conversation log — thinking, tools, and replies in order"
+              title={t('trajectory.viewer.agentLogHint')}
             >
-              <MessagesSquare size={14} /> Agent Log
+              <MessagesSquare size={14} /> {t('trajectory.viewer.agentLog')}
             </button>
             <button
               type="button"
               className={`view-mode-btn ${viewMode === 'split' ? 'active' : ''}`}
               onClick={() => setViewMode('split')}
-              title="Split Inspector View (Master-Detail)"
+              title={t('trajectory.viewer.splitHint')}
             >
-              <Layers size={14} /> Split Inspector
+              <Layers size={14} /> {t('trajectory.viewer.splitInspector')}
             </button>
             <button
               type="button"
               className={`view-mode-btn ${viewMode === 'stream' ? 'active' : ''}`}
               onClick={() => setViewMode('stream')}
-              title="Stream Timeline View (Continuous Chronological Scroll)"
+              title={t('trajectory.viewer.streamHint')}
             >
-              <SlidersHorizontal size={14} /> Stream Timeline
+              <SlidersHorizontal size={14} /> {t('trajectory.viewer.streamTimeline')}
             </button>
             <button
               type="button"
               className={`view-mode-btn ${viewMode === 'providers' ? 'active' : ''}`}
               onClick={() => setViewMode('providers')}
-              title="LLM Provider Calls & Performance Statistics"
+              title={t('trajectory.viewer.providerCallsHint')}
             >
-              <Zap size={14} /> Provider Stats{metrics.providerStats?.totalCalls ? ` (${metrics.providerStats.totalCalls})` : ''}
+              <Zap size={14} /> {t('trajectory.viewer.providerStats')}{metrics.providerStats?.totalCalls ? ` (${metrics.providerStats.totalCalls})` : ''}
             </button>
           </div>
 
@@ -1367,28 +1389,28 @@ export function TaskTrajectoryViewer({
               <label className="agent-log-filter">
                 <Filter size={14} aria-hidden="true" />
                 <select
-                  aria-label="Filter log"
+                  aria-label={t('trajectory.viewer.filterLog')}
                   value={filterType}
                   onChange={event => setFilterType(event.target.value as TrajectoryFilterType)}
                 >
-                  <option value="all">All ({steps.length})</option>
-                  <option value="tools">Tools ({toolStepCount})</option>
-                  <option value="final_answer">Answer ({answerStepCount})</option>
-                  <option value="yield">Stops ({stopStepCount})</option>
-                  <option value="telemetry">Telemetry ({telemetryStepCount})</option>
+                  <option value="all">{t('trajectory.viewer.filterAll', { count: steps.length })}</option>
+                  <option value="tools">{t('trajectory.viewer.filterTools', { count: toolStepCount })}</option>
+                  <option value="final_answer">{t('trajectory.viewer.filterAnswer', { count: answerStepCount })}</option>
+                  <option value="yield">{t('trajectory.viewer.filterStops', { count: stopStepCount })}</option>
+                  <option value="telemetry">{t('trajectory.viewer.filterTelemetry', { count: telemetryStepCount })}</option>
                 </select>
               </label>
-              <label className="agent-log-pagesize" title="Turns per page">
+              <label className="agent-log-pagesize" title={t('trajectory.viewer.turnsPerPage')}>
                 <Layers size={14} aria-hidden="true" />
                 <select
-                  aria-label="Turns per page"
+                  aria-label={t('trajectory.viewer.turnsPerPage')}
                   value={logPageSize}
                   onChange={e => handleLogPageSizeChange(Number(e.target.value))}
                 >
-                  <option value={25}>25 / page</option>
-                  <option value={50}>50 / page</option>
-                  <option value={100}>100 / page</option>
-                  <option value={0}>All turns</option>
+                  <option value={25}>{t('trajectory.viewer.pageSize25')}</option>
+                  <option value={50}>{t('trajectory.viewer.pageSize50')}</option>
+                  <option value={100}>{t('trajectory.viewer.pageSize100')}</option>
+                  <option value={0}>{t('trajectory.viewer.allTurns')}</option>
                 </select>
               </label>
             </>
@@ -1399,35 +1421,35 @@ export function TaskTrajectoryViewer({
                 className={`filter-pill ${filterType === 'all' ? 'active' : ''}`}
                 onClick={() => setFilterType('all')}
               >
-                All ({steps.length})
+                {t('trajectory.viewer.filterAll', { count: steps.length })}
               </button>
               <button
                 type="button"
                 className={`filter-pill ${filterType === 'tools' ? 'active' : ''}`}
                 onClick={() => setFilterType('tools')}
               >
-                🛠️ Tools ({toolStepCount})
+                {t('trajectory.viewer.filterToolsIcon', { count: toolStepCount })}
               </button>
               <button
                 type="button"
                 className={`filter-pill ${filterType === 'final_answer' ? 'active' : ''}`}
                 onClick={() => setFilterType('final_answer')}
               >
-                🏁 Answer ({answerStepCount})
+                {t('trajectory.viewer.filterAnswerIcon', { count: answerStepCount })}
               </button>
               <button
                 type="button"
                 className={`filter-pill ${filterType === 'yield' ? 'active' : ''}`}
                 onClick={() => setFilterType('yield')}
               >
-                ⏸️ Stops ({stopStepCount})
+                {t('trajectory.viewer.filterStopsIcon', { count: stopStepCount })}
               </button>
               <button
                 type="button"
                 className={`filter-pill ${filterType === 'telemetry' ? 'active' : ''}`}
                 onClick={() => setFilterType('telemetry')}
               >
-                🤖 Telemetry ({telemetryStepCount})
+                {t('trajectory.viewer.filterTelemetryIcon', { count: telemetryStepCount })}
               </button>
             </div>
           )}
@@ -1436,7 +1458,7 @@ export function TaskTrajectoryViewer({
             <Search size={14} className="search-icon" />
             <input
               type="text"
-              placeholder="Search steps, tools, prompts… (Esc to clear)"
+              placeholder={t('trajectory.viewer.searchPlaceholder')}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="trajectory-search-input"
@@ -1446,7 +1468,7 @@ export function TaskTrajectoryViewer({
                 type="button"
                 className="search-clear-btn"
                 onClick={() => setSearchQuery('')}
-                title="Clear search"
+                title={t('trajectory.viewer.clearSearch')}
               >
                 ✕
               </button>
@@ -1462,22 +1484,21 @@ export function TaskTrajectoryViewer({
                 className="stepper-btn"
                 onClick={() => handleLogPageChange(1)}
                 disabled={loadingPage || logPage <= 1}
-                title="First page"
+                title={t('trajectory.viewer.firstPage')}
               >
-                « First
+                {t('trajectory.viewer.first')}
               </button>
               <button
                 type="button"
                 className="stepper-btn"
                 onClick={() => handleLogPageChange(logPage - 1)}
                 disabled={loadingPage || logPage <= 1}
-                title="Previous page"
+                title={t('trajectory.viewer.previousPage')}
               >
-                <ChevronLeft size={14} /> Prev
+                <ChevronLeft size={14} /> {t('trajectory.viewer.previous')}
               </button>
               <span className="stepper-count-indicator">
-                Page <strong>{logPage}</strong> of{' '}
-                <strong>{logPagination.totalPages}</strong>
+                <Trans t={t} i18nKey="trajectory.viewer.pageIndicator" values={{ page: logPage, total: logPagination.totalPages }} components={{ current: <strong />, total: <strong /> }} />
                 {loadingPage && <span className="stepper-loading-tag"> …</span>}
               </span>
               <button
@@ -1485,30 +1506,30 @@ export function TaskTrajectoryViewer({
                 className="stepper-btn"
                 onClick={() => handleLogPageChange(logPage + 1)}
                 disabled={loadingPage || logPage >= logPagination.totalPages}
-                title="Next page"
+                title={t('trajectory.viewer.nextPage')}
               >
-                Next <ChevronRight size={14} />
+                {t('trajectory.viewer.next')} <ChevronRight size={14} />
               </button>
               <button
                 type="button"
                 className="stepper-btn"
                 onClick={() => handleLogPageChange(logPagination.totalPages)}
                 disabled={loadingPage || logPage >= logPagination.totalPages}
-                title="Last page"
+                title={t('trajectory.viewer.lastPage')}
               >
-                Last »
+                {t('trajectory.viewer.last')}
               </button>
             </div>
             <div className="agent-log-pagination-summary">
               {logPagination.totalTurns > 0 ? (
                 <>
-                  Showing turns <strong>{logPagination.startIndex + 1}–{logPagination.endIndex}</strong> of <strong>{logPagination.totalTurns}</strong>
+                  <Trans t={t} i18nKey="trajectory.viewer.turnRange" values={{ start: logPagination.startIndex + 1, end: logPagination.endIndex, total: logPagination.totalTurns }} components={{ range: <strong />, total: <strong /> }} />
                   {logPagination.totalTurns < agentLog.length && (
-                    <span className="agent-log-filtered-tag"> (filtered from {agentLog.length})</span>
+                    <span className="agent-log-filtered-tag"> {t('trajectory.viewer.filteredFrom', { count: agentLog.length })}</span>
                   )}
                 </>
               ) : (
-                <span>0 turns</span>
+                <span>{t('trajectory.viewer.zeroTurns')}</span>
               )}
             </div>
           </div>
@@ -1522,15 +1543,14 @@ export function TaskTrajectoryViewer({
               className="stepper-btn"
               onClick={() => setSelectedStepIdx(prev => Math.max(0, prev - 1))}
               disabled={selectedStepIdx <= 0 || steps.length === 0}
-              title="Previous step (Shortcut: k or ArrowLeft)"
+              title={t('trajectory.viewer.previousStepHint')}
             >
-              <ChevronLeft size={14} /> Prev
+              <ChevronLeft size={14} /> {t('trajectory.viewer.previous')}
             </button>
             <span className="stepper-count-indicator">
-              Step <strong>{steps.length > 0 ? selectedStepIdx + 1 : 0}</strong> of{' '}
-              <strong>{steps.length}</strong>
+              <Trans t={t} i18nKey="trajectory.viewer.stepIndicator" values={{ step: steps.length > 0 ? selectedStepIdx + 1 : 0, total: steps.length }} components={{ current: <strong />, total: <strong /> }} />
               {filteredSteps.length !== steps.length && (
-                <span className="filtered-hint">({filteredSteps.length} matches)</span>
+                <span className="filtered-hint">{t('trajectory.viewer.matches', { count: filteredSteps.length })}</span>
               )}
             </span>
             <button
@@ -1538,9 +1558,9 @@ export function TaskTrajectoryViewer({
               className="stepper-btn"
               onClick={() => setSelectedStepIdx(prev => Math.min(steps.length - 1, prev + 1))}
               disabled={selectedStepIdx >= steps.length - 1 || steps.length === 0}
-              title="Next step (Shortcut: j or ArrowRight)"
+              title={t('trajectory.viewer.nextStepHint')}
             >
-              Next <ChevronRight size={14} />
+              {t('trajectory.viewer.next')} <ChevronRight size={14} />
             </button>
             {finalAnswer && (
               <button
@@ -1554,9 +1574,9 @@ export function TaskTrajectoryViewer({
                     jumpToStep(finalIdx)
                   }
                 }}
-                title="Jump directly to Final Answer step (Shortcut: f)"
+                title={t('trajectory.viewer.jumpAnswerHint')}
               >
-                🏁 Jump to Answer
+                {t('trajectory.viewer.jumpAnswer')}
               </button>
             )}
           </div>
@@ -1564,7 +1584,7 @@ export function TaskTrajectoryViewer({
           <div className="toolbar-options-right">
             <label
               className="trajectory-llm-toggle-label"
-              title="Expand complete prompt messages and raw LLM completions by default for all steps"
+              title={t('trajectory.viewer.expandTelemetryHint')}
             >
               <input
                 type="checkbox"
@@ -1573,11 +1593,11 @@ export function TaskTrajectoryViewer({
                 onChange={e => setShowAllLlmTelemetry(e.target.checked)}
               />
               <span className="trajectory-toggle-title">
-                🤖 Expand Complete LLM Prompts & Responses
+                {t('trajectory.viewer.expandTelemetry')}
               </span>
             </label>
-            <span className="keyboard-hint" title="Use keyboard shortcuts: J / K to move between steps, F for Final Answer">
-              ⌨️ Shortcuts: <kbd>J</kbd> / <kbd>K</kbd> to step
+            <span className="keyboard-hint" title={t('trajectory.viewer.shortcutsHint')}>
+              <Trans t={t} i18nKey="trajectory.viewer.shortcuts" components={{ j: <kbd />, k: <kbd /> }} />
             </span>
           </div>
         </div>
@@ -1619,11 +1639,16 @@ export function TaskTrajectoryViewer({
                     !isFilteredIn ? 'dimmed' : ''
                   }`}
                   onClick={() => jumpToStep(idx)}
-                  title={`Step #${step.stepIndex} (${step.durationMs}ms)${
-                    action.toolCalls
-                      ? `\nTools: ${action.toolCalls.map(t => t.name).join(', ')}`
-                      : ''
-                  }${hasTelemetry ? '\nLLM Telemetry available' : ''}`}
+                  title={t('trajectory.viewer.scrubberTitle', {
+                    step: step.stepIndex,
+                    duration: step.durationMs,
+                    tools: action.toolCalls
+                      ? `\n${t('trajectory.viewer.scrubberTools', {
+                          tools: action.toolCalls.map(tool => tool.name).join(', '),
+                        })}`
+                      : '',
+                    telemetry: hasTelemetry ? `\n${t('trajectory.viewer.scrubberTelemetry')}` : '',
+                  })}
                 >
                   <span className="scrubber-pill-num">#{step.stepIndex}</span>
                   <span className="scrubber-pill-icon">{badgeIcon}</span>
@@ -1642,8 +1667,8 @@ export function TaskTrajectoryViewer({
         <div className="empty-trajectory-card">
           <p className="empty-text">
             {liveInspect
-              ? 'Waiting for the first agent step… this view refreshes automatically while the task is running.'
-              : 'No trajectory steps recorded for this run.'}
+              ? t('trajectory.viewer.waitingSteps')
+              : t('trajectory.viewer.noSteps')}
           </p>
         </div>
       )}
@@ -1679,7 +1704,7 @@ export function TaskTrajectoryViewer({
           api={api}
           projectSlug={effectiveProjectSlug}
           onSelectDynamicTask={(task, text) => {
-            void runWithSelection(task, formatSelectionExtraPrompt('Final Agent Answer', text))
+            void runWithSelection(task, formatSelectionExtraPrompt(t('trajectory.viewer.selectionSource'), text))
           }}
           finalAnswer={finalAnswer}
           failureReason={failureReason}
@@ -1723,15 +1748,15 @@ export function TaskTrajectoryViewer({
           {/* Left Step Navigator Rail */}
           <aside className="trajectory-step-sidebar">
             <div className="sidebar-header-row">
-              <span className="sidebar-title">Trajectory Steps</span>
+              <span className="sidebar-title">{t('trajectory.viewer.trajectorySteps')}</span>
               <span className="sidebar-counter">
-                {filteredSteps.length} of {steps.length}
+                {t('trajectory.viewer.stepCount', { count: filteredSteps.length, total: steps.length })}
               </span>
             </div>
 
             <div className="sidebar-steps-list">
               {filteredSteps.length === 0 ? (
-                <div className="sidebar-empty-hint">No steps match filter / search query.</div>
+                <div className="sidebar-empty-hint">{t('trajectory.viewer.noSearchSteps')}</div>
               ) : (
                 filteredSteps.map(({ step, originalIndex, parsedAction, telemetry }) => {
                   const isSelected = selectedStepIdx === originalIndex
@@ -1747,9 +1772,9 @@ export function TaskTrajectoryViewer({
                       onClick={() => setSelectedStepIdx(originalIndex)}
                     >
                       <div className="sidebar-step-top">
-                        <span className="step-num-badge">Step #{step.stepIndex}</span>
+                        <span className="step-num-badge">{t('trajectory.viewer.stepNumber', { step: step.stepIndex })}</span>
                         <span className="step-time-badge">
-                          {new Date(step.timestamp).toLocaleTimeString([], {
+                          {formatTime(new Date(step.timestamp), {
                             hour: '2-digit',
                             minute: '2-digit',
                             second: '2-digit',
@@ -1759,7 +1784,7 @@ export function TaskTrajectoryViewer({
 
                       <div className="sidebar-step-action-desc">
                         {isFinal && (
-                          <span className="step-action-tag final-answer">🏁 Final Answer</span>
+                          <span className="step-action-tag final-answer">{t('trajectory.viewer.finalAnswer')}</span>
                         )}
                         {parsedAction.kind === 'call_tools' && (
                           <div className="sidebar-tools-list">
@@ -1769,27 +1794,27 @@ export function TaskTrajectoryViewer({
                               </span>
                             ))}
                             {toolCalls.length > 3 && (
-                              <span className="sidebar-tool-more">+{toolCalls.length - 3} more</span>
+                              <span className="sidebar-tool-more">{t('trajectory.viewer.moreTools', { count: toolCalls.length - 3 })}</span>
                             )}
                           </div>
                         )}
                         {parsedAction.kind === 'yield_control' && (
-                          <span className="step-action-tag yield-control">⏸️ Yield Control</span>
+                          <span className="step-action-tag yield-control">{t('trajectory.viewer.yieldControl')}</span>
                         )}
                         {parsedAction.kind === 'request_input' && (
-                          <span className="step-action-tag request-input">💬 Request Input</span>
+                          <span className="step-action-tag request-input">{t('trajectory.viewer.requestInput')}</span>
                         )}
                       </div>
 
                       <div className="sidebar-step-footer">
-                        <span className="step-duration-text">⏱️ {step.durationMs}ms</span>
+                        <span className="step-duration-text">{t('trajectory.viewer.stepDuration', { duration: step.durationMs })}</span>
                         {telemetry?.totalTokens && (
                           <span className="step-tokens-text">
-                            ⚡ {telemetry.totalTokens.toLocaleString()} tok
+                            {t('trajectory.viewer.compactTokens', { tokens: formatNumber(telemetry.totalTokens) })}
                           </span>
                         )}
                         {telemetry && (
-                          <span className="sidebar-telemetry-indicator" title="LLM Turn Telemetry Available">
+                          <span className="sidebar-telemetry-indicator" title={t('trajectory.viewer.telemetryAvailable')}>
                             🤖
                           </span>
                         )}
@@ -1854,7 +1879,7 @@ export function TaskTrajectoryViewer({
       {viewMode === 'stream' && steps.length > 0 && (
         <div className="trajectory-timeline" ref={timelineContainerRef}>
           {filteredSteps.length === 0 ? (
-            <div className="empty-card">No steps match filter / search criteria.</div>
+            <div className="empty-card">{t('trajectory.viewer.noFilterSteps')}</div>
           ) : (
             filteredSteps.map(({ step, originalIndex }) => (
               <div
@@ -1988,6 +2013,21 @@ function StepDetailCard({
   onCopyResponse,
   onCopyMessageText,
 }: StepDetailCardProps) {
+  const { t } = useTranslation()
+  const roleLabel = (role: string) => {
+    switch (role) {
+      case 'user':
+        return t('trajectory.viewer.roleUser')
+      case 'assistant':
+        return t('trajectory.viewer.roleAssistant')
+      case 'tool':
+        return t('trajectory.viewer.roleTool')
+      case 'system':
+        return t('trajectory.viewer.roleSystem')
+      default:
+        return role.toUpperCase()
+    }
+  }
   const parsedAction = parseAgentAction(step.agentAction)
   const telemetry = extractLlmTelemetry(step)
   const isFinalStep = parsedAction.kind === 'final_answer'
@@ -2005,26 +2045,26 @@ function StepDetailCard({
       {/* Step Header */}
       <div className="step-header">
         <div className="step-header-left">
-          <span className="step-index-badge">Step #{step.stepIndex}</span>
+          <span className="step-index-badge">{t('trajectory.viewer.stepNumber', { step: step.stepIndex })}</span>
           <span className="step-time">
-            <Clock size={12} /> {new Date(step.timestamp).toLocaleTimeString()} ({step.durationMs} ms)
+            <Clock size={12} /> {t('trajectory.viewer.stepTime', { time: formatTime(new Date(step.timestamp)), duration: step.durationMs })}
           </span>
         </div>
 
         <div className="step-header-right">
           {telemetry?.totalTokens && (
             <span className="step-token-badge">
-              ⚡ {telemetry.totalTokens.toLocaleString()} tokens
-              {telemetry.tokensPerSec ? ` (${telemetry.tokensPerSec} tok/s)` : ''}
+              {t('trajectory.viewer.tokensValue', { tokens: formatNumber(telemetry.totalTokens) })}
+              {telemetry.tokensPerSec ? ` ${t('trajectory.viewer.tokenSpeedSuffix', { speed: telemetry.tokensPerSec })}` : ''}
             </span>
           )}
           <button
             type="button"
             className="step-toggle-btn"
             onClick={onToggleRawExpanded}
-            title="Toggle raw JSON payload for agentAction"
+            title={t('trajectory.viewer.rawActionHint')}
           >
-            {isRawExpanded ? 'Hide Raw Action JSON' : 'Raw Action JSON'}
+            {isRawExpanded ? t('trajectory.viewer.hideRawAction') : t('trajectory.viewer.rawAction')}
           </button>
         </div>
       </div>
@@ -2033,21 +2073,21 @@ function StepDetailCard({
         {/* ================= 1. AGENT ACTION BOX ================= */}
         <div className="step-action-box">
           <div className="step-action-header-row">
-            <h5>Agent Action:</h5>
+            <h5>{t('trajectory.viewer.agentAction')}</h5>
             <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
               {parsedAction.kind === 'final_answer' && (
-                <span className="step-action-badge final-answer">🏁 Final Answer</span>
+                <span className="step-action-badge final-answer">{t('trajectory.viewer.finalAnswer')}</span>
               )}
               {parsedAction.kind === 'call_tools' && (
                 <span className="step-action-badge call-tools">
-                  🛠️ Tool Calls ({parsedAction.toolCalls?.length ?? 0})
+                  {t('trajectory.viewer.actionCalls', { count: parsedAction.toolCalls?.length ?? 0 })}
                 </span>
               )}
               {parsedAction.kind === 'yield_control' && (
-                <span className="step-action-badge yield-control">⏸️ Yield Control</span>
+                <span className="step-action-badge yield-control">{t('trajectory.viewer.yieldControl')}</span>
               )}
               {parsedAction.kind === 'request_input' && (
-                <span className="step-action-badge request-input">💬 Request Input</span>
+                <span className="step-action-badge request-input">{t('trajectory.viewer.requestInput')}</span>
               )}
             </div>
           </div>
@@ -2079,7 +2119,7 @@ function StepDetailCard({
                                 formatToolArguments(call.arguments),
                               )
                             }
-                            title="Copy arguments"
+                            title={t('trajectory.viewer.copyArguments')}
                           >
                             {copiedMsgIdx === `tool-${stepIdx}-${cIdx}` ? (
                               <Check size={11} className="text-success" />
@@ -2100,12 +2140,12 @@ function StepDetailCard({
               )}
               {parsedAction.kind === 'yield_control' && (
                 <div className="step-yield-box">
-                  <strong>Reason:</strong> {parsedAction.yieldReason || 'None'}
+                  <strong>{t('trajectory.viewer.reason')}</strong> {parsedAction.yieldReason || t('trajectory.viewer.none')}
                 </div>
               )}
               {parsedAction.kind === 'request_input' && (
                 <div className="step-input-box">
-                  <strong>Prompt:</strong> {parsedAction.prompt || 'None'}
+                  <strong>{t('trajectory.viewer.prompt')}</strong> {parsedAction.prompt || t('trajectory.viewer.none')}
                 </div>
               )}
               {parsedAction.kind === 'raw' && (
@@ -2126,14 +2166,14 @@ function StepDetailCard({
                   className={`telemetry-tab-btn ${activeTelemetryTab === 'prompt' ? 'active' : ''}`}
                   onClick={() => setActiveTelemetryTab('prompt')}
                 >
-                  <MessageSquare size={13} /> Full Prompt Sent ({messages.length})
+                  <MessageSquare size={13} /> {t('trajectory.viewer.fullPrompt', { count: messages.length })}
                 </button>
                 <button
                   type="button"
                   className={`telemetry-tab-btn ${activeTelemetryTab === 'response' ? 'active' : ''}`}
                   onClick={() => setActiveTelemetryTab('response')}
                 >
-                  <Bot size={13} /> Raw Model Response
+                  <Bot size={13} /> {t('trajectory.viewer.rawResponse')}
                 </button>
                 {telemetry?.thinking && (
                   <button
@@ -2141,7 +2181,7 @@ function StepDetailCard({
                     className={`telemetry-tab-btn ${activeTelemetryTab === 'thinking' ? 'active' : ''}`}
                     onClick={() => setActiveTelemetryTab('thinking')}
                   >
-                    <Sparkles size={13} /> Reasoning / Thinking
+                    <Sparkles size={13} /> {t('trajectory.viewer.reasoning')}
                   </button>
                 )}
                 {telemetry?.totalTokens && (
@@ -2150,7 +2190,7 @@ function StepDetailCard({
                     className={`telemetry-tab-btn ${activeTelemetryTab === 'tokens' ? 'active' : ''}`}
                     onClick={() => setActiveTelemetryTab('tokens')}
                   >
-                    <Zap size={13} /> Tokens & Latency
+                    <Zap size={13} /> {t('trajectory.viewer.tokensLatency')}
                   </button>
                 )}
                 <button
@@ -2158,7 +2198,7 @@ function StepDetailCard({
                   className={`telemetry-tab-btn ${activeTelemetryTab === 'raw' ? 'active' : ''}`}
                   onClick={() => setActiveTelemetryTab('raw')}
                 >
-                  <FileCode size={13} /> Raw JSON Payloads
+                  <FileCode size={13} /> {t('trajectory.viewer.rawPayloads')}
                 </button>
                 {telemetry?.providerCalls && telemetry.providerCalls.length > 0 && (
                   <button
@@ -2166,7 +2206,7 @@ function StepDetailCard({
                     className={`telemetry-tab-btn ${activeTelemetryTab === 'provider_calls' ? 'active' : ''}`}
                     onClick={() => setActiveTelemetryTab('provider_calls')}
                   >
-                    <Zap size={13} /> Provider Calls ({telemetry.providerCalls.length})
+                    <Zap size={13} /> {t('trajectory.viewer.telemetryProviderCalls', { count: telemetry.providerCalls.length })}
                   </button>
                 )}
               </div>
@@ -2177,9 +2217,9 @@ function StepDetailCard({
                     type="button"
                     className="step-copy-sub-btn"
                     onClick={() => onCopyPrompt(step.llmRequest)}
-                    title="Copy full prompt payload"
+                    title={t('trajectory.viewer.copyPromptPayload')}
                   >
-                    {copiedPrompt ? '✓ Copied' : '📋 Copy Prompt'}
+                    {copiedPrompt ? t('trajectory.viewer.copied') : t('trajectory.viewer.copyPrompt')}
                   </button>
                 )}
                 {activeTelemetryTab === 'response' && (
@@ -2187,9 +2227,9 @@ function StepDetailCard({
                     type="button"
                     className="step-copy-sub-btn"
                     onClick={() => onCopyResponse(step.llmResponse)}
-                    title="Copy raw response payload"
+                    title={t('trajectory.viewer.copyResponsePayload')}
                   >
-                    {copiedResponse ? '✓ Copied' : '📋 Copy Response'}
+                    {copiedResponse ? t('trajectory.viewer.copied') : t('trajectory.viewer.copyResponse')}
                   </button>
                 )}
               </div>
@@ -2202,7 +2242,7 @@ function StepDetailCard({
                 {telemetry?.systemPrompt && (
                   <details className="step-prompt-system-details" open={showAllLlmTelemetry}>
                     <summary className="step-prompt-system-summary">
-                      <Brain size={13} /> Composed System Instructions ({telemetry.systemPrompt.length} chars)
+                      <Brain size={13} /> {t('trajectory.viewer.systemInstructions', { count: telemetry.systemPrompt.length })}
                     </summary>
                     <div className="system-prompt-actions">
                       <button
@@ -2211,9 +2251,9 @@ function StepDetailCard({
                         onClick={() =>
                           onCopyMessageText(`sys-${stepIdx}`, telemetry.systemPrompt || '')
                         }
-                        title="Copy system prompt"
+                        title={t('trajectory.viewer.copySystemPrompt')}
                       >
-                        {copiedMsgIdx === `sys-${stepIdx}` ? '✓ Copied' : '📋 Copy'}
+                        {copiedMsgIdx === `sys-${stepIdx}` ? t('trajectory.viewer.copied') : t('trajectory.viewer.copy')}
                       </button>
                     </div>
                     <pre className="step-prompt-system-pre">{telemetry.systemPrompt}</pre>
@@ -2224,7 +2264,7 @@ function StepDetailCard({
                 <div className="prompt-messages-toolbar">
                   <div className="msg-role-filters">
                     <span className="toolbar-label">
-                      <Filter size={12} /> Filter Role:
+                      <Filter size={12} /> {t('trajectory.viewer.filterRole')}
                     </span>
                     {(['all', 'user', 'assistant', 'tool', 'system'] as MsgRoleFilter[]).map(role => (
                       <button
@@ -2234,8 +2274,8 @@ function StepDetailCard({
                         onClick={() => setMsgRoleFilter(role)}
                       >
                         {role === 'all'
-                          ? `All (${messages.length})`
-                          : `${role.toUpperCase()} (${messages.filter(m => m.role === role).length})`}
+                          ? t('trajectory.viewer.allMessages', { count: messages.length })
+                          : t('trajectory.viewer.roleCount', { role: roleLabel(role), count: messages.filter(m => m.role === role).length })}
                       </button>
                     ))}
                   </div>
@@ -2246,17 +2286,17 @@ function StepDetailCard({
                         type="button"
                         className={`render-mode-tab ${promptRenderMode === 'monospace' ? 'active' : ''}`}
                         onClick={() => setPromptRenderMode('monospace')}
-                        title="Monospace preformatted text"
+                        title={t('trajectory.viewer.monospaceHint')}
                       >
-                        Monospace
+                        {t('trajectory.viewer.monospace')}
                       </button>
                       <button
                         type="button"
                         className={`render-mode-tab ${promptRenderMode === 'markdown' ? 'active' : ''}`}
                         onClick={() => setPromptRenderMode('markdown')}
-                        title="Render markdown formatting"
+                        title={t('trajectory.viewer.renderMarkdownHint')}
                       >
-                        Markdown
+                        {t('trajectory.viewer.markdown')}
                       </button>
                     </div>
 
@@ -2264,16 +2304,16 @@ function StepDetailCard({
                       type="button"
                       className="expand-all-btn"
                       onClick={() => onToggleExpandAllMessages(messages.length)}
-                      title="Expand or collapse all message bodies"
+                      title={t('trajectory.viewer.expandAllHint')}
                     >
-                      {allMessagesExpanded ? 'Collapse All' : 'Expand All'}
+                      {allMessagesExpanded ? t('trajectory.viewer.collapseAll') : t('trajectory.viewer.expandAll')}
                     </button>
                   </div>
                 </div>
 
                 {/* Message cards */}
                 {filteredMessages.length === 0 ? (
-                  <div className="empty-subcard">No messages match selected role filter.</div>
+                  <div className="empty-subcard">{t('trajectory.viewer.noRoleMessages')}</div>
                 ) : (
                   <div className="prompt-messages-list">
                     {filteredMessages.map((m, mIdx) => {
@@ -2296,17 +2336,17 @@ function StepDetailCard({
                           >
                             <div className="prompt-message-header-left">
                               <span className={`prompt-role-pill ${m.role}`}>
-                                {roleIcon} {m.role.toUpperCase()}
+                                {roleIcon} {roleLabel(m.role)}
                               </span>
-                              <span className="prompt-message-index">Turn #{m.index}</span>
+                              <span className="prompt-message-index">{t('trajectory.viewer.turnNumber', { turn: m.index })}</span>
                               {m.text && (
                                 <span className="msg-length-badge">
-                                  {m.text.length} chars
+                                  {t('trajectory.viewer.shortCharacters', { count: m.text.length })}
                                 </span>
                               )}
                               {m.toolCalls && (
                                 <span className="msg-tool-call-count">
-                                  🛠️ {m.toolCalls.length} tool call(s)
+                                  {t('trajectory.viewer.messageToolCalls', { count: m.toolCalls.length })}
                                 </span>
                               )}
                             </div>
@@ -2324,7 +2364,7 @@ function StepDetailCard({
                                     m.text || JSON.stringify(m.content, null, 2),
                                   )
                                 }
-                                title="Copy message text"
+                                title={t('trajectory.viewer.copyMessage')}
                               >
                                 {copiedMsgIdx === msgId ? (
                                   <Check size={12} className="text-success" />
@@ -2347,7 +2387,7 @@ function StepDetailCard({
                               {/* Thinking block inside message */}
                               {m.thinking && (
                                 <div className="prompt-msg-thinking-block">
-                                  <span className="thinking-title">💭 Model Thinking Trace:</span>
+                                  <span className="thinking-title">{t('trajectory.viewer.thinkingTrace')}</span>
                                   <pre className="thinking-content">{m.thinking}</pre>
                                 </div>
                               )}
@@ -2358,7 +2398,7 @@ function StepDetailCard({
                                   {m.toolCalls.map((tc, tcIdx) => (
                                     <div key={tcIdx} className="prompt-msg-tool-call">
                                       <span className="prompt-tool-badge">
-                                        🛠️ Request: <code>{tc.name}</code>
+                                        {t('trajectory.viewer.toolRequest')} <code>{tc.name}</code>
                                       </span>
                                       {tc.arguments !== undefined && (
                                         <pre className="prompt-tool-args-pre">
@@ -2400,9 +2440,9 @@ function StepDetailCard({
                 {telemetry?.completionText && (
                   <div className="response-subpart">
                     <div className="response-subpart-header">
-                      <h6>Model Completion Text:</h6>
+                      <h6>{t('trajectory.viewer.completionText')}</h6>
                       <span className="subpart-meta">
-                        {telemetry.completionText.length} characters
+                        {t('trajectory.viewer.characters', { count: telemetry.completionText.length })}
                       </span>
                     </div>
                     <pre className="llm-response-pre">{telemetry.completionText}</pre>
@@ -2412,9 +2452,9 @@ function StepDetailCard({
                 {telemetry?.modelToolCalls && telemetry.modelToolCalls.length > 0 && (
                   <div className="response-subpart">
                     <div className="response-subpart-header">
-                      <h6>Generated Tool Calls:</h6>
+                      <h6>{t('trajectory.viewer.generatedCalls')}</h6>
                       <span className="subpart-meta">
-                        {telemetry.modelToolCalls.length} calls
+                        {t('trajectory.viewer.generatedCallCount', { count: telemetry.modelToolCalls.length })}
                       </span>
                     </div>
                     <div className="response-tool-calls-list">
@@ -2435,7 +2475,7 @@ function StepDetailCard({
                 {Boolean(telemetry?.reply) && (
                   <div className="response-subpart">
                     <div className="response-subpart-header">
-                      <h6>Assistant Reply Object:</h6>
+                      <h6>{t('trajectory.viewer.assistantReply')}</h6>
                     </div>
                     <pre className="json-pre">{JSON.stringify(telemetry?.reply, null, 2)}</pre>
                   </div>
@@ -2452,7 +2492,7 @@ function StepDetailCard({
               <div className="telemetry-panel thinking-panel">
                 <div className="thinking-panel-header">
                   <div className="thinking-title">
-                    <Sparkles size={14} /> Chain of Thought / Extended Thinking Trace
+                    <Sparkles size={14} /> {t('trajectory.viewer.chainOfThought')}
                   </div>
                   <button
                     type="button"
@@ -2460,9 +2500,9 @@ function StepDetailCard({
                     onClick={() =>
                       onCopyMessageText(`think-${stepIdx}`, telemetry.thinking || '')
                     }
-                    title="Copy thinking trace"
+                    title={t('trajectory.viewer.copyThinkingHint')}
                   >
-                    {copiedMsgIdx === `think-${stepIdx}` ? '✓ Copied' : '📋 Copy Thinking'}
+                    {copiedMsgIdx === `think-${stepIdx}` ? t('trajectory.viewer.copied') : t('trajectory.viewer.copyThinking')}
                   </button>
                 </div>
                 <pre className="deep-thinking-pre">{telemetry.thinking}</pre>
@@ -2474,31 +2514,31 @@ function StepDetailCard({
               <div className="telemetry-panel tokens-panel">
                 <div className="token-metrics-grid">
                   <div className="token-metric-card">
-                    <span className="t-label">Prompt Input Tokens</span>
+                    <span className="t-label">{t('trajectory.viewer.promptTokens')}</span>
                     <span className="t-val input">
-                      {telemetry.inputTokens?.toLocaleString() ?? '—'}
+                      {telemetry.inputTokens == null ? '—' : formatNumber(telemetry.inputTokens)}
                     </span>
                   </div>
                   <div className="token-metric-card">
-                    <span className="t-label">Completion Output Tokens</span>
+                    <span className="t-label">{t('trajectory.viewer.completionTokens')}</span>
                     <span className="t-val output">
-                      {telemetry.outputTokens?.toLocaleString() ?? '—'}
+                      {telemetry.outputTokens == null ? '—' : formatNumber(telemetry.outputTokens)}
                     </span>
                   </div>
                   <div className="token-metric-card">
-                    <span className="t-label">Total Step Tokens</span>
+                    <span className="t-label">{t('trajectory.viewer.stepTokens')}</span>
                     <span className="t-val total">
-                      {telemetry.totalTokens?.toLocaleString() ?? '—'}
+                      {telemetry.totalTokens == null ? '—' : formatNumber(telemetry.totalTokens)}
                     </span>
                   </div>
                   <div className="token-metric-card">
-                    <span className="t-label">Turn Latency</span>
-                    <span className="t-val latency">{telemetry.durationMs} ms</span>
+                    <span className="t-label">{t('trajectory.viewer.turnLatency')}</span>
+                    <span className="t-val latency">{t('trajectory.viewer.latencyValue', { duration: telemetry.durationMs })}</span>
                   </div>
                   {telemetry.tokensPerSec !== undefined && (
                     <div className="token-metric-card">
-                      <span className="t-label">Generation Speed</span>
-                      <span className="t-val speed">{telemetry.tokensPerSec} tok/sec</span>
+                      <span className="t-label">{t('trajectory.viewer.generationSpeed')}</span>
+                      <span className="t-val speed">{t('trajectory.viewer.generationSpeedValue', { speed: telemetry.tokensPerSec })}</span>
                     </div>
                   )}
                 </div>
@@ -2511,13 +2551,13 @@ function StepDetailCard({
                 <div className="raw-json-columns">
                   <div className="raw-json-col">
                     <div className="raw-col-header">
-                      <h6>Request Payload (LLM Input):</h6>
+                      <h6>{t('trajectory.viewer.requestPayload')}</h6>
                       <button
                         type="button"
                         className="mini-copy-btn"
                         onClick={() => onCopyPrompt(step.llmRequest)}
                       >
-                        {copiedPrompt ? '✓ Copied' : '📋 Copy Request'}
+                        {copiedPrompt ? t('trajectory.viewer.copied') : t('trajectory.viewer.copyRequest')}
                       </button>
                     </div>
                     <pre className="json-pre">{JSON.stringify(step.llmRequest, null, 2)}</pre>
@@ -2525,13 +2565,13 @@ function StepDetailCard({
 
                   <div className="raw-json-col">
                     <div className="raw-col-header">
-                      <h6>Response Payload (LLM Output):</h6>
+                      <h6>{t('trajectory.viewer.responsePayload')}</h6>
                       <button
                         type="button"
                         className="mini-copy-btn"
                         onClick={() => onCopyResponse(step.llmResponse)}
                       >
-                        {copiedResponse ? '✓ Copied' : '📋 Copy Response'}
+                        {copiedResponse ? t('trajectory.viewer.copied') : t('trajectory.viewer.copyResponse')}
                       </button>
                     </div>
                     <pre className="json-pre">{JSON.stringify(step.llmResponse, null, 2)}</pre>
@@ -2552,11 +2592,11 @@ function StepDetailCard({
                       <div className="provider-call-card-header">
                         <div className="call-title-group">
                           <span className="call-attempt-badge">
-                            Call #{cIdx + 1}
+                            {t('trajectory.viewer.callNumber', { call: cIdx + 1 })}
                             {call.retryAttempt !== undefined && call.retryAttempt !== null && call.retryAttempt > 0 && (
-                              <span className="call-retry-pill">Retry #{call.retryAttempt}</span>
+                              <span className="call-retry-pill">{t('trajectory.viewer.retryNumber', { attempt: call.retryAttempt })}</span>
                             )}
-                            {call.isSecondary && <span className="call-secondary-pill">Secondary Failover</span>}
+                            {call.isSecondary && <span className="call-secondary-pill">{t('trajectory.viewer.secondaryFailover')}</span>}
                           </span>
                           <span className="call-provider-tag">
                             <strong>{call.provider}</strong>
@@ -2564,57 +2604,57 @@ function StepDetailCard({
                           </span>
                         </div>
                         <span className={`call-status-badge ${call.success ? 'ok' : 'err'}`}>
-                          {call.success ? '✓ Success' : '✕ Failed'}
+                          {call.success ? t('trajectory.viewer.success') : t('trajectory.viewer.failed')}
                         </span>
                       </div>
 
                       <div className="provider-call-metrics-row">
                         <div className="call-mini-metric">
-                          <span className="mini-label">Latency</span>
-                          <span className="mini-val font-mono">{call.latencyMs.toLocaleString()} ms</span>
+                          <span className="mini-label">{t('trajectory.viewer.latency')}</span>
+                          <span className="mini-val font-mono">{t('trajectory.viewer.providerLatencyValue', { duration: formatNumber(call.latencyMs) })}</span>
                         </div>
                         {call.tokenUsage && (
                           <>
                             <div className="call-mini-metric">
-                              <span className="mini-label">Input Tokens</span>
+                              <span className="mini-label">{t('trajectory.viewer.inputTokens')}</span>
                               <span className="mini-val font-mono">
-                                {(call.tokenUsage.inputTokens ?? 0).toLocaleString()}
+                                {formatNumber(call.tokenUsage.inputTokens ?? 0)}
                               </span>
                             </div>
                             <div className="call-mini-metric">
-                              <span className="mini-label">Output Tokens</span>
+                              <span className="mini-label">{t('trajectory.viewer.outputTokens')}</span>
                               <span className="mini-val font-mono">
-                                {(call.tokenUsage.outputTokens ?? 0).toLocaleString()}
+                                {formatNumber(call.tokenUsage.outputTokens ?? 0)}
                               </span>
                             </div>
                             <div className="call-mini-metric">
-                              <span className="mini-label">Total Tokens</span>
+                              <span className="mini-label">{t('trajectory.viewer.totalTokens')}</span>
                               <span className="mini-val font-mono total">
-                                {(
+                                {formatNumber(
                                   call.tokenUsage.totalTokens ??
-                                  (call.tokenUsage.inputTokens ?? 0) + (call.tokenUsage.outputTokens ?? 0)
-                                ).toLocaleString()}
+                                  (call.tokenUsage.inputTokens ?? 0) + (call.tokenUsage.outputTokens ?? 0),
+                                )}
                               </span>
                             </div>
                           </>
                         )}
                         {call.cost !== undefined && call.cost !== null && (
                           <div className="call-mini-metric">
-                            <span className="mini-label">Est. Cost</span>
-                            <span className="mini-val font-mono">${call.cost.toFixed(5)}</span>
+                            <span className="mini-label">{t('trajectory.viewer.estimatedCost')}</span>
+                            <span className="mini-val font-mono">${formatNumber(call.cost, { minimumFractionDigits: 5, maximumFractionDigits: 5, useGrouping: false })}</span>
                           </div>
                         )}
                       </div>
 
                       {call.retryReason && (
                         <div className="call-retry-reason-box">
-                          <strong>Retry Reason:</strong> {call.retryReason}
+                          <strong>{t('trajectory.viewer.retryReason')}</strong> {call.retryReason}
                         </div>
                       )}
 
                       {call.error && (
                         <div className="call-error-box">
-                          <strong>Error:</strong> {call.error}
+                          <strong>{t('trajectory.viewer.errorLabel')}</strong> {call.error}
                         </div>
                       )}
                     </div>
@@ -2629,7 +2669,7 @@ function StepDetailCard({
         {step.toolResults && (step.toolResults as unknown[]).length > 0 && (
           <div className="step-tool-results-box">
             <div className="step-tool-results-header">
-              <h5>Tool Execution Results:</h5>
+              <h5>{t('trajectory.viewer.toolResults')}</h5>
               <button
                 type="button"
                 className="mini-copy-btn"
@@ -2639,9 +2679,9 @@ function StepDetailCard({
                     JSON.stringify(step.toolResults, null, 2),
                   )
                 }
-                title="Copy tool execution results"
+                title={t('trajectory.viewer.copyResultsHint')}
               >
-                {copiedMsgIdx === `results-${stepIdx}` ? '✓ Copied' : '📋 Copy Results'}
+                {copiedMsgIdx === `results-${stepIdx}` ? t('trajectory.viewer.copied') : t('trajectory.viewer.copyResults')}
               </button>
             </div>
             <div className="step-tool-result-list">
@@ -2658,14 +2698,14 @@ function StepDetailCard({
                     )}
                     <span className="step-tool-call-name">{result.name}</span>
                     <span className={`tool-status-badge ${result.isError ? 'failed' : 'completed'}`}>
-                      {result.isError ? 'error' : 'ok'}
+                      {result.isError ? t('trajectory.viewer.toolError') : t('trajectory.viewer.toolOk')}
                     </span>
                     {result.output && (
                       <button
                         type="button"
                         className="mini-copy-btn"
                         onClick={() => onCopyMessageText(`result-${stepIdx}-${rIdx}`, result.output || '')}
-                        title="Copy tool output"
+                        title={t('trajectory.viewer.copyToolOutput')}
                       >
                         {copiedMsgIdx === `result-${stepIdx}-${rIdx}` ? (
                           <Check size={11} className="text-success" />

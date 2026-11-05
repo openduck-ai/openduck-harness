@@ -1,9 +1,12 @@
+import { ConfigValidationError, type ConfigMessageDescriptor } from '../configEditor.ts'
+import type { translate } from '../i18n/index.ts'
+import { useTranslation } from 'react-i18next'
 import { useEffect, useRef, useState } from 'react'
 import type { AppConfigDocument, ProxyItem, createApi } from '@aaif/goose-hub-core'
 import { Check, Edit2, Trash2, X } from 'lucide-react'
 import {
   CUSTOM_MODEL_OPTION,
-  LEGACY_PROVIDER_SERVER_NOTICE,
+  getLegacyProviderServerNotice,
   addProvider,
   applyProviderInventoryIfCurrent,
   buildPutBody,
@@ -25,16 +28,16 @@ import {
   selectRoleModel,
   selectRoleProvider,
   updateProviderRow,
-  validateProxyId,
-  validateProxyUrl,
+  validateProxyIdMessage as validateProxyId,
+  validateProxyUrlMessage as validateProxyUrl,
   type ProviderConfigDraft,
   type ProviderRole,
   type ProviderRowDraft,
 } from '../providerConfig'
 import {
-  JUDGE_MODES,
-  JUDGE_POINT_LABELS,
-  MODE_OPTIONS,
+  getJudgeModes,
+  getJudgePointLabels,
+  getModeOptions,
   configLabel,
   draftsFromDocument,
   formatScalar,
@@ -68,8 +71,16 @@ interface OpenDuckConfigPanelProps {
 
 const KNOWN_JUDGE_POINTS = new Set(['turn.drift', 'turn.completion', 'context.forget', 'tool.risk'])
 
-function messageFrom(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback
+type ConfigMessage = string | ConfigMessageDescriptor
+
+function renderConfigMessage(message: ConfigMessage, t: typeof translate): string {
+  return typeof message === 'string' ? message : t(message.key, message.values?.(t))
+}
+
+function messageFrom(error: unknown, fallback: ConfigMessage): ConfigMessage
+function messageFrom(error: unknown, fallback: ConfigMessage): ConfigMessage {
+  if (error instanceof ConfigValidationError) return { key: error.key, values: error.values }
+  return error instanceof Error && error.message ? error.message : fallback
 }
 
 function RoleModelEditor({
@@ -87,25 +98,27 @@ function RoleModelEditor({
   onQuery: (value: string) => void
   onModel: (model: string | null) => void
 }) {
+  const { t } = useTranslation()
   const providerName = role === 'major' ? draft.majorProvider : draft.secondaryProvider
-  const fromEnv = role === 'major'
-    ? draft.majorModelFromEnv || draft.modelFromEnv
-    : draft.secondaryProviderModelFromEnv || draft.secondaryModelFromEnv
+  const fromEnv =
+    role === 'major'
+      ? draft.majorModelFromEnv || draft.modelFromEnv
+      : draft.secondaryProviderModelFromEnv || draft.secondaryModelFromEnv
   const explicit = role === 'major' ? draft.majorModel : draft.secondaryProviderModel
   const fileValue = role === 'major' ? draft.majorModelFileValue : draft.secondaryModelFileValue
-  const effectiveProvider = role === 'major'
-    ? draft.majorModelEffectiveProvider
-    : draft.secondaryModelEffectiveProvider
-  const storedEffective = role === 'major' ? draft.majorModelEffective : draft.secondaryModelEffective
+  const effectiveProvider =
+    role === 'major' ? draft.majorModelEffectiveProvider : draft.secondaryModelEffectiveProvider
+  const storedEffective =
+    role === 'major' ? draft.majorModelEffective : draft.secondaryModelEffective
   const effective = providerName && effectiveProvider === providerName ? storedEffective : null
-  const row = draft.providers.find(provider => provider.name === providerName)
+  const row = draft.providers.find((provider) => provider.name === providerName)
   const [enteringCustom, setEnteringCustom] = useState(false)
   useEffect(() => {
     setEnteringCustom(false)
   }, [providerName])
 
   if (!providerName) {
-    return <p className="form-hint">Select a provider first.</p>
+    return <p className="form-hint">{t('config.panel.selectProviderFirst')}</p>
   }
   if (fromEnv) {
     return (
@@ -130,41 +143,45 @@ function RoleModelEditor({
           disabled={saving}
           placeholder={
             row?.model.trim()
-              ? `Model ID, or blank to inherit default (${row.model.trim()})`
-              : 'Model ID'
+              ? t('config.panel.inheritModelPlaceholder', { model: row.model.trim() })
+              : t('config.panel.modelId')
           }
-          onChange={event => onModel(event.target.value === '' ? null : event.target.value)}
+          onChange={(event) => onModel(event.target.value === '' ? null : event.target.value)}
           style={{ width: '100%' }}
         />
         {row?.models && row.models.length === 0 && (
-          <div className="form-hint">No models were returned.</div>
+          <div className="form-hint">{t('config.panel.noModels')}</div>
         )}
         {row?.lastRefreshError && (
-          <div className="form-hint">{row.lastRefreshError} Enter a model ID or retry refresh.</div>
+          <div className="form-hint">
+            {renderConfigMessage(row.lastRefreshError, t)} {t('config.panel.retryModelHint')}
+          </div>
         )}
         {!row?.model.trim() && !explicit?.trim() && (
-          <div className="form-hint">This provider has no default model. Choose one.</div>
+          <div className="form-hint">{t('config.panel.noDefaultModel')}</div>
         )}
       </div>
     )
   }
 
-  const visible = choice.searchable ? filterModelOptions(choice.options, query, choice.selectValue) : choice.options
+  const visible = choice.searchable
+    ? filterModelOptions(choice.options, query, choice.selectValue)
+    : choice.options
   return (
     <div>
       {choice.searchable && (
         <input
           value={query}
           disabled={saving}
-          placeholder="Search models"
-          onChange={event => onQuery(event.target.value)}
+          placeholder={t('config.panel.searchModels')}
+          onChange={(event) => onQuery(event.target.value)}
           style={{ width: '100%', marginBottom: '0.35rem' }}
         />
       )}
       <select
         value={choice.selectValue}
         disabled={saving}
-        onChange={event => {
+        onChange={(event) => {
           const value = event.target.value
           if (value === CUSTOM_MODEL_OPTION) {
             setEnteringCustom(true)
@@ -174,20 +191,20 @@ function RoleModelEditor({
           onModel(value === '' ? null : value)
         }}
       >
-        {!row?.model.trim() && <option value="">Select a model</option>}
-        {visible.map(option => (
+        {!row?.model.trim() && <option value="">{t('config.panel.selectModel')}</option>}
+        {visible.map((option) => (
           <option key={option.inherit ? '__inherit__' : option.value} value={option.value}>
             {option.label}
           </option>
         ))}
-        <option value={CUSTOM_MODEL_OPTION}>Enter a model ID…</option>
+        <option value={CUSTOM_MODEL_OPTION}>{t('config.panel.enterModelId')}</option>
       </select>
       {enteringCustom && (
         <input
           value={explicit ?? ''}
           disabled={saving}
-          placeholder="Model ID"
-          onChange={event => onModel(event.target.value === '' ? null : event.target.value)}
+          placeholder={t('config.panel.modelId')}
+          onChange={(event) => onModel(event.target.value === '' ? null : event.target.value)}
           style={{ width: '100%', marginTop: '0.35rem' }}
         />
       )}
@@ -208,18 +225,19 @@ function ProviderSettingsTable({
   onDraft: (next: ProviderConfigDraft) => void
   onRefresh: (providerId: string) => void
 }) {
+  const { t } = useTranslation()
   const legacy = draft.selectionVersion !== 2
   return (
     <div className="provider-table-wrapper" style={{ overflowX: 'auto', marginTop: '1rem' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
         <thead>
           <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-            <th style={{ padding: '0.5rem' }}>Name</th>
-            <th style={{ padding: '0.5rem' }}>Enabled</th>
-            <th style={{ padding: '0.5rem' }}>Default model (optional)</th>
-            <th style={{ padding: '0.5rem' }}>Advanced</th>
-            <th style={{ padding: '0.5rem' }}>Proxy</th>
-            <th style={{ padding: '0.5rem' }}>Models</th>
+            <th style={{ padding: '0.5rem' }}>{t('config.panel.name')}</th>
+            <th style={{ padding: '0.5rem' }}>{t('config.panel.enabled')}</th>
+            <th style={{ padding: '0.5rem' }}>{t('config.panel.defaultModel')}</th>
+            <th style={{ padding: '0.5rem' }}>{t('config.panel.advanced')}</th>
+            <th style={{ padding: '0.5rem' }}>{t('config.panel.proxy')}</th>
+            <th style={{ padding: '0.5rem' }}>{t('config.panel.models')}</th>
             <th style={{ padding: '0.5rem', width: '2.5rem' }}></th>
           </tr>
         </thead>
@@ -227,7 +245,7 @@ function ProviderSettingsTable({
           {draft.providers.length === 0 ? (
             <tr>
               <td colSpan={7} style={{ padding: '1rem', textAlign: 'center' }} className="muted">
-                No providers configured. Add one below.
+                {t('config.panel.noProviders')}
               </td>
             </tr>
           ) : (
@@ -270,16 +288,23 @@ function ProviderSettingsRow({
   onDraft: (next: ProviderConfigDraft) => void
   onRefresh: (providerId: string) => void
 }) {
+  const { t } = useTranslation()
   const isMajorRow = (draft.majorFromEnv ? draft.majorFileValue : draft.majorProvider) === row.name
-  const isSecondaryRow = (draft.secondaryFromEnv ? draft.secondaryFileValue : draft.secondaryProvider) === row.name
-  const modelLocked = (draft.modelFromEnv && isMajorRow) || (draft.secondaryModelFromEnv && isSecondaryRow)
+  const isSecondaryRow =
+    (draft.secondaryFromEnv ? draft.secondaryFileValue : draft.secondaryProvider) === row.name
+  const modelLocked =
+    (draft.modelFromEnv && isMajorRow) || (draft.secondaryModelFromEnv && isSecondaryRow)
   const fastModelLocked = draft.fastModelFromEnv
   const matchedProxyId = findMatchingProxyId(row.proxy, proxies)
   const isCustomProxy = Boolean(row.proxy.trim() && !matchedProxyId)
   const selectVal = matchedProxyId ? matchedProxyId : isCustomProxy ? '__custom__' : ''
   const statusLabel = inventoryStatusLabel(row.inventoryStatus)
   const refreshDisabled = saving || legacy || row.supportsRefresh === false || row.refreshing
-  const refreshLabel = row.refreshing ? 'Refreshing…' : row.lastRefreshError ? 'Retry refresh' : 'Refresh models'
+  const refreshLabel = row.refreshing
+    ? t('config.panel.refreshing')
+    : row.lastRefreshError
+      ? t('config.panel.retryRefresh')
+      : t('config.panel.refreshModels')
 
   return (
     <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
@@ -289,7 +314,9 @@ function ProviderSettingsRow({
           type="checkbox"
           checked={row.enabled}
           disabled={saving}
-          onChange={event => onDraft(updateProviderRow(draft, index, { enabled: event.target.checked }))}
+          onChange={(event) =>
+            onDraft(updateProviderRow(draft, index, { enabled: event.target.checked }))
+          }
         />
       </td>
       <td style={{ padding: '0.5rem' }}>
@@ -300,8 +327,10 @@ function ProviderSettingsRow({
               : row.model
           }
           disabled={modelLocked || saving}
-          onChange={event => onDraft(updateProviderRow(draft, index, { model: event.target.value }))}
-          placeholder="optional"
+          onChange={(event) =>
+            onDraft(updateProviderRow(draft, index, { model: event.target.value }))
+          }
+          placeholder={t('config.panel.optionalLowercase')}
           style={{ width: '100%', minWidth: '8rem' }}
         />
         {modelLocked && (
@@ -315,14 +344,20 @@ function ProviderSettingsRow({
       </td>
       <td style={{ padding: '0.5rem' }}>
         <details>
-          <summary>Advanced</summary>
+          <summary>{t('config.panel.advanced')}</summary>
           <label style={{ display: 'block', marginTop: '0.4rem' }}>
-            Fast model
+            {t('config.panel.fastModel')}
             <input
               value={fastModelLocked ? (row.fastModelEnvValue ?? row.fastModel) : row.fastModel}
               disabled={fastModelLocked || saving}
-              onChange={event => onDraft(updateProviderRow(draft, index, { fastModel: event.target.value }))}
-              placeholder={row.suggestedFastModel ? `Suggested: ${row.suggestedFastModel}` : 'uses model'}
+              onChange={(event) =>
+                onDraft(updateProviderRow(draft, index, { fastModel: event.target.value }))
+              }
+              placeholder={
+                row.suggestedFastModel
+                  ? t('config.panel.suggestedModel', { model: row.suggestedFastModel })
+                  : t('config.panel.usesModel')
+              }
               style={{ width: '100%', minWidth: '8rem' }}
             />
             <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
@@ -335,12 +370,14 @@ function ProviderSettingsRow({
             )}
           </label>
           <label style={{ display: 'block', marginTop: '0.4rem' }}>
-            Secondary model
+            {t('config.panel.secondaryModel')}
             <input
               value={row.secondaryModel}
               disabled={saving}
-              onChange={event => onDraft(updateProviderRow(draft, index, { secondaryModel: event.target.value }))}
-              placeholder="no secondary model"
+              onChange={(event) =>
+                onDraft(updateProviderRow(draft, index, { secondaryModel: event.target.value }))
+              }
+              placeholder={t('config.panel.noSecondaryModel')}
               style={{ width: '100%', minWidth: '8rem' }}
             />
             <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
@@ -355,27 +392,31 @@ function ProviderSettingsRow({
             value={selectVal}
             disabled={saving}
             style={{ width: '100%', minWidth: '9.5rem' }}
-            onChange={event => {
+            onChange={(event) => {
               const val = event.target.value
               if (val === '') onDraft(updateProviderRow(draft, index, { proxy: '' }))
               else if (val === '__custom__') {
-                onDraft(updateProviderRow(draft, index, { proxy: isCustomProxy ? row.proxy : 'http://' }))
+                onDraft(
+                  updateProviderRow(draft, index, { proxy: isCustomProxy ? row.proxy : 'http://' }),
+                )
               } else onDraft(updateProviderRow(draft, index, { proxy: val }))
             }}
           >
-            <option value="">None (direct)</option>
-            {proxies.map(proxy => (
+            <option value="">{t('config.panel.directOption')}</option>
+            {proxies.map((proxy) => (
               <option key={proxy.id} value={proxy.id}>
                 {proxy.id} ({proxy.url})
               </option>
             ))}
-            <option value="__custom__">Custom URL…</option>
+            <option value="__custom__">{t('config.panel.customUrl')}</option>
           </select>
           {selectVal === '__custom__' && (
             <input
               value={row.proxy}
               disabled={saving}
-              onChange={event => onDraft(updateProviderRow(draft, index, { proxy: event.target.value }))}
+              onChange={(event) =>
+                onDraft(updateProviderRow(draft, index, { proxy: event.target.value }))
+              }
               placeholder="http://127.0.0.1:8080"
               style={{ width: '100%', minWidth: '9.5rem', marginTop: '0.2rem' }}
             />
@@ -383,14 +424,18 @@ function ProviderSettingsRow({
           <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.15rem' }}>
             {row.proxy.trim() ? (
               matchedProxyId ? (
-                <span title={`Resolved to ${proxies.find(proxy => proxy.id === matchedProxyId)?.url}`}>
-                  Using {matchedProxyId}
+                <span
+                  title={t('config.panel.resolvedProxy', {
+                    url: String(proxies.find((proxy) => proxy.id === matchedProxyId)?.url),
+                  })}
+                >
+                  {t('config.panel.usingProxy', { id: matchedProxyId })}
                 </span>
               ) : (
-                <span>Custom proxy</span>
+                <span>{t('config.panel.customProxy')}</span>
               )
             ) : (
-              'direct'
+              t('config.panel.direct')
             )}
           </div>
         </div>
@@ -400,21 +445,27 @@ function ProviderSettingsRow({
           type="button"
           className="btn-secondary"
           disabled={refreshDisabled}
-          title={legacy ? 'Role model refresh needs a newer server' : row.lastRefreshError ?? 'Refresh the model list'}
+          title={
+            legacy
+              ? t('config.panel.refreshNeedsNewServer')
+              : (row.lastRefreshError ? renderConfigMessage(row.lastRefreshError, t) : t('config.panel.refreshModelList'))
+          }
           onClick={() => onRefresh(row.name)}
         >
           {refreshLabel}
         </button>
-        {row.models && row.models.length === 0 && <div className="form-hint">No models were returned.</div>}
+        {row.models && row.models.length === 0 && (
+          <div className="form-hint">{t('config.panel.noModels')}</div>
+        )}
         {statusLabel && <div className="form-hint">{statusLabel}</div>}
-        {row.lastRefreshError && <div className="form-hint">{row.lastRefreshError}</div>}
+        {row.lastRefreshError && <div className="form-hint">{renderConfigMessage(row.lastRefreshError, t)}</div>}
       </td>
       <td style={{ padding: '0.5rem' }}>
         {row.name !== draft.majorProvider && row.name !== draft.secondaryProvider && (
           <button
             type="button"
             className="btn-icon"
-            title={`Remove ${row.name}`}
+            title={t('config.panel.removeItem', { name: row.name })}
             disabled={saving}
             onClick={() => onDraft(removeProvider(draft, row.name))}
           >
@@ -427,6 +478,7 @@ function ProviderSettingsRow({
 }
 
 export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelProps) {
+  const { t } = useTranslation()
   const [doc, setDoc] = useState<AppConfigDocument | null>(null)
   const [drafts, setDrafts] = useState<ConfigDrafts | null>(null)
   const [providersDraft, setProvidersDraft] = useState<ProviderConfigDraft | null>(null)
@@ -434,20 +486,25 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
   const [newProxyId, setNewProxyId] = useState('')
   const [newProxyUrl, setNewProxyUrl] = useState('')
   const [newProxyDesc, setNewProxyDesc] = useState('')
-  const [proxyFormError, setProxyFormError] = useState('')
+  const [proxyFormError, setProxyFormError] = useState<ConfigMessage>('')
   const [editingProxyId, setEditingProxyId] = useState<string | null>(null)
   const [editProxyUrl, setEditProxyUrl] = useState('')
   const [editProxyDesc, setEditProxyDesc] = useState('')
   const [newProviderSelect, setNewProviderSelect] = useState('')
-  const [modelQuery, setModelQuery] = useState<{ major: string; secondary: string }>({ major: '', secondary: '' })
+  const [modelQuery, setModelQuery] = useState<{ major: string; secondary: string }>({
+    major: '',
+    secondary: '',
+  })
   const refreshGenerations = useRef<Record<string, number>>({})
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+  const [error, setError] = useState<ConfigMessage>('')
+  const [notice, setNotice] = useState<ConfigMessage>('')
   const [saving, setSaving] = useState<string | null>(null)
   const [newKey, setNewKey] = useState('')
   const [newValue, setNewValue] = useState('')
   const [newPointId, setNewPointId] = useState('')
+
+  const renderMessage = (message: ConfigMessage) => renderConfigMessage(message, t)
 
   const applyDocument = (next: AppConfigDocument) => {
     setDoc(next)
@@ -475,17 +532,15 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
         applyDocument(nextConfig)
         setProvidersDraft(draftFromResponse(nextProviders))
         const loadedProxies =
-          nextProxies && nextProxies.proxies
-            ? nextProxies.proxies
-            : nextProviders.proxies ?? []
+          nextProxies && nextProxies.proxies ? nextProxies.proxies : (nextProviders.proxies ?? [])
         setProxiesDraft(loadedProxies)
         if (nextProviders.availableProviders.length > 0) {
           setNewProviderSelect(nextProviders.availableProviders[0] ?? '')
         }
       })
-      .catch(cause => {
+      .catch((cause) => {
         if (cancelled) return
-        setError(messageFrom(cause, 'Failed to load OpenDuck configuration'))
+        setError(messageFrom(cause, { key: 'config.panel.loadFailed' }))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -510,9 +565,9 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       if (saved.availableProviders.length > 0) {
         setNewProviderSelect(saved.availableProviders[0] ?? '')
       }
-      setNotice('Provider settings saved.')
+      setNotice({ key: 'config.panel.providersSaved' })
     } catch (cause) {
-      setError(messageFrom(cause, 'Failed to save provider settings'))
+      setError(messageFrom(cause, { key: 'config.panel.saveProvidersFailed' }))
     } finally {
       setSaving(null)
     }
@@ -523,29 +578,33 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
     const started = nextRefreshGeneration(refreshGenerations.current, providerId)
     refreshGenerations.current = started.generations
     const guard = started.guard
-    setProvidersDraft(current => (current ? markProviderRefreshing(current, providerId, true) : current))
+    setProvidersDraft((current) =>
+      current ? markProviderRefreshing(current, providerId, true) : current,
+    )
     try {
       const plan = await api.refreshProviderModels(providerId)
       const latest = await api.getProvidersConfig()
       if (!refreshGuardIsCurrent(refreshGenerations.current, guard)) return
-      setProvidersDraft(current => (
-        current ? applyProviderInventoryIfCurrent(current, refreshGenerations.current, guard, latest) : current
-      ))
-      const skip = plan.skipped.find(item => item.providerId === providerId)
+      setProvidersDraft((current) =>
+        current
+          ? applyProviderInventoryIfCurrent(current, refreshGenerations.current, guard, latest)
+          : current,
+      )
+      const skip = plan.skipped.find((item) => item.providerId === providerId)
       if (!skip || !refreshGuardIsCurrent(refreshGenerations.current, guard)) return
-      setProvidersDraft(current => (
+      setProvidersDraft((current) =>
         current && refreshGuardIsCurrent(refreshGenerations.current, guard)
           ? markProviderRefreshFailed(current, providerId, skip.reason)
-          : current
-      ))
+          : current,
+      )
     } catch (cause) {
       if (!refreshGuardIsCurrent(refreshGenerations.current, guard)) return
-      const message = messageFrom(cause, 'Failed to refresh models')
-      setProvidersDraft(current => (
+      const message = messageFrom(cause, { key: 'config.panel.refreshFailed' })
+      setProvidersDraft((current) =>
         current && refreshGuardIsCurrent(refreshGenerations.current, guard)
           ? markProviderRefreshFailed(current, providerId, message)
-          : current
-      ))
+          : current,
+      )
     }
   }
 
@@ -559,9 +618,9 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       if (providersDraft) {
         setProvidersDraft({ ...providersDraft, proxies: saved.proxies })
       }
-      setNotice('Network proxy settings saved.')
+      setNotice({ key: 'config.panel.proxiesSaved' })
     } catch (cause) {
-      setError(messageFrom(cause, 'Failed to save network proxies'))
+      setError(messageFrom(cause, { key: 'config.panel.saveProxiesFailed' }))
     } finally {
       setSaving(null)
     }
@@ -595,7 +654,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
   }
 
   const handleDeleteProxy = (id: string) => {
-    const nextProxies = proxiesDraft.filter(p => p.id !== id)
+    const nextProxies = proxiesDraft.filter((p) => p.id !== id)
     setProxiesDraft(nextProxies)
     if (providersDraft) {
       setProvidersDraft({ ...providersDraft, proxies: nextProxies })
@@ -618,7 +677,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       setProxyFormError(urlErr)
       return
     }
-    const nextProxies = proxiesDraft.map(p =>
+    const nextProxies = proxiesDraft.map((p) =>
       p.id === id
         ? { ...p, url: editProxyUrl.trim(), description: editProxyDesc.trim() || null }
         : p,
@@ -645,9 +704,9 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
           : await api.removeAppConfig('GOOSE_MODE')
       }
       applyDocument(latest)
-      setNotice('Tool mode saved.')
+      setNotice({ key: 'config.panel.modeSaved' })
     } catch (cause) {
-      setError(messageFrom(cause, 'Failed to save tool mode'))
+      setError(messageFrom(cause, { key: 'config.panel.saveModeFailed' }))
     } finally {
       setSaving(null)
     }
@@ -660,14 +719,14 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
     setNotice('')
     try {
       if (harnessDraftUnchanged(doc, drafts.harness)) {
-        setNotice('No harness changes to save.')
+        setNotice({ key: 'config.panel.harnessUnchanged' })
         return
       }
       const saved = await api.updateHarnessConfig(harnessUpdateForSave(doc, drafts.harness))
       applyDocument(saved)
-      setNotice('Harness settings saved.')
+      setNotice({ key: 'config.panel.harnessSaved' })
     } catch (cause) {
-      setError(messageFrom(cause, 'Failed to save harness settings'))
+      setError(messageFrom(cause, { key: 'config.panel.saveHarnessFailed' }))
     } finally {
       setSaving(null)
     }
@@ -681,9 +740,9 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
     try {
       const saved = await api.updateJudgeConfig(judgeUpdateFromDraft(drafts.judge))
       applyDocument(saved)
-      setNotice('Judge settings saved.')
+      setNotice({ key: 'config.panel.judgeSaved' })
     } catch (cause) {
-      setError(messageFrom(cause, 'Failed to save judge settings'))
+      setError(messageFrom(cause, { key: 'config.panel.saveJudgeFailed' }))
     } finally {
       setSaving(null)
     }
@@ -696,9 +755,9 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
     try {
       const saved = await api.removeJudgeConfig()
       applyDocument(saved)
-      setNotice('Judge block removed. Built-in defaults apply.')
+      setNotice({ key: 'config.panel.judgeRemoved' })
     } catch (cause) {
-      setError(messageFrom(cause, 'Failed to remove the judge block'))
+      setError(messageFrom(cause, { key: 'config.panel.removeJudgeFailed' }))
     } finally {
       setSaving(null)
     }
@@ -706,7 +765,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
 
   const saveEntry = async (key: string) => {
     if (!doc || !drafts) return
-    const entry = doc.entries.find(item => item.key === key)
+    const entry = doc.entries.find((item) => item.key === key)
     if (!entry) return
     setSaving(key)
     setError('')
@@ -715,9 +774,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       const value = parseScalarInput(drafts.entries[key] ?? '', entry.value)
       const saved = await api.upsertAppConfig(key, value)
       applyDocument(saved)
-      setNotice(`Saved ${configLabel(key)}.`)
+      setNotice({ key: 'config.panel.settingSaved', values: () => ({ label: configLabel(key) }) })
     } catch (cause) {
-      setError(messageFrom(cause, `Failed to save ${key}`))
+      setError(
+        messageFrom(cause, { key: 'config.panel.saveSettingFailed', values: () => ({ key }) }),
+      )
     } finally {
       setSaving(null)
     }
@@ -730,9 +791,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
     try {
       const saved = await api.removeAppConfig(key)
       applyDocument(saved)
-      setNotice(`Removed ${configLabel(key)}.`)
+      setNotice({ key: 'config.panel.settingRemoved', values: () => ({ label: configLabel(key) }) })
     } catch (cause) {
-      setError(messageFrom(cause, `Failed to remove ${key}`))
+      setError(
+        messageFrom(cause, { key: 'config.panel.removeSettingFailed', values: () => ({ key }) }),
+      )
     } finally {
       setSaving(null)
     }
@@ -748,9 +811,9 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       applyDocument(saved)
       setNewKey('')
       setNewValue('')
-      setNotice(`Added ${configLabel(key)}.`)
+      setNotice({ key: 'config.panel.settingAdded', values: () => ({ label: configLabel(key) }) })
     } catch (cause) {
-      setError(messageFrom(cause, 'Failed to add setting'))
+      setError(messageFrom(cause, { key: 'config.panel.addSettingFailed' }))
     } finally {
       setSaving(null)
     }
@@ -760,11 +823,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
     if (!drafts) return
     const id = newPointId.trim()
     if (!id) {
-      setError('Enter a decision point id')
+      setError({ key: 'config.panel.enterPointId' })
       return
     }
-    if (drafts.judge.points.some(point => point.id === id)) {
-      setError(`Decision point ${id} is already listed`)
+    if (drafts.judge.points.some((point) => point.id === id)) {
+      setError({ key: 'config.panel.pointAlreadyListed', values: () => ({ id }) })
       return
     }
     setError('')
@@ -778,56 +841,57 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
   if (!isConnected) {
     return (
       <div className="panel openduck-config-panel">
-        <h3>OpenDuck configuration</h3>
-        <p className="muted">Connect to the OpenDuck server to edit its configuration.</p>
+        <h3>{t('config.panel.title')}</h3>
+        <p className="muted">{t('config.panel.connectHint')}</p>
       </div>
     )
   }
 
   return (
     <div className="panel openduck-config-panel">
-      <h3>OpenDuck configuration</h3>
-      <p className="muted">
-        Provider, tool mode, harness guardrails, judge, and other values from the OpenDuck config
-        file. API keys stay in the system keyring or secrets.yaml.
-      </p>
-      {error && <div className="error config-banner">{error}</div>}
-      {notice && <div className="toast-inline config-banner">{notice}</div>}
+      <h3>{t('config.panel.title')}</h3>
+      <p className="muted">{t('config.panel.description')}</p>
+      {error && <div className="error config-banner">{renderMessage(error)}</div>}
+      {notice && <div className="toast-inline config-banner">{renderMessage(notice)}</div>}
       {loading && !drafts ? (
-        <p className="muted">Loading configuration…</p>
+        <p className="muted">{t('config.panel.loading')}</p>
       ) : drafts && doc && providersDraft ? (
         <>
           <section className="config-section">
-            <h4>Providers</h4>
-            <p className="form-hint">
-              Choose a provider and model for the major role and the secondary fallback. The same
-              provider can fill both roles.
-            </p>
+            <h4>{t('config.panel.providers')}</h4>
+            <p className="form-hint">{t('config.panel.providersHint')}</p>
             {providersDraft.selectionVersion !== 2 && (
-              <p className="form-hint">{LEGACY_PROVIDER_SERVER_NOTICE}</p>
+              <p className="form-hint">{getLegacyProviderServerNotice()}</p>
             )}
 
             <div className="config-form-grid" style={{ marginBottom: '1rem' }}>
               <label>
-                Major provider
+                {t('config.panel.majorProvider')}
                 {providersDraft.majorFromEnv && (
                   <span className="config-env-note">
-                    {envLockDescription(providersDraft.majorFileValue, providersDraft.majorProvider)}
+                    {envLockDescription(
+                      providersDraft.majorFileValue,
+                      providersDraft.majorProvider,
+                    )}
                   </span>
                 )}
                 <select
                   value={providersDraft.majorProvider ?? ''}
                   disabled={providersDraft.majorFromEnv || saving === 'providers'}
-                  onChange={event => {
+                  onChange={(event) => {
                     const value = event.target.value || null
-                    setModelQuery(current => ({ ...current, major: '' }))
-                    setProvidersDraft(current => (current ? selectRoleProvider(current, 'major', value) : current))
+                    setModelQuery((current) => ({ ...current, major: '' }))
+                    setProvidersDraft((current) =>
+                      current ? selectRoleProvider(current, 'major', value) : current,
+                    )
                   }}
                 >
-                  <option value="">Unset (clear)</option>
-                  {roleProviderOptions(providersDraft, 'major').map(option => (
+                  <option value="">{t('config.panel.unsetClear')}</option>
+                  {roleProviderOptions(providersDraft, 'major').map((option) => (
                     <option key={option.name} value={option.name}>
-                      {option.eligible ? option.name : `${option.name} (unavailable)`}
+                      {option.eligible
+                        ? option.name
+                        : t('config.panel.unavailableProvider', { name: option.name })}
                     </option>
                   ))}
                 </select>
@@ -835,42 +899,49 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
 
               {providersDraft.selectionVersion === 2 && (
                 <label>
-                  Major model
+                  {t('config.panel.majorModel')}
                   <RoleModelEditor
                     draft={providersDraft}
                     role="major"
                     saving={saving === 'providers'}
                     query={modelQuery.major}
-                    onQuery={value => setModelQuery(current => ({ ...current, major: value }))}
-                    onModel={model => setProvidersDraft(current => (
-                      current ? selectRoleModel(current, 'major', model) : current
-                    ))}
+                    onQuery={(value) => setModelQuery((current) => ({ ...current, major: value }))}
+                    onModel={(model) =>
+                      setProvidersDraft((current) =>
+                        current ? selectRoleModel(current, 'major', model) : current,
+                      )
+                    }
                   />
                 </label>
               )}
 
               <label>
-                Secondary provider
+                {t('config.panel.secondaryProvider')}
                 {providersDraft.secondaryFromEnv && (
                   <span className="config-env-note">
-                    {envLockDescription(providersDraft.secondaryFileValue, providersDraft.secondaryProvider)}
+                    {envLockDescription(
+                      providersDraft.secondaryFileValue,
+                      providersDraft.secondaryProvider,
+                    )}
                   </span>
                 )}
                 <select
                   value={providersDraft.secondaryProvider ?? ''}
                   disabled={providersDraft.secondaryFromEnv || saving === 'providers'}
-                  onChange={event => {
+                  onChange={(event) => {
                     const value = event.target.value || null
-                    setModelQuery(current => ({ ...current, secondary: '' }))
-                    setProvidersDraft(current => (
-                      current ? selectRoleProvider(current, 'secondary', value) : current
-                    ))
+                    setModelQuery((current) => ({ ...current, secondary: '' }))
+                    setProvidersDraft((current) =>
+                      current ? selectRoleProvider(current, 'secondary', value) : current,
+                    )
                   }}
                 >
-                  <option value="">None</option>
-                  {roleProviderOptions(providersDraft, 'secondary').map(option => (
+                  <option value="">{t('config.panel.none')}</option>
+                  {roleProviderOptions(providersDraft, 'secondary').map((option) => (
                     <option key={option.name} value={option.name}>
-                      {option.eligible ? option.name : `${option.name} (unavailable)`}
+                      {option.eligible
+                        ? option.name
+                        : t('config.panel.unavailableProvider', { name: option.name })}
                     </option>
                   ))}
                 </select>
@@ -878,22 +949,28 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
 
               {providersDraft.selectionVersion === 2 && (
                 <label>
-                  Secondary model
+                  {t('config.panel.secondaryModel')}
                   <RoleModelEditor
                     draft={providersDraft}
                     role="secondary"
                     saving={saving === 'providers'}
                     query={modelQuery.secondary}
-                    onQuery={value => setModelQuery(current => ({ ...current, secondary: value }))}
-                    onModel={model => setProvidersDraft(current => (
-                      current ? selectRoleModel(current, 'secondary', model) : current
-                    ))}
+                    onQuery={(value) =>
+                      setModelQuery((current) => ({ ...current, secondary: value }))
+                    }
+                    onModel={(model) =>
+                      setProvidersDraft((current) =>
+                        current ? selectRoleModel(current, 'secondary', model) : current,
+                      )
+                    }
                   />
                 </label>
               )}
             </div>
             {identicalRoleTargetWarning(providersDraft) && (
-              <p className="form-hint" role="status">{identicalRoleTargetWarning(providersDraft)}</p>
+              <p className="form-hint" role="status">
+                {identicalRoleTargetWarning(providersDraft)}
+              </p>
             )}
 
             <ProviderSettingsTable
@@ -901,19 +978,21 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
               proxies={proxiesDraft}
               saving={saving === 'providers'}
               onDraft={setProvidersDraft}
-              onRefresh={providerId => { void refreshModels(providerId) }}
+              onRefresh={(providerId) => {
+                void refreshModels(providerId)
+              }}
             />
 
             <div className="config-add-row" style={{ marginTop: '1rem' }}>
               <select
                 value={newProviderSelect}
                 disabled={providersDraft.availableProviders.length === 0 || saving === 'providers'}
-                onChange={e => setNewProviderSelect(e.target.value)}
+                onChange={(e) => setNewProviderSelect(e.target.value)}
               >
                 {providersDraft.availableProviders.length === 0 ? (
-                  <option value="">No more providers in registry</option>
+                  <option value="">{t('config.panel.noMoreProviders')}</option>
                 ) : (
-                  providersDraft.availableProviders.map(p => (
+                  providersDraft.availableProviders.map((p) => (
                     <option key={p} value={p}>
                       {p}
                     </option>
@@ -936,7 +1015,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                   setNewProviderSelect(next.availableProviders[0] ?? '')
                 }}
               >
-                Add provider
+                {t('config.panel.addProvider')}
               </button>
             </div>
 
@@ -947,46 +1026,58 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                 disabled={saving === 'providers' || !providersDraft.dirty}
                 onClick={() => void saveProviders()}
               >
-                {saving === 'providers' ? 'Saving…' : 'Save provider settings'}
+                {saving === 'providers'
+                  ? t('config.panel.saving')
+                  : t('config.panel.saveProviders')}
               </button>
             </div>
           </section>
 
           <section className="config-section">
-            <h4>Network Proxies</h4>
-            <p className="form-hint">
-              Pre-configure reusable HTTP, HTTPS, or SOCKS5 proxies to easily assign to model providers.
-            </p>
+            <h4>{t('config.panel.networkProxies')}</h4>
+            <p className="form-hint">{t('config.panel.proxiesHint')}</p>
 
-            <div className="provider-table-wrapper" style={{ overflowX: 'auto', marginTop: '0.75rem' }}>
+            <div
+              className="provider-table-wrapper"
+              style={{ overflowX: 'auto', marginTop: '0.75rem' }}
+            >
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                    <th style={{ padding: '0.5rem' }}>Proxy ID</th>
-                    <th style={{ padding: '0.5rem' }}>Proxy URL</th>
-                    <th style={{ padding: '0.5rem' }}>Description</th>
-                    <th style={{ padding: '0.5rem' }}>Used By</th>
-                    <th style={{ padding: '0.5rem', width: '5.5rem' }}>Actions</th>
+                    <th style={{ padding: '0.5rem' }}>{t('config.panel.proxyId')}</th>
+                    <th style={{ padding: '0.5rem' }}>{t('config.panel.proxyUrl')}</th>
+                    <th style={{ padding: '0.5rem' }}>{t('config.panel.descriptionLabel')}</th>
+                    <th style={{ padding: '0.5rem' }}>{t('config.panel.usedBy')}</th>
+                    <th style={{ padding: '0.5rem', width: '5.5rem' }}>
+                      {t('config.panel.actions')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {proxiesDraft.length === 0 ? (
                     <tr>
-                      <td colSpan={5} style={{ padding: '1rem', textAlign: 'center' }} className="muted">
-                        No proxies configured yet. Add one below to use with providers.
+                      <td
+                        colSpan={5}
+                        style={{ padding: '1rem', textAlign: 'center' }}
+                        className="muted"
+                      >
+                        {t('config.panel.noProxies')}
                       </td>
                     </tr>
                   ) : (
-                    proxiesDraft.map(p => {
+                    proxiesDraft.map((p) => {
                       const isEditing = editingProxyId === p.id
                       const providersUsing = (providersDraft?.providers ?? [])
-                        .filter(row => row.proxy.trim() === p.id || row.proxy.trim() === p.url)
-                        .map(row => row.name)
+                        .filter((row) => row.proxy.trim() === p.id || row.proxy.trim() === p.url)
+                        .map((row) => row.name)
 
                       return (
                         <tr key={p.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                           <td style={{ padding: '0.5rem', fontWeight: 600 }}>
-                            <span className="badge" style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}>
+                            <span
+                              className="badge"
+                              style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}
+                            >
                               {p.id}
                             </span>
                           </td>
@@ -994,20 +1085,22 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                             {isEditing ? (
                               <input
                                 value={editProxyUrl}
-                                onChange={e => setEditProxyUrl(e.target.value)}
-                                placeholder="e.g. http://127.0.0.1:7890"
+                                onChange={(e) => setEditProxyUrl(e.target.value)}
+                                placeholder={t('config.panel.proxyUrlExample')}
                                 style={{ width: '100%', minWidth: '12rem' }}
                               />
                             ) : (
-                              <span style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}>{p.url}</span>
+                              <span style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}>
+                                {p.url}
+                              </span>
                             )}
                           </td>
                           <td style={{ padding: '0.5rem' }}>
                             {isEditing ? (
                               <input
                                 value={editProxyDesc}
-                                onChange={e => setEditProxyDesc(e.target.value)}
-                                placeholder="Optional description"
+                                onChange={(e) => setEditProxyDesc(e.target.value)}
+                                placeholder={t('config.panel.optionalDescription')}
                                 style={{ width: '100%', minWidth: '10rem' }}
                               />
                             ) : (
@@ -1019,14 +1112,20 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                           <td style={{ padding: '0.5rem' }}>
                             {providersUsing.length > 0 ? (
                               <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
-                                {providersUsing.map(pName => (
-                                  <span key={pName} className="badge" style={{ fontSize: '0.7rem' }}>
+                                {providersUsing.map((pName) => (
+                                  <span
+                                    key={pName}
+                                    className="badge"
+                                    style={{ fontSize: '0.7rem' }}
+                                  >
                                     {pName}
                                   </span>
                                 ))}
                               </div>
                             ) : (
-                              <span className="muted" style={{ fontSize: '0.8rem' }}>none</span>
+                              <span className="muted" style={{ fontSize: '0.8rem' }}>
+                                {t('config.panel.noneLowercase')}
+                              </span>
                             )}
                           </td>
                           <td style={{ padding: '0.5rem' }}>
@@ -1036,7 +1135,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                                   <button
                                     type="button"
                                     className="btn-icon"
-                                    title="Save proxy"
+                                    title={t('config.panel.saveProxy')}
                                     onClick={() => handleSaveEditProxy(p.id)}
                                   >
                                     <Check size={16} />
@@ -1044,7 +1143,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                                   <button
                                     type="button"
                                     className="btn-icon"
-                                    title="Cancel"
+                                    title={t('config.panel.cancel')}
                                     onClick={() => {
                                       setEditingProxyId(null)
                                       setProxyFormError('')
@@ -1058,7 +1157,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                                   <button
                                     type="button"
                                     className="btn-icon"
-                                    title="Edit proxy"
+                                    title={t('config.panel.editProxy')}
                                     disabled={saving === 'proxies'}
                                     onClick={() => handleStartEditProxy(p)}
                                   >
@@ -1067,7 +1166,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                                   <button
                                     type="button"
                                     className="btn-icon"
-                                    title={`Delete proxy ${p.id}`}
+                                    title={t('config.panel.deleteProxy', { id: p.id })}
                                     disabled={saving === 'proxies'}
                                     onClick={() => handleDeleteProxy(p.id)}
                                   >
@@ -1095,7 +1194,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
               }}
             >
               <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.5rem' }}>
-                Add New Proxy
+                {t('config.panel.addNewProxy')}
               </div>
               <div
                 style={{
@@ -1108,38 +1207,44 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                 <div>
                   <input
                     value={newProxyId}
-                    placeholder="ID (e.g. clash)"
-                    onChange={e => {
+                    placeholder={t('config.panel.proxyIdExample')}
+                    onChange={(e) => {
                       setNewProxyId(e.target.value)
                       setProxyFormError('')
                     }}
                     disabled={saving === 'proxies'}
                     style={{ width: '100%' }}
                   />
-                  <div className="form-hint" style={{ fontSize: '0.7rem' }}>Identifier</div>
+                  <div className="form-hint" style={{ fontSize: '0.7rem' }}>
+                    {t('config.panel.identifier')}
+                  </div>
                 </div>
                 <div>
                   <input
                     value={newProxyUrl}
-                    placeholder="URL (e.g. http://127.0.0.1:7890)"
-                    onChange={e => {
+                    placeholder={t('config.panel.proxyUrlPlaceholder')}
+                    onChange={(e) => {
                       setNewProxyUrl(e.target.value)
                       setProxyFormError('')
                     }}
                     disabled={saving === 'proxies'}
                     style={{ width: '100%' }}
                   />
-                  <div className="form-hint" style={{ fontSize: '0.7rem' }}>http://, https://, socks5://</div>
+                  <div className="form-hint" style={{ fontSize: '0.7rem' }}>
+                    http://, https://, socks5://
+                  </div>
                 </div>
                 <div>
                   <input
                     value={newProxyDesc}
-                    placeholder="Description (optional)"
-                    onChange={e => setNewProxyDesc(e.target.value)}
+                    placeholder={t('config.panel.descriptionOptional')}
+                    onChange={(e) => setNewProxyDesc(e.target.value)}
                     disabled={saving === 'proxies'}
                     style={{ width: '100%' }}
                   />
-                  <div className="form-hint" style={{ fontSize: '0.7rem' }}>Optional label</div>
+                  <div className="form-hint" style={{ fontSize: '0.7rem' }}>
+                    {t('config.panel.optionalLabel')}
+                  </div>
                 </div>
                 <div>
                   <button
@@ -1149,13 +1254,19 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                     disabled={saving === 'proxies' || !newProxyId.trim() || !newProxyUrl.trim()}
                     style={{ whiteSpace: 'nowrap', marginTop: '1px' }}
                   >
-                    Add Proxy
+                    {t('config.panel.addProxy')}
                   </button>
                 </div>
               </div>
               {proxyFormError && (
-                <div style={{ color: 'var(--color-danger, #ef4444)', fontSize: '0.8rem', marginTop: '0.4rem' }}>
-                  {proxyFormError}
+                <div
+                  style={{
+                    color: 'var(--color-danger, #ef4444)',
+                    fontSize: '0.8rem',
+                    marginTop: '0.4rem',
+                  }}
+                >
+                  {renderMessage(proxyFormError)}
                 </div>
               )}
             </div>
@@ -1167,30 +1278,33 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                 disabled={saving === 'proxies'}
                 onClick={() => void saveProxies()}
               >
-                {saving === 'proxies' ? 'Saving…' : 'Save proxies'}
+                {saving === 'proxies' ? t('config.panel.saving') : t('config.panel.saveProxies')}
               </button>
             </div>
           </section>
 
           <section className="config-section">
-            <h4>Tool mode</h4>
+            <h4>{t('config.panel.toolMode')}</h4>
             <div className="config-form-grid">
               <label>
-                Mode
-                {doc.mode.fromEnv && <span className="config-env-note">From environment</span>}
+                {t('config.panel.mode')}
+                {doc.mode.fromEnv && (
+                  <span className="config-env-note">{t('config.panel.fromEnvironment')}</span>
+                )}
                 <select
                   value={drafts.mode}
                   disabled={doc.mode.fromEnv || saving === 'mode'}
-                  onChange={event => setDrafts({ ...drafts, mode: event.target.value })}
+                  onChange={(event) => setDrafts({ ...drafts, mode: event.target.value })}
                 >
-                  {MODE_OPTIONS.map(option => (
+                  {getModeOptions().map((option) => (
                     <option key={option.value || 'unset'} value={option.value}>
                       {option.label}
                     </option>
                   ))}
-                  {drafts.mode && !MODE_OPTIONS.some(option => option.value === drafts.mode) && (
-                    <option value={drafts.mode}>{drafts.mode}</option>
-                  )}
+                  {drafts.mode &&
+                    !getModeOptions().some((option) => option.value === drafts.mode) && (
+                      <option value={drafts.mode}>{drafts.mode}</option>
+                    )}
                 </select>
               </label>
             </div>
@@ -1201,62 +1315,64 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                 disabled={saving === 'mode'}
                 onClick={() => void saveMode()}
               >
-                {saving === 'mode' ? 'Saving…' : 'Save tool mode'}
+                {saving === 'mode' ? t('config.panel.saving') : t('config.panel.saveToolMode')}
               </button>
             </div>
           </section>
 
           <section className="config-section">
-            <h4>Harness</h4>
-            <p className="form-hint">
-              Global defaults for harness runs. A project harness file can override the turn budget.
-              Leave a number blank to use the built-in default.
-            </p>
+            <h4>{t('config.panel.harness')}</h4>
+            <p className="form-hint">{t('config.panel.harnessHint')}</p>
             <div className="config-form-grid">
               <label>
-                Max turns
-                {doc.harness.maxTurns.fromEnv && <span className="config-env-note">From environment</span>}
+                {t('config.panel.maxTurns')}
+                {doc.harness.maxTurns.fromEnv && (
+                  <span className="config-env-note">{t('config.panel.fromEnvironment')}</span>
+                )}
                 <input
                   inputMode="numeric"
                   value={drafts.harness.maxTurns}
                   disabled={doc.harness.maxTurns.fromEnv || saving === 'harness'}
                   placeholder="25"
-                  onChange={event =>
-                    setDrafts({ ...drafts, harness: { ...drafts.harness, maxTurns: event.target.value } })
+                  onChange={(event) =>
+                    setDrafts({
+                      ...drafts,
+                      harness: { ...drafts.harness, maxTurns: event.target.value },
+                    })
                   }
                 />
-                <span className="form-hint">Unset uses 25 when a project omits its own budget.</span>
+                <span className="form-hint">{t('config.panel.maxTurnsHint')}</span>
               </label>
               <label>
-                Stagnation threshold
+                {t('config.panel.stagnationThreshold')}
                 {doc.harness.stagnationThreshold.fromEnv && (
-                  <span className="config-env-note">From environment</span>
+                  <span className="config-env-note">{t('config.panel.fromEnvironment')}</span>
                 )}
                 <input
                   inputMode="numeric"
                   value={drafts.harness.stagnationThreshold}
                   disabled={doc.harness.stagnationThreshold.fromEnv || saving === 'harness'}
                   placeholder="6"
-                  onChange={event =>
+                  onChange={(event) =>
                     setDrafts({
                       ...drafts,
                       harness: { ...drafts.harness, stagnationThreshold: event.target.value },
                     })
                   }
                 />
-                <span className="form-hint">Unset uses 6.</span>
+                <span className="form-hint">{t('config.panel.stagnationHint')}</span>
               </label>
               <label>
-                Exploration budget
+                {t('config.panel.explorationBudget')}
                 {doc.harness.explorationBudget.fromEnv && (
-                  <span className="config-env-note">From environment</span>
+                  <span className="config-env-note">{t('config.panel.fromEnvironment')}</span>
                 )}
                 <input
                   inputMode="numeric"
                   value={drafts.harness.explorationBudget}
                   disabled={doc.harness.explorationBudget.fromEnv || saving === 'harness'}
-                  placeholder="Optional"
-                  onChange={event =>
+                  placeholder={t('config.panel.optional')}
+                  onChange={(event) =>
                     setDrafts({
                       ...drafts,
                       harness: { ...drafts.harness, explorationBudget: event.target.value },
@@ -1265,16 +1381,16 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                 />
               </label>
               <label>
-                Review interval
+                {t('config.panel.reviewInterval')}
                 {doc.harness.periodicReviewInterval.fromEnv && (
-                  <span className="config-env-note">From environment</span>
+                  <span className="config-env-note">{t('config.panel.fromEnvironment')}</span>
                 )}
                 <input
                   inputMode="numeric"
                   value={drafts.harness.periodicReviewInterval}
                   disabled={doc.harness.periodicReviewInterval.fromEnv || saving === 'harness'}
-                  placeholder="Optional"
-                  onChange={event =>
+                  placeholder={t('config.panel.optional')}
+                  onChange={(event) =>
                     setDrafts({
                       ...drafts,
                       harness: { ...drafts.harness, periodicReviewInterval: event.target.value },
@@ -1283,72 +1399,87 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                 />
               </label>
               <label>
-                Circuit breaker
+                {t('config.panel.circuitBreaker')}
                 {doc.harness.circuitBreakerEnabled.fromEnv && (
-                  <span className="config-env-note">From environment</span>
+                  <span className="config-env-note">{t('config.panel.fromEnvironment')}</span>
                 )}
                 <select
                   value={drafts.harness.circuitBreaker}
                   disabled={doc.harness.circuitBreakerEnabled.fromEnv || saving === 'harness'}
-                  onChange={event =>
+                  onChange={(event) =>
                     setDrafts({
                       ...drafts,
                       harness: {
                         ...drafts.harness,
-                        circuitBreaker: event.target.value as ConfigDrafts['harness']['circuitBreaker'],
+                        circuitBreaker: event.target
+                          .value as ConfigDrafts['harness']['circuitBreaker'],
                       },
                     })
                   }
                 >
-                  <option value="default">Default (on)</option>
-                  <option value="on">On</option>
-                  <option value="off">Off</option>
+                  <option value="default">{t('config.panel.defaultOn')}</option>
+                  <option value="on">{t('config.panel.on')}</option>
+                  <option value="off">{t('config.panel.off')}</option>
                 </select>
               </label>
             </div>
             <div className="settings-actions-row">
-              <button type="button" className="btn-primary" disabled={saving === 'harness'} onClick={() => void saveHarness()}>
-                {saving === 'harness' ? 'Saving…' : 'Save harness settings'}
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={saving === 'harness'}
+                onClick={() => void saveHarness()}
+              >
+                {saving === 'harness' ? t('config.panel.saving') : t('config.panel.saveHarness')}
               </button>
             </div>
           </section>
 
           <section className="config-section">
-            <h4>Judge</h4>
+            <h4>{t('config.panel.judge')}</h4>
             <p className="form-hint">
               {doc.judge.configured
-                ? 'This judge block is stored in the OpenDuck config file. The judge runs only when a decision point is shadow or active.'
-                : 'No judge block is stored yet. These are the built-in defaults. Save to write them into the config file.'}
+                ? t('config.panel.judgeConfiguredHint')
+                : t('config.panel.judgeDefaultHint')}
             </p>
             <div className="config-form-grid">
               <label>
-                Provider
+                {t('config.panel.provider')}
                 <input
                   value={drafts.judge.provider}
                   disabled={saving === 'judge'}
-                  onChange={event =>
-                    setDrafts({ ...drafts, judge: { ...drafts.judge, provider: event.target.value } })
+                  onChange={(event) =>
+                    setDrafts({
+                      ...drafts,
+                      judge: { ...drafts.judge, provider: event.target.value },
+                    })
                   }
                 />
               </label>
               <label>
-                Endpoint
+                {t('config.panel.endpoint')}
                 <input
                   value={drafts.judge.endpoint}
                   disabled={saving === 'judge'}
-                  onChange={event =>
-                    setDrafts({ ...drafts, judge: { ...drafts.judge, endpoint: event.target.value } })
+                  onChange={(event) =>
+                    setDrafts({
+                      ...drafts,
+                      judge: { ...drafts.judge, endpoint: event.target.value },
+                    })
                   }
                 />
               </label>
               <label>
-                Timeout (ms)
+                {t('config.panel.timeoutMs')}
                 <input
                   inputMode="numeric"
                   value={drafts.judge.timeoutMs}
                   disabled={saving === 'judge'}
-                  onChange={event =>
-                    setDrafts({ ...drafts, judge: { ...drafts.judge, timeoutMs: event.target.value } })
+                  onChange={(event) =>
+                    setDrafts({
+                      ...drafts,
+                      judge: { ...drafts.judge, timeoutMs: event.target.value },
+                    })
                   }
                 />
               </label>
@@ -1357,41 +1488,41 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                   type="checkbox"
                   checked={drafts.judge.fallbackOnError}
                   disabled={saving === 'judge'}
-                  onChange={event =>
+                  onChange={(event) =>
                     setDrafts({
                       ...drafts,
                       judge: { ...drafts.judge, fallbackOnError: event.target.checked },
                     })
                   }
                 />
-                Continue when the judge service errors
+                {t('config.panel.continueOnJudgeError')}
               </label>
             </div>
             <div className="config-entry-list">
-              {drafts.judge.points.map(point => (
+              {drafts.judge.points.map((point) => (
                 <div className="config-point-row" key={point.id}>
                   <label>
-                    {JUDGE_POINT_LABELS[point.id] ?? point.id}
+                    {getJudgePointLabels()[point.id] ?? point.id}
                     <input className="readonly-input" value={point.id} readOnly />
                   </label>
                   <label>
-                    Mode
+                    {t('config.panel.mode')}
                     <select
                       value={point.mode}
                       disabled={saving === 'judge'}
-                      onChange={event =>
+                      onChange={(event) =>
                         setDrafts({
                           ...drafts,
                           judge: {
                             ...drafts.judge,
-                            points: drafts.judge.points.map(item =>
+                            points: drafts.judge.points.map((item) =>
                               item.id === point.id ? { ...item, mode: event.target.value } : item,
                             ),
                           },
                         })
                       }
                     >
-                      {JUDGE_MODES.map(option => (
+                      {getJudgeModes().map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
                         </option>
@@ -1404,13 +1535,13 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                     <button
                       type="button"
                       className="icon-btn"
-                      aria-label={`Remove ${point.id}`}
+                      aria-label={t('config.panel.removeItem', { name: point.id })}
                       onClick={() =>
                         setDrafts({
                           ...drafts,
                           judge: {
                             ...drafts.judge,
-                            points: drafts.judge.points.filter(item => item.id !== point.id),
+                            points: drafts.judge.points.filter((item) => item.id !== point.id),
                           },
                         })
                       }
@@ -1423,22 +1554,27 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
             </div>
             <div className="config-add-row">
               <label>
-                Decision point
+                {t('config.panel.decisionPoint')}
                 <input
                   value={newPointId}
                   placeholder="custom.point"
-                  onChange={event => setNewPointId(event.target.value)}
+                  onChange={(event) => setNewPointId(event.target.value)}
                 />
               </label>
               <div className="config-entry-actions">
                 <button type="button" className="secondary" onClick={addJudgePoint}>
-                  Add point
+                  {t('config.panel.addPoint')}
                 </button>
               </div>
             </div>
             <div className="settings-actions-row">
-              <button type="button" className="btn-primary" disabled={saving === 'judge'} onClick={() => void saveJudge()}>
-                {saving === 'judge' ? 'Saving…' : 'Save judge settings'}
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={saving === 'judge'}
+                onClick={() => void saveJudge()}
+              >
+                {saving === 'judge' ? t('config.panel.saving') : t('config.panel.saveJudge')}
               </button>
               {doc.judge.configured && (
                 <button
@@ -1447,33 +1583,37 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                   disabled={saving === 'judge-remove'}
                   onClick={() => void removeJudge()}
                 >
-                  {saving === 'judge-remove' ? 'Removing…' : 'Remove judge block'}
+                  {saving === 'judge-remove'
+                    ? t('config.panel.removing')
+                    : t('config.panel.removeJudge')}
                 </button>
               )}
             </div>
           </section>
 
           <section className="config-section">
-            <h4>Other settings</h4>
-            <p className="form-hint">Scalar values in the config file. Extensions stay in the extensions block.</p>
+            <h4>{t('config.panel.otherSettings')}</h4>
+            <p className="form-hint">{t('config.panel.scalarSettingsHint')}</p>
             {doc.entries.length === 0 ? (
-              <p className="muted">No extra settings yet.</p>
+              <p className="muted">{t('config.panel.noExtraSettings')}</p>
             ) : (
               <div className="config-entry-list">
-                {doc.entries.map(entry => (
+                {doc.entries.map((entry) => (
                   <div className="config-entry-row" key={entry.key}>
                     <label>
                       {configLabel(entry.key)}
-                      {entry.fromEnv && <span className="config-env-note">From environment</span>}
+                      {entry.fromEnv && (
+                        <span className="config-env-note">{t('config.panel.fromEnvironment')}</span>
+                      )}
                       <input className="readonly-input" value={entry.key} readOnly />
                     </label>
                     {typeof entry.value === 'boolean' ? (
                       <label>
-                        Value
+                        {t('config.panel.value')}
                         <select
                           value={drafts.entries[entry.key] ?? formatScalar(entry.value)}
                           disabled={entry.fromEnv || saving === entry.key}
-                          onChange={event =>
+                          onChange={(event) =>
                             setDrafts({
                               ...drafts,
                               entries: { ...drafts.entries, [entry.key]: event.target.value },
@@ -1486,11 +1626,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                       </label>
                     ) : (
                       <label>
-                        Value
+                        {t('config.panel.value')}
                         <input
                           value={drafts.entries[entry.key] ?? ''}
                           disabled={entry.fromEnv || saving === entry.key}
-                          onChange={event =>
+                          onChange={(event) =>
                             setDrafts({
                               ...drafts,
                               entries: { ...drafts.entries, [entry.key]: event.target.value },
@@ -1506,12 +1646,12 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                         disabled={entry.fromEnv || saving === entry.key}
                         onClick={() => void saveEntry(entry.key)}
                       >
-                        {saving === entry.key ? 'Saving…' : 'Save'}
+                        {saving === entry.key ? t('config.panel.saving') : t('config.panel.save')}
                       </button>
                       <button
                         type="button"
                         className="icon-btn"
-                        aria-label={`Remove ${entry.key}`}
+                        aria-label={t('config.panel.removeItem', { name: entry.key })}
                         disabled={entry.fromEnv || saving === `remove:${entry.key}`}
                         onClick={() => void removeEntry(entry.key)}
                       >
@@ -1524,24 +1664,29 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
             )}
             <div className="config-add-row">
               <label>
-                Name
+                {t('config.panel.name')}
                 <input
                   value={newKey}
-                  placeholder="OLLAMA_HOST"
-                  onChange={event => setNewKey(event.target.value)}
+                  placeholder={t('config.stats.ollamaHostPlaceholder')}
+                  onChange={(event) => setNewKey(event.target.value)}
                 />
               </label>
               <label>
-                Value
+                {t('config.panel.value')}
                 <input
                   value={newValue}
                   placeholder="http://127.0.0.1:11434"
-                  onChange={event => setNewValue(event.target.value)}
+                  onChange={(event) => setNewValue(event.target.value)}
                 />
               </label>
               <div className="config-entry-actions">
-                <button type="button" className="secondary" disabled={saving === 'add'} onClick={() => void addEntry()}>
-                  {saving === 'add' ? 'Adding…' : 'Add setting'}
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={saving === 'add'}
+                  onClick={() => void addEntry()}
+                >
+                  {saving === 'add' ? t('config.panel.adding') : t('config.panel.addSetting')}
                 </button>
               </div>
             </div>

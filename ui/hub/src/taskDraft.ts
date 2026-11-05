@@ -4,6 +4,7 @@ import type {
   SubtaskSpec,
   TaskDraft,
 } from '@aaif/goose-hub-core'
+import { translate } from './i18n/index.ts'
 
 export function shouldReplaceGeneratedTaskId(id: string, editing: boolean): boolean {
   return !editing && /^task-\d{6}$/.test(id)
@@ -106,23 +107,32 @@ export function subtasksForSave(subtasks: SubtaskSpec[] | undefined): SubtaskSpe
     .filter(subtask => subtask.title || subtask.description)
     .map((subtask, index) => ({
       ...subtask,
-      title: subtask.title || `Subtask ${index + 1}`,
+      title:
+        subtask.title ||
+        translate('harness.draft.helper.defaultSubtaskTitle', { index: index + 1 }),
     }))
   return cleaned.length ? cleaned : undefined
 }
 
-export function subtaskSaveError(subtasks: SubtaskSpec[] | undefined): string | null {
+export function subtaskSaveErrorDescriptor(
+  subtasks: SubtaskSpec[] | undefined,
+): { key: `harness.draft.helper.${string}`; values: { index: number } } | null {
   for (const [index, subtask] of (subtasks ?? []).entries()) {
     for (const output of subtask.expectedOutputs ?? []) {
       if (output.kind === 'file' && !output.filePath?.trim()) {
-        return `Subtask ${index + 1} has a file check without a path`
+        return { key: 'harness.draft.helper.fileCheckMissingPath', values: { index: index + 1 } }
       }
       if (output.kind === 'command' && !output.command?.trim()) {
-        return `Subtask ${index + 1} has a command check without a command`
+        return { key: 'harness.draft.helper.commandCheckMissingCommand', values: { index: index + 1 } }
       }
     }
   }
   return null
+}
+
+export function subtaskSaveError(subtasks: SubtaskSpec[] | undefined): string | null {
+  const message = subtaskSaveErrorDescriptor(subtasks)
+  return message ? translate(message.key, message.values) : null
 }
 
 function emptyToUndefined(value: string | undefined): string | undefined {

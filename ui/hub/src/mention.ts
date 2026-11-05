@@ -1,5 +1,6 @@
 import type { createApi, ProjectFileEntry, FileListResponse } from '@aaif/goose-hub-core'
 import { getSourcesClient, listRuleSources } from './acp.ts'
+import { translate } from './i18n/index.ts'
 
 export type MentionItemType = 'Attachment' | 'Task' | 'Agent' | 'File' | 'Directory' | 'Rule'
 
@@ -349,7 +350,7 @@ export function mentionItemsFromAttachmentPaths(paths: string[]): MentionDisplay
       const name = path.split(/[/\\]/).pop() ?? path
       return {
         name,
-        extra: 'Attached file',
+        extra: translate('mentions.helper.attachedFile'),
         itemType: 'Attachment' as const,
         relativePath: path,
         insertText: `@${path} `,
@@ -557,7 +558,11 @@ export async function fetchAgentMentions(
       return {
         name: agent.name,
         description: agent.description,
-        extra: agent.description || `Agent (${agent.sourceType || 'agent'})`,
+        extra:
+          agent.description ||
+          translate('mentions.helper.agentFallback', {
+            type: agent.sourceType || translate('mentions.helper.defaultAgentType'),
+          }),
         itemType: 'Agent',
         relativePath: agent.sourcePath || agent.name,
         insertText,
@@ -582,7 +587,7 @@ export async function fetchRuleMentions(
     return (sources || []).map(source => ({
       name: source.name,
       description: source.description,
-      extra: source.description || source.path || 'Rule source',
+      extra: source.description || source.path || translate('mentions.helper.ruleSource'),
       itemType: 'Rule',
       relativePath: source.path || source.name,
       insertText: `@${source.name} `,
@@ -607,7 +612,7 @@ export async function fetchTaskMentions(
       return {
         name: displayName,
         description: task.promptPreview,
-        extra: `Task (${task.id})`,
+        extra: translate('mentions.helper.taskFallback', { id: task.id }),
         itemType: 'Task',
         relativePath: task.id,
         insertText: `@task:${task.id} `,

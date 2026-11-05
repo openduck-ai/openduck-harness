@@ -1,3 +1,4 @@
+import { translate } from './i18n/index.ts'
 import type {
   HarnessJudgmentRecord,
   HarnessRunResponse,
@@ -110,20 +111,20 @@ export function describeTranscriptConclusion(options: {
   switch (status) {
     case 'success':
       return options.hasFailureReason
-        ? { title: '❌ Task Failed', tone: 'failure' }
-        : { title: '✅ Task Completed', tone: 'success' }
+        ? { title: translate('trajectory.helper.failed'), tone: 'failure' }
+        : { title: translate('trajectory.helper.completed'), tone: 'success' }
     case 'failure':
-      return { title: '❌ Task Failed', tone: 'failure' }
+      return { title: translate('trajectory.helper.failed'), tone: 'failure' }
     case 'timeout':
-      return { title: '⚠️ Task Incomplete / Timed Out', tone: 'warning' }
+      return { title: translate('trajectory.helper.timedOut'), tone: 'warning' }
     case 'cancelled':
-      return { title: '⚠️ Task Incomplete / Cancelled', tone: 'warning' }
+      return { title: translate('trajectory.helper.cancelled'), tone: 'warning' }
     case 'skipped':
-      return { title: 'Task Skipped', tone: 'neutral' }
+      return { title: translate('trajectory.helper.skipped'), tone: 'neutral' }
     case 'running':
-      return { title: 'Task In Progress', tone: 'neutral' }
+      return { title: translate('trajectory.helper.inProgress'), tone: 'neutral' }
     default:
-      return { title: 'Task Conclusion', tone: 'neutral' }
+      return { title: translate('trajectory.helper.conclusion'), tone: 'neutral' }
   }
 }
 
@@ -172,19 +173,21 @@ export function extractFailureReason(run: HarnessRunResponse | null | undefined)
       s => s.status && String(s.status).toLowerCase() !== 'success',
     )
     if (failedSub) {
-      const name = failedSub.title || failedSub.subtaskId || 'subtask'
+      const name = failedSub.title || failedSub.subtaskId || translate('trajectory.helper.subtaskFallback')
       if (failedSub.outputCheck) {
-        return `Subtask "${name}" failed expected output check: ${failedSub.outputCheck}`
+        return translate('trajectory.helper.subtaskCheckFailed', { name, check: failedSub.outputCheck })
       }
       if (
         failedSub.summary &&
         !failedSub.summary.startsWith('Finished with status:') &&
         !failedSub.summary.startsWith('### Subtask')
       ) {
-        return `Subtask "${name}" failed: ${failedSub.summary}`
+        return translate('trajectory.helper.subtaskFailed', { name, summary: failedSub.summary })
       }
       const steps = failedSub.stepsTaken ?? failedSub.stepCount
-      return `Subtask "${name}" ended with status ${String(failedSub.status)}${steps ? ` after ${steps} steps` : ''}.`
+      return steps
+        ? translate('trajectory.helper.subtaskEndedWithSteps', { name, status: String(failedSub.status), steps })
+        : translate('trajectory.helper.subtaskEnded', { name, status: String(failedSub.status) })
     }
   }
 
@@ -197,15 +200,19 @@ export function extractFailureReason(run: HarnessRunResponse | null | undefined)
       : undefined
     const name = subtask?.title || resumeId
     const maxTurns = subtask?.maxTurns
-    return `Subtask "${name}" (${resumeId}) was cancelled / interrupted before completion${maxTurns ? ` (allocated turn limit: ${maxTurns} turns)` : ''}.`
+    return maxTurns
+      ? translate('trajectory.helper.subtaskInterruptedWithLimit', { name, id: resumeId, turns: maxTurns })
+      : translate('trajectory.helper.subtaskInterrupted', { name, id: resumeId })
   }
 
   // 5. Default based on status and step count
   const steps = run.stepCount || run.trajectory?.steps?.length || 0
   if (statusStr === 'cancelled') {
-    return `Execution cancelled after ${steps} steps.`
+    return translate('trajectory.helper.executionCancelled', { steps })
   }
-  return `Execution ended with status ${run.status}${steps ? ` after ${steps} steps` : ''}.`
+  return steps
+    ? translate('trajectory.helper.executionEndedWithSteps', { status: run.status, steps })
+    : translate('trajectory.helper.executionEnded', { status: run.status })
 }
 
 /**
@@ -240,12 +247,21 @@ export function extractFinalAnswer(run: HarnessRunResponse | null | undefined): 
         status: String(run.status || ''),
         hasFailureReason: Boolean(reason.trim()),
       })
-      const heading = `## ${title} (${run.status})`
-      if (!ans) {
-        return `${heading}\n\n**Failure Reason**: ${reason}`
+      const historicalTitles: Record<string, string> = {
+        failure: '❌ Task Failed',
+        timeout: '⚠️ Task Incomplete / Timed Out',
+        cancelled: '⚠️ Task Incomplete / Cancelled',
+        skipped: 'Task Skipped',
       }
-      if (!ans.includes(heading) && !ans.includes('Failure Reason') && !ans.includes('Task Failed') && !ans.includes('Task Incomplete')) {
-        return `${heading}\n\n**Failure Reason**: ${reason}\n\n---\n\n${ans}`
+      // Historical headings are stored in English, regardless of the display locale.
+      const historicalHeading = `## ${historicalTitles[statusStr] ?? 'Task Conclusion'} (${run.status})`
+      const heading = `## ${title} (${run.status})`
+      const failureReason = translate('trajectory.helper.failureReason', { reason })
+      if (!ans) {
+        return `${heading}\n\n${failureReason}`
+      }
+      if (!ans.includes(historicalHeading) && !ans.includes(heading) && !ans.includes('Failure Reason') && !ans.includes('Task Failed') && !ans.includes('Task Incomplete')) {
+        return `${heading}\n\n${failureReason}\n\n---\n\n${ans}`
       }
     }
   }
@@ -270,12 +286,12 @@ export function formatToolArguments(args: unknown): string {
 }
 
 const HARNESS_TOOL_PURPOSE: Record<string, string> = {
-  shell: 'Execute a shell command in the sandbox',
-  read_file: 'Read a file in the workspace',
-  write_file: 'Write a file in the workspace',
-  list_dir: 'List a workspace directory',
-  grep_search: 'Search workspace files',
-  consult_advisor: 'Consult an external advisor',
+  shell: 'trajectory.helper.shellPurpose',
+  read_file: 'trajectory.helper.readPurpose',
+  write_file: 'trajectory.helper.writePurpose',
+  list_dir: 'trajectory.helper.listPurpose',
+  grep_search: 'trajectory.helper.searchPurpose',
+  consult_advisor: 'trajectory.helper.advisorPurpose',
 }
 
 function shortToolName(name: string): string {
@@ -316,46 +332,46 @@ export function describeToolCall(name: string, args?: Record<string, unknown> | 
   switch (tool) {
     case 'shell': {
       const command = stringArg(record, 'command')
-      return command ? `Run ${truncateToolDesc(command)}` : HARNESS_TOOL_PURPOSE.shell
+      return command ? translate('trajectory.helper.runCommand', { command: truncateToolDesc(command) }) : translate(HARNESS_TOOL_PURPOSE.shell)
     }
     case 'read_file': {
       const path = stringArg(record, 'path')
-      return path ? `Read ${path}` : HARNESS_TOOL_PURPOSE.read_file
+      return path ? translate('trajectory.helper.readPath', { path }) : translate(HARNESS_TOOL_PURPOSE.read_file)
     }
     case 'write_file': {
       const path = stringArg(record, 'path')
-      return path ? `Write ${path}` : HARNESS_TOOL_PURPOSE.write_file
+      return path ? translate('trajectory.helper.writePath', { path }) : translate(HARNESS_TOOL_PURPOSE.write_file)
     }
     case 'list_dir': {
       const path = stringArg(record, 'path')
-      return path ? `List ${path}` : 'List the workspace root'
+      return path ? translate('trajectory.helper.listPath', { path }) : translate('trajectory.helper.listRoot')
     }
     case 'grep_search': {
       const query = stringArg(record, 'query')
-      if (!query) return HARNESS_TOOL_PURPOSE.grep_search
+      if (!query) return translate(HARNESS_TOOL_PURPOSE.grep_search)
       const path = stringArg(record, 'path')
-      return path ? `Search "${truncateToolDesc(query, 64)}" in ${path}` : `Search "${truncateToolDesc(query, 72)}"`
+      return path ? translate('trajectory.helper.searchPath', { query: truncateToolDesc(query, 64), path }) : translate('trajectory.helper.search', { query: truncateToolDesc(query, 72) })
     }
     case 'consult_advisor': {
-      const advisor = stringArg(record, 'command') ?? 'advisor'
+      const advisor = stringArg(record, 'command') ?? translate('trajectory.helper.advisor')
       const prompt = stringArg(record, 'prompt')
-      return prompt ? `Ask ${advisor}: ${truncateToolDesc(prompt, 72)}` : `Consult ${advisor}`
+      return prompt ? translate('trajectory.helper.askAdvisor', { advisor, prompt: truncateToolDesc(prompt, 72) }) : translate('trajectory.helper.consultAdvisor', { advisor })
     }
     case 'tui_agent_start':
-      return `Start ${stringArg(record, 'agent') ?? 'agent'} TUI session`
+      return translate('trajectory.helper.startTui', { agent: stringArg(record, 'agent') ?? translate('trajectory.helper.agent') })
     case 'tui_agent_prompt':
-      return `Prompt TUI session ${stringArg(record, 'session_id') ?? ''}`.trim()
+      return translate('trajectory.helper.promptTui', { id: stringArg(record, 'session_id') ?? '' }).trim()
     case 'tui_agent_read':
-      return `Read TUI session ${stringArg(record, 'session_id') ?? ''}`.trim()
+      return translate('trajectory.helper.readTui', { id: stringArg(record, 'session_id') ?? '' }).trim()
     case 'tui_agent_keys':
-      return `Send keys to TUI session ${stringArg(record, 'session_id') ?? ''}`.trim()
+      return translate('trajectory.helper.keysTui', { id: stringArg(record, 'session_id') ?? '' }).trim()
     case 'tui_agent_list':
-      return 'List TUI agent sessions'
+      return translate('trajectory.helper.listTui')
     case 'tui_agent_stop':
-      return `Stop TUI session ${stringArg(record, 'session_id') ?? ''}`.trim()
+      return translate('trajectory.helper.stopTui', { id: stringArg(record, 'session_id') ?? '' }).trim()
     default: {
       const purpose = HARNESS_TOOL_PURPOSE[tool]
-      if (purpose) return purpose
+      if (purpose) return translate(purpose)
       const preview =
         stringArg(record, 'path', 'command', 'query', 'prompt', 'url', 'name', 'value') ??
         Object.entries(record)
@@ -476,11 +492,11 @@ export interface AgentLogTuiStatus {
 }
 
 const TUI_STATUS_LABELS: Record<string, string> = {
-  initializing: 'Initializing',
-  idle_prompt: 'Ready for input',
-  working: 'Working',
-  waiting_approval: 'Waiting for approval',
-  exited: 'Exited',
+  initializing: 'trajectory.helper.initializing',
+  idle_prompt: 'trajectory.helper.ready',
+  working: 'trajectory.helper.working',
+  waiting_approval: 'trajectory.helper.waitingApproval',
+  exited: 'trajectory.helper.exited',
 }
 
 export function tuiStatusesForTool(tool: AgentLogToolCall): AgentLogTuiStatus[] {
@@ -495,8 +511,8 @@ export function tuiStatusesForTool(tool: AgentLogToolCall): AgentLogTuiStatus[] 
       return [{
         sessionId,
         status: 'exited',
-        label: 'Exited',
-        detail: 'Session stopped',
+        label: translate('trajectory.helper.exited'),
+        detail: translate('trajectory.helper.sessionStopped'),
       }]
     }
   }
@@ -543,13 +559,13 @@ export function tuiStatusesForTool(tool: AgentLogToolCall): AgentLogTuiStatus[] 
       sessionId,
       agent: stringField(record, 'agent', 'kind'),
       status,
-      label: TUI_STATUS_LABELS[status],
+      label: translate(TUI_STATUS_LABELS[status]),
       detail: status === 'working'
         ? stringField(state, 'status_line', 'statusLine')
         : status === 'waiting_approval'
           ? stringField(state, 'prompt_snippet', 'promptSnippet')
           : status === 'exited' && typeof exitCode === 'number'
-            ? `Exit code ${exitCode}`
+            ? translate('trajectory.helper.exitCode', { code: exitCode })
             : undefined,
       attachCommand: stringField(record, 'attachCommand', 'attach_command'),
     }]
@@ -837,7 +853,7 @@ export function extractToolResultOutput(raw: unknown): string {
 
   if (toolResult.Err || toolResult.error) {
     const err = toolResult.Err ?? toolResult.error
-    return `Error: ${typeof err === 'string' ? err : JSON.stringify(err, null, 2)}`
+    return translate('trajectory.helper.error', { error: typeof err === 'string' ? err : JSON.stringify(err, null, 2) })
   }
 
   return JSON.stringify(raw, null, 2)
@@ -876,7 +892,7 @@ function parseSubtasksFromFinalAnswer(finalAnswer: string): CompletedSubtaskInfo
   let match: RegExpExecArray | null
   while ((match = regex.exec(finalAnswer)) !== null) {
     const subtaskId = match[1]?.trim() || `subtask-${results.length + 1}`
-    const title = match[2]?.trim() || `Subtask ${results.length + 1}`
+    const title = match[2]?.trim() || translate('trajectory.helper.subtaskNumber', { n: results.length + 1 })
     const summary = match[3]?.trim() || ''
     if (summary) {
       results.push({
@@ -1880,7 +1896,7 @@ export function calculateTrajectoryMetrics(
     toolUsageFrequencies,
     hasFinalAnswer: Boolean(finalAnswer),
     finalAnswer,
-    status: String(run?.status || 'Unknown'),
+    status: String(run?.status || translate('trajectory.helper.unknown')),
     providerStats,
   }
 }
@@ -1972,7 +1988,17 @@ export function dockRevealDelta(dockBottom: number, viewportHeight: number): num
 
 function statusWord(raw: string): string {
   if (!raw) return ''
-  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase()
+  const keys: Record<string, string> = {
+    success: 'trajectory.helper.statusSuccess',
+    failure: 'trajectory.helper.statusFailure',
+    timeout: 'trajectory.helper.statusTimeout',
+    cancelled: 'trajectory.helper.statusCancelled',
+    skipped: 'trajectory.helper.statusSkipped',
+    running: 'trajectory.helper.statusRunning',
+    unknown: 'trajectory.helper.statusUnknown',
+  }
+  const key = keys[raw.toLowerCase()]
+  return key ? translate(key) : raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase()
 }
 
 export function liveLineText(turns: AgentLogTurn[], live: boolean, status: string): string {
@@ -1985,9 +2011,9 @@ export function liveLineText(turns: AgentLogTurn[], live: boolean, status: strin
       const summary = describeToolCall(newest.name, newest.arguments)
       if (summary) return summary
     }
-    return 'Thinking…'
+    return translate('trajectory.helper.thinking')
   }
-  return 'Thinking…'
+  return translate('trajectory.helper.thinking')
 }
 
 

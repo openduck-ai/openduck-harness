@@ -1,3 +1,4 @@
+import { useTranslation, Trans } from 'react-i18next'
 import { useCallback, useEffect, useMemo, useState, lazy, Suspense } from 'react'
 import {
   Eye,
@@ -37,8 +38,15 @@ interface ProjectRulesProps {
   projectSlug: string
 }
 
-function errorMessage(cause: unknown, fallback: string): string {
-  return cause instanceof Error && cause.message.trim() ? cause.message : fallback
+type RuleError =
+  | { kind: 'raw'; message: string }
+  | { kind: 'fallback'; key: string }
+  | { kind: 'validation'; name: string }
+
+function errorMessage(cause: unknown, key: string): RuleError {
+  return cause instanceof Error && cause.message.trim()
+    ? { kind: 'raw', message: cause.message }
+    : { kind: 'fallback', key }
 }
 
 export function ProjectRules({
@@ -47,6 +55,7 @@ export function ProjectRules({
   projectDir,
   projectSlug,
 }: ProjectRulesProps) {
+  const { t } = useTranslation()
   const [rules, setRules] = useState<RuleDraft[]>([])
   const [draft, setDraft] = useState<RuleDraft | null>(null)
   const [baseline, setBaseline] = useState<RuleDraft | null>(null)
@@ -54,8 +63,8 @@ export function ProjectRules({
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const [status, setStatus] = useState('')
+  const [error, setError] = useState<RuleError | null>(null)
+  const [saved, setSaved] = useState(false)
   const [viewMode, setViewMode] = useState<'edit' | 'preview'>('edit')
 
   const selected = draft
@@ -66,7 +75,7 @@ export function ProjectRules({
   const loadRules = useCallback(
     async (selectPath?: string | null, quiet = false) => {
       if (!quiet) setLoading(true)
-      setError('')
+      setError(null)
       try {
         const sources = await listRuleSources(baseUrl, secret, projectDir)
         const next = sources.map(draftFromSource)
@@ -88,7 +97,7 @@ export function ProjectRules({
         setDraft(first)
         setBaseline(first)
       } catch (cause) {
-        setError(errorMessage(cause, 'Unable to load rules'))
+        setError(errorMessage(cause, 'rules.page.loadFailed'))
       } finally {
         setLoading(false)
       }
@@ -115,34 +124,34 @@ export function ProjectRules({
   }, [filter, rules, scopeFilter])
 
   const startNewRule = (global: boolean) => {
-    if (isDirty && !confirm('Discard unsaved changes to the current rule?')) return
+    if (isDirty && !confirm(t('rules.page.discardConfirm'))) return
     const next = emptyRuleDraft(global)
     setDraft(next)
     setBaseline(next)
     setViewMode('edit')
-    setStatus('')
-    setError('')
+    setSaved(false)
+    setError(null)
   }
 
   const selectRule = (rule: RuleDraft) => {
-    if (isDirty && !confirm('Discard unsaved changes to the current rule?')) return
+    if (isDirty && !confirm(t('rules.page.discardConfirm'))) return
     setDraft(rule)
     setBaseline(rule)
     setViewMode('edit')
-    setStatus('')
-    setError('')
+    setSaved(false)
+    setError(null)
   }
 
   const handleSave = async () => {
     if (!selected) return
     const nameError = validateRuleName(selected.name)
     if (nameError) {
-      setError(nameError)
+      setError({ kind: 'validation', name: selected.name })
       return
     }
     setSaving(true)
-    setError('')
-    setStatus('')
+    setError(null)
+    setSaved(false)
     const payload = {
       name: selected.name.trim(),
       description: selected.description.trim(),
@@ -160,11 +169,11 @@ export function ProjectRules({
             global: selected.global,
             projectDir,
           })
-      setStatus('Saved')
+      setSaved(true)
       await loadRules(saved.path, true)
-      setTimeout(() => setStatus(''), 2500)
+      setTimeout(() => setSaved(false), 2500)
     } catch (cause) {
-      setError(errorMessage(cause, 'Unable to save rule'))
+      setError(errorMessage(cause, 'rules.page.saveFailed'))
     } finally {
       setSaving(false)
     }
@@ -176,16 +185,16 @@ export function ProjectRules({
       setBaseline(null)
       return
     }
-    if (!confirm(`Delete rule "${selected.name}"? This removes the markdown file on disk.`)) {
+    if (!confirm(t('rules.page.deleteConfirm', { name: selected.name }))) {
       return
     }
     setSaving(true)
-    setError('')
+    setError(null)
     try {
       await deleteRuleSource(baseUrl, secret, selected.path)
       await loadRules(null, true)
     } catch (cause) {
-      setError(errorMessage(cause, 'Unable to delete rule'))
+      setError(errorMessage(cause, 'rules.page.deleteFailed'))
     } finally {
       setSaving(false)
     }
@@ -197,17 +206,16 @@ export function ProjectRules({
         <div>
           <h3 className="rules-heading">
             <ScrollText size={16} />
-            Rules
+            {t('rules.page.title')}
           </h3>
           <p className="muted rules-subtitle">
-            Guidelines injected into agent sessions for <code>{projectSlug}</code>. Project
-            rules live in <code>.agents/rules/</code>; global rules apply to every project.
+            <Trans t={t} i18nKey="rules.page.subtitle" values={{ project: projectSlug }} components={{ project: <code />, path: <code /> }} />
           </p>
         </div>
         <div className="files-actions">
           <input
             className="filter-input"
-            placeholder="Search rules…"
+            placeholder={t('rules.page.search')}
             value={filter}
             onChange={event => setFilter(event.target.value)}
           />
@@ -217,7 +225,7 @@ export function ProjectRules({
             onClick={() => startNewRule(false)}
           >
             <Plus size={14} />
-            Project rule
+            {t('rules.page.projectRule')}
           </button>
           <button
             type="button"
@@ -225,23 +233,23 @@ export function ProjectRules({
             onClick={() => startNewRule(true)}
           >
             <Plus size={14} />
-            Global rule
+            {t('rules.page.globalRule')}
           </button>
           <button
             type="button"
             className="secondary mini-btn"
             onClick={() => {
-              if (isDirty && !confirm('Reload rules and discard unsaved changes?')) return
+              if (isDirty && !confirm(t('rules.page.reloadConfirm'))) return
               void loadRules(selected?.path ?? undefined, true)
             }}
-            title="Reload rules"
+            title={t('rules.page.reload')}
           >
             <RefreshCw size={14} />
           </button>
         </div>
       </div>
 
-      <div className="rules-scope-filter" role="tablist" aria-label="Rule scope">
+      <div className="rules-scope-filter" role="tablist" aria-label={t('rules.page.scopeLabel')}>
         {(['all', 'project', 'global'] as const).map(scope => (
           <button
             key={scope}
@@ -251,7 +259,7 @@ export function ProjectRules({
             className={scopeFilter === scope ? 'active' : ''}
             onClick={() => setScopeFilter(scope)}
           >
-            {scope === 'all' ? 'All' : scope === 'project' ? 'Project' : 'Global'}
+            {scope === 'all' ? t('rules.page.all') : scope === 'project' ? t('rules.page.project') : t('rules.page.global')}
           </button>
         ))}
       </div>
@@ -259,40 +267,39 @@ export function ProjectRules({
       {error && (
         <p className="error rules-error">
           <AlertCircle size={14} />
-          {error}
+          {error.kind === 'raw' ? error.message : error.kind === 'validation' ? validateRuleName(error.name) : t(error.key)}
         </p>
       )}
 
       <div className="files-body">
         <div className="file-list-pane">
           {loading ? (
-            <p className="muted rules-empty">Loading rules…</p>
+            <p className="muted rules-empty">{t('rules.page.loading')}</p>
           ) : filteredRules.length === 0 && !isNew ? (
             <div className="rules-empty">
-              <p>No {scopeFilter === 'all' ? '' : `${scopeFilter} `}rules yet.</p>
+              <p>{scopeFilter === 'all' ? t('rules.page.emptyAll') : scopeFilter === 'project' ? t('rules.page.emptyProject') : t('rules.page.emptyGlobal')}</p>
               <p className="muted">
-                Create a project rule to constrain this workspace, or a global rule for every
-                session.
+                {t('rules.page.createHint')}
               </p>
             </div>
           ) : (
             <table className="files-table">
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>Scope</th>
+                  <th>{t('rules.page.name')}</th>
+                  <th>{t('rules.page.scope')}</th>
                 </tr>
               </thead>
               <tbody>
                 {isNew && selected && (
                   <tr className="file-row selected-row">
                     <td>
-                      <strong>{selected.name.trim() || 'New rule'}</strong>
-                      <div className="muted rules-row-desc">Unsaved</div>
+                      <strong>{selected.name.trim() || t('rules.page.newRule')}</strong>
+                      <div className="muted rules-row-desc">{t('rules.page.unsaved')}</div>
                     </td>
                     <td>
                       <span className={`file-kind-badge ${selected.global ? 'global' : ''}`}>
-                        {selected.global ? 'Global' : 'Project'}
+                        {selected.global ? t('rules.page.global') : t('rules.page.project')}
                       </span>
                     </td>
                   </tr>
@@ -311,10 +318,10 @@ export function ProjectRules({
                     </td>
                     <td>
                       <span className={`file-kind-badge ${rule.global ? 'global' : ''}`}>
-                        {rule.global ? 'Global' : 'Project'}
+                        {rule.global ? t('rules.page.global') : t('rules.page.project')}
                       </span>
                       {!rule.writable && (
-                        <Lock size={12} className="rules-lock" aria-label="Read-only" />
+                        <Lock size={12} className="rules-lock" aria-label={t('rules.page.readOnly')} />
                       )}
                     </td>
                   </tr>
@@ -328,17 +335,17 @@ export function ProjectRules({
           <div className="file-editor-pane rules-editor-pane">
             <div className="editor-header">
               <div className="editor-title">
-                <strong>{isNew ? 'New rule' : selected.name}</strong>
+                <strong>{isNew ? t('rules.page.newRule') : selected.name}</strong>
                 {selected.path && <small className="muted">{selected.path}</small>}
                 <span className={`file-kind-badge ${selected.global ? 'global' : ''}`}>
-                  {selected.global ? 'Global' : 'Project'}
+                  {selected.global ? t('rules.page.global') : t('rules.page.project')}
                 </span>
-                {readOnly && <span className="file-kind-badge">Read-only</span>}
-                {isDirty && <span className="dirty-badge">● Modified</span>}
-                {status && <span className="save-status">{status}</span>}
+                {readOnly && <span className="file-kind-badge">{t('rules.page.readOnly')}</span>}
+                {isDirty && <span className="dirty-badge">{t('rules.page.modified')}</span>}
+                {saved && <span className="save-status">{t('rules.page.saved')}</span>}
               </div>
               <div className="editor-actions">
-                <div className="view-mode-toggle" role="group" aria-label="Rule content view">
+                <div className="view-mode-toggle" role="group" aria-label={t('rules.page.contentView')}>
                   <button
                     type="button"
                     className={viewMode === 'preview' ? 'active' : ''}
@@ -346,7 +353,7 @@ export function ProjectRules({
                     onClick={() => setViewMode('preview')}
                   >
                     <Eye size={13} />
-                    Preview
+                    {t('rules.page.preview')}
                   </button>
                   <button
                     type="button"
@@ -355,7 +362,7 @@ export function ProjectRules({
                     onClick={() => setViewMode('edit')}
                   >
                     <Pencil size={13} />
-                    Edit
+                    {t('rules.page.edit')}
                   </button>
                 </div>
                 <button
@@ -364,7 +371,7 @@ export function ProjectRules({
                   disabled={!isDirty || saving || readOnly}
                   onClick={() => baseline && setDraft(baseline)}
                 >
-                  Discard
+                  {t('rules.page.discard')}
                 </button>
                 <button
                   type="button"
@@ -372,7 +379,7 @@ export function ProjectRules({
                   disabled={!isDirty || saving || readOnly}
                   onClick={() => void handleSave()}
                 >
-                  {saving ? 'Saving…' : 'Save'}
+                  {saving ? t('rules.page.saving') : t('rules.page.save')}
                 </button>
                 <button
                   type="button"
@@ -381,24 +388,24 @@ export function ProjectRules({
                   onClick={() => void handleDelete()}
                 >
                   <Trash2 size={13} />
-                  {selected.path ? 'Delete' : 'Cancel'}
+                  {selected.path ? t('rules.page.delete') : t('rules.page.cancel')}
                 </button>
               </div>
             </div>
 
             <div className="rules-form">
               <label className="form-group">
-                <span className="form-label">Name</span>
+                <span className="form-label">{t('rules.page.name')}</span>
                 <input
                   className="form-input"
                   value={selected.name}
                   disabled={readOnly || saving}
                   onChange={event => setDraft({ ...selected, name: event.target.value })}
-                  placeholder="rust-style"
+                  placeholder={t('rules.page.namePlaceholder')}
                 />
               </label>
               <label className="form-group">
-                <span className="form-label">Order</span>
+                <span className="form-label">{t('rules.page.order')}</span>
                 <input
                   className="form-input"
                   type="number"
@@ -410,33 +417,33 @@ export function ProjectRules({
                 />
               </label>
               <label className="form-group full-width">
-                <span className="form-label">Description</span>
+                <span className="form-label">{t('rules.page.description')}</span>
                 <input
                   className="form-input"
                   value={selected.description}
                   disabled={readOnly || saving}
                   onChange={event => setDraft({ ...selected, description: event.target.value })}
-                  placeholder="Standards for Rust development"
+                  placeholder={t('rules.page.descriptionPlaceholder')}
                 />
               </label>
               <label className="form-group">
-                <span className="form-label">Globs</span>
+                <span className="form-label">{t('rules.page.globs')}</span>
                 <input
                   className="form-input code-font"
                   value={selected.globsText}
                   disabled={readOnly || saving}
                   onChange={event => setDraft({ ...selected, globsText: event.target.value })}
-                  placeholder="**/*.rs, **/*.toml"
+                  placeholder={t('rules.page.globsPlaceholder')}
                 />
               </label>
               <label className="form-group">
-                <span className="form-label">Tags</span>
+                <span className="form-label">{t('rules.page.tags')}</span>
                 <input
                   className="form-input"
                   value={selected.tagsText}
                   disabled={readOnly || saving}
                   onChange={event => setDraft({ ...selected, tagsText: event.target.value })}
-                  placeholder="rust, style"
+                  placeholder={t('rules.page.tagsPlaceholder')}
                 />
               </label>
               <label className="checkbox-row rules-always-apply">
@@ -448,7 +455,7 @@ export function ProjectRules({
                     setDraft({ ...selected, alwaysApply: event.target.checked })
                   }
                 />
-                Always apply this rule
+                {t('rules.page.alwaysApply')}
               </label>
             </div>
 
@@ -456,7 +463,7 @@ export function ProjectRules({
               <Suspense
                 fallback={
                   <div className="markdown-preview markdown-preview-empty">
-                    <p className="muted">Loading preview…</p>
+                    <p className="muted">{t('rules.page.loadingPreview')}</p>
                   </div>
                 }
               >
@@ -468,7 +475,7 @@ export function ProjectRules({
                 value={selected.content}
                 disabled={readOnly || saving}
                 onChange={event => setDraft({ ...selected, content: event.target.value })}
-                placeholder="- Prefer anyhow::Result&#10;- Don't add comments that restate the code"
+                placeholder={t('rules.page.contentPlaceholder')}
                 spellCheck={false}
               />
             )}

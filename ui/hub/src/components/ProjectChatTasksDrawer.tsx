@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+import { formatDateTime } from '../i18n/format.ts'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import type {
   createApi,
@@ -70,6 +72,7 @@ export function ProjectChatTasksDrawer({
   onSendToChat,
   onTaskStarted,
 }: ProjectChatTasksDrawerProps) {
+  const { t } = useTranslation()
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedTag, setSelectedTag] = useState('')
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
@@ -77,8 +80,8 @@ export function ProjectChatTasksDrawer({
   const [isCreatingNew, setIsCreatingNew] = useState(false)
   const [formData, setFormData] = useState<TaskFormData>(emptyFormData)
   const [savingTask, setSavingTask] = useState(false)
-  const [formError, setFormError] = useState<string | null>(null)
-  const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [formError, setFormError] = useState<{ key: string; values?: Record<string, string> } | { raw: string } | null>(null)
+  const [successMessage, setSuccessMessage] = useState<{ key: string; values: Record<string, string> } | null>(null)
 
   // Running task states
   const [runningTaskId, setRunningTaskId] = useState<string | null>(null)
@@ -190,11 +193,11 @@ export function ProjectChatTasksDrawer({
     const prompt = formData.prompt.trim()
 
     if (!id) {
-      setFormError('Task ID is required.')
+      setFormError({ key: 'chat.tasks.idRequired' })
       return
     }
     if (!prompt) {
-      setFormError('Task prompt instructions are required.')
+      setFormError({ key: 'chat.tasks.promptRequired' })
       return
     }
 
@@ -231,17 +234,17 @@ export function ProjectChatTasksDrawer({
     try {
       if (editingTask) {
         await api.updateProjectTask(projectSlug, editingTask.id, payload)
-        setSuccessMessage(`Task "${id}" updated successfully.`)
+        setSuccessMessage({ key: 'chat.tasks.updated', values: { id } })
       } else {
         await api.createProjectTask(projectSlug, payload)
-        setSuccessMessage(`Task "${id}" created successfully.`)
+        setSuccessMessage({ key: 'chat.tasks.createdNotice', values: { id } })
       }
       setIsCreatingNew(false)
       setEditingTask(null)
       setFormData(emptyFormData)
       await onRefreshTasks()
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Failed to save task')
+      setFormError(err instanceof Error ? { raw: err.message } : { key: 'chat.tasks.saveFailed' })
     } finally {
       setSavingTask(false)
     }
@@ -250,16 +253,16 @@ export function ProjectChatTasksDrawer({
   // Delete task
   const handleDeleteTask = async (task: ProjectTaskSummary) => {
     const displayName = task.name?.trim() || task.id
-    if (!window.confirm(`Are you sure you want to delete task "${displayName}"?`)) {
+    if (!window.confirm(t('chat.tasks.confirmDelete', { name: displayName }))) {
       return
     }
 
     try {
       await api.deleteProjectTask(projectSlug, task.id)
-      setSuccessMessage(`Task "${displayName}" deleted.`)
+      setSuccessMessage({ key: 'chat.tasks.deleted', values: { name: displayName } })
       await onRefreshTasks()
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Failed to delete task')
+      setFormError(err instanceof Error ? { raw: err.message } : { key: 'chat.tasks.deleteFailed' })
     }
   }
 
@@ -288,11 +291,11 @@ export function ProjectChatTasksDrawer({
 
     runPromise
       .then(res => {
-        setSuccessMessage(`Task "${taskName}" finished: ${res.status}`)
+        setSuccessMessage({ key: 'chat.tasks.finished', values: { name: taskName, status: res.status } })
         void onRefreshTasks()
       })
       .catch(err => {
-        setFormError(err instanceof Error ? err.message : `Task "${taskName}" failed`)
+        setFormError(err instanceof Error ? { raw: err.message } : { key: 'chat.tasks.runFailed', values: { name: taskName } })
       })
       .finally(() => {
         setRunningTaskId(null)
@@ -302,7 +305,7 @@ export function ProjectChatTasksDrawer({
   // Send task reference or prompt into chat
   const handleDiscussInChat = (task: ProjectTaskSummary) => {
     if (!onSendToChat) return
-    const text = `Let's work on task @task:${task.id}: "${task.name || task.id}"`
+    const text = t('chat.tasks.discuss', { id: task.id, name: task.name || task.id })
     onSendToChat(text)
     onClose()
   }
@@ -316,7 +319,7 @@ export function ProjectChatTasksDrawer({
         className="harness-card task-editor-drawer project-chat-tasks-drawer"
         role="dialog"
         aria-modal="true"
-        aria-label="Project Tasks"
+        aria-label={t('chat.tasks.title')}
         onClick={e => e.stopPropagation()}
       >
         {/* Drawer Header */}
@@ -324,7 +327,7 @@ export function ProjectChatTasksDrawer({
           <div className="chat-tasks-title-box">
             <ListTodo size={18} className="text-accent" />
             <h3 className="section-title" style={{ margin: 0 }}>
-              Project Tasks
+              {t('chat.tasks.title')}
             </h3>
             <span className="badge-count">{tasks.length}</span>
           </div>
@@ -336,17 +339,17 @@ export function ProjectChatTasksDrawer({
                   type="button"
                   className="btn-primary mini-btn"
                   onClick={handleOpenCreate}
-                  title="Create new task"
+                  title={t('chat.tasks.createTooltip')}
                 >
                   <Plus size={13} />
-                  <span>New Task</span>
+                  <span>{t('chat.tasks.newTask')}</span>
                 </button>
                 <button
                   type="button"
                   className="secondary mini-btn icon-only"
                   onClick={() => void onRefreshTasks()}
                   disabled={loadingTasks}
-                  title="Refresh tasks"
+                  title={t('chat.tasks.refresh')}
                 >
                   <RefreshCw size={13} className={loadingTasks ? 'spinning' : ''} />
                 </button>
@@ -356,7 +359,7 @@ export function ProjectChatTasksDrawer({
               type="button"
               className="modal-close-btn"
               onClick={onClose}
-              aria-label="Close"
+              aria-label={t('chat.tasks.close')}
             >
               ✕
             </button>
@@ -367,13 +370,13 @@ export function ProjectChatTasksDrawer({
         {successMessage && (
           <div className="alert-banner alert-success mb-3">
             <Check size={14} />
-            <span>{successMessage}</span>
+            <span>{t(successMessage.key, successMessage.values)}</span>
           </div>
         )}
         {formError && (
           <div className="alert-banner alert-danger mb-3">
             <AlertCircle size={14} />
-            <span>{formError}</span>
+            <span>{'raw' in formError ? formError.raw : t(formError.key, formError.values)}</span>
           </div>
         )}
 
@@ -381,69 +384,69 @@ export function ProjectChatTasksDrawer({
         {(isCreatingNew || editingTask) ? (
           <form className="task-edit-form" onSubmit={handleSaveForm}>
             <div className="form-subhead mb-3">
-              <h4>{editingTask ? `Edit Task: ${editingTask.name || editingTask.id}` : 'Create New Project Task'}</h4>
+              <h4>{editingTask ? t('chat.tasks.editTitle', { name: editingTask.name || editingTask.id }) : t('chat.tasks.createTitle')}</h4>
               <p className="muted small">
-                Define task instructions, tags, dynamic prompt options, and optional verifiers.
+                {t('chat.tasks.formHint')}
               </p>
             </div>
 
             <div className="form-grid">
               <div className="form-row-2">
                 <div className="form-group">
-                  <label className="form-label">Task ID (Slug) *</label>
+                  <label className="form-label">{t('chat.tasks.taskId')}</label>
                   <input
                     type="text"
                     className="form-input"
                     value={formData.id}
                     onChange={e => setFormData({ ...formData, id: e.target.value })}
-                    placeholder="e.g. build-search-index"
+                    placeholder={t('chat.tasks.idPlaceholder')}
                     disabled={Boolean(editingTask)}
                     required
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Display Name</label>
+                  <label className="form-label">{t('chat.tasks.displayName')}</label>
                   <input
                     type="text"
                     className="form-input"
                     value={formData.name}
                     onChange={e => setFormData({ ...formData, name: e.target.value })}
-                    placeholder="e.g. Build Search Index"
+                    placeholder={t('chat.tasks.namePlaceholder')}
                   />
                 </div>
               </div>
 
               <div className="form-row-2">
                 <div className="form-group">
-                  <label className="form-label">Category / Suite</label>
+                  <label className="form-label">{t('chat.tasks.category')}</label>
                   <input
                     type="text"
                     className="form-input"
                     value={formData.category}
                     onChange={e => setFormData({ ...formData, category: e.target.value })}
-                    placeholder="e.g. backend or regression"
+                    placeholder={t('chat.tasks.categoryPlaceholder')}
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Tags (comma-separated)</label>
+                  <label className="form-label">{t('chat.tasks.tags')}</label>
                   <input
                     type="text"
                     className="form-input"
                     value={formData.tagsString}
                     onChange={e => setFormData({ ...formData, tagsString: e.target.value })}
-                    placeholder="e.g. search, indexing, rust"
+                    placeholder={t('chat.tasks.tagsPlaceholder')}
                   />
                 </div>
               </div>
 
               <div className="form-group">
-                <label className="form-label">Task Instructions / Prompt *</label>
+                <label className="form-label">{t('chat.tasks.instructions')}</label>
                 <textarea
                   className="form-textarea"
                   rows={5}
                   value={formData.prompt}
                   onChange={e => setFormData({ ...formData, prompt: e.target.value })}
-                  placeholder="Detailed instructions for the agent to execute in this project's workspace..."
+                  placeholder={t('chat.tasks.instructionsPlaceholder')}
                   required
                 />
               </div>
@@ -456,9 +459,9 @@ export function ProjectChatTasksDrawer({
                     onChange={e => setFormData({ ...formData, dynamicPrompt: e.target.checked })}
                   />
                   <span>
-                    <strong>Allow Dynamic Extra Prompt</strong>
+                    <strong>{t('chat.tasks.allowDynamic')}</strong>
                     <span className="muted small d-block">
-                      Prompts for additional runtime instructions when starting this task.
+                      {t('chat.tasks.dynamicHint')}
                     </span>
                   </span>
                 </label>
@@ -466,36 +469,36 @@ export function ProjectChatTasksDrawer({
 
               <div className="form-row-2">
                 <div className="form-group">
-                  <label className="form-label">Cron Schedule (Optional)</label>
+                  <label className="form-label">{t('chat.tasks.cron')}</label>
                   <input
                     type="text"
                     className="form-input"
                     value={formData.cron}
                     onChange={e => setFormData({ ...formData, cron: e.target.value })}
-                    placeholder="e.g. 0 2 * * * (daily 2am)"
+                    placeholder={t('chat.tasks.cronPlaceholder')}
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Max Turns (Optional)</label>
+                  <label className="form-label">{t('chat.tasks.maxTurns')}</label>
                   <input
                     type="number"
                     className="form-input"
                     value={formData.maxTurns}
                     onChange={e => setFormData({ ...formData, maxTurns: e.target.value })}
-                    placeholder="e.g. 25"
+                    placeholder={t('chat.tasks.turnsPlaceholder')}
                     min={1}
                   />
                 </div>
               </div>
 
               <div className="form-group">
-                <label className="form-label">Verifier Shell Command (Optional)</label>
+                <label className="form-label">{t('chat.tasks.verifierCommand')}</label>
                 <input
                   type="text"
                   className="form-input"
                   value={formData.verifierCommand}
                   onChange={e => setFormData({ ...formData, verifierCommand: e.target.value })}
-                  placeholder="e.g. cargo test --package my-pkg"
+                  placeholder={t('chat.tasks.verifierPlaceholder')}
                 />
               </div>
 
@@ -508,12 +511,12 @@ export function ProjectChatTasksDrawer({
                   {savingTask ? (
                     <>
                       <Loader2 size={14} className="spinning mr-1" />
-                      Saving…
+                      {t('chat.tasks.saving')}
                     </>
                   ) : (
                     <>
                       <Check size={14} className="mr-1" />
-                      {editingTask ? 'Update Task' : 'Create Task'}
+                      {editingTask ? t('chat.tasks.updateTask') : t('chat.tasks.createTask')}
                     </>
                   )}
                 </button>
@@ -523,13 +526,13 @@ export function ProjectChatTasksDrawer({
                   onClick={handleCancelForm}
                   disabled={savingTask}
                 >
-                  Cancel
+                  {t('chat.tasks.cancel')}
                 </button>
               </div>
             </div>
           </form>
         ) : (
-          /* VIEW 2: Task List (查看, 启动, 修改入口) */
+          /* VIEW 2: Task List (view, start, edit entry points) */
           <div className="chat-tasks-list-view">
             {/* Search and Filters */}
             <div className="chat-tasks-search-bar">
@@ -540,7 +543,7 @@ export function ProjectChatTasksDrawer({
                   className="form-input search-input"
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="Search tasks by name, id, category, or prompt…"
+                  placeholder={t('chat.tasks.searchPlaceholder')}
                 />
                 {searchQuery && (
                   <button
@@ -562,7 +565,7 @@ export function ProjectChatTasksDrawer({
                   className={`tag-chip ${selectedTag === '' ? 'active' : ''}`}
                   onClick={() => setSelectedTag('')}
                 >
-                  All ({tasks.length})
+                  {t('chat.tasks.all', { count: tasks.length })}
                 </button>
                 {allTags.map(tag => (
                   <button
@@ -581,16 +584,16 @@ export function ProjectChatTasksDrawer({
             {loadingTasks && tasks.length === 0 ? (
               <div className="tasks-loading-state">
                 <Loader2 size={24} className="spinning text-accent" />
-                <p>Loading project tasks…</p>
+                <p>{t('chat.tasks.loading')}</p>
               </div>
             ) : filteredTasks.length === 0 ? (
               <div className="empty-tasks-box">
                 <ListTodo size={32} className="muted" />
-                <h4>No tasks found</h4>
+                <h4>{t('chat.tasks.noTasks')}</h4>
                 <p className="muted small">
                   {tasks.length === 0
-                    ? 'No tasks configured in this project yet. Create your first task to automate workflows!'
-                    : 'No tasks match your search or filter.'}
+                    ? t('chat.tasks.emptyHint')
+                    : t('chat.tasks.noMatches')}
                 </p>
                 <button
                   type="button"
@@ -598,7 +601,7 @@ export function ProjectChatTasksDrawer({
                   onClick={handleOpenCreate}
                 >
                   <Plus size={13} />
-                  <span>Create First Task</span>
+                  <span>{t('chat.tasks.createFirst')}</span>
                 </button>
               </div>
             ) : (
@@ -627,21 +630,21 @@ export function ProjectChatTasksDrawer({
                           {/* Chips row */}
                           <div className="task-chips-row">
                             {task.cron && (
-                              <span className="meta-badge cron-badge" title={`Schedule: ${task.cron}`}>
+                              <span className="meta-badge cron-badge" title={t('chat.tasks.scheduleTooltip', { cron: task.cron })}>
                                 <Clock size={11} />
                                 <span>{task.cron}</span>
                               </span>
                             )}
                             {task.dynamicPrompt && (
-                              <span className="meta-badge dynamic-badge" title="Dynamic Extra Prompt enabled">
+                              <span className="meta-badge dynamic-badge" title={t('chat.tasks.dynamicTooltip')}>
                                 <Sparkles size={11} />
-                                <span>Dynamic</span>
+                                <span>{t('chat.tasks.dynamic')}</span>
                               </span>
                             )}
                             {task.hasVerifier && (
-                              <span className="meta-badge verifier-badge" title="Task has verification criteria">
+                              <span className="meta-badge verifier-badge" title={t('chat.tasks.verifierTooltip')}>
                                 <ShieldCheck size={11} />
-                                <span>Verifier</span>
+                                <span>{t('chat.tasks.verifier')}</span>
                               </span>
                             )}
                             {task.tags?.map(t => (
@@ -659,17 +662,17 @@ export function ProjectChatTasksDrawer({
                             className="btn-primary mini-btn run-task-action-btn"
                             onClick={() => handleInitiateRun(task)}
                             disabled={isRunning}
-                            title="Start / Run Task"
+                            title={t('chat.tasks.runTooltip')}
                           >
                             {isRunning ? (
                               <>
                                 <Loader2 size={12} className="spinning" />
-                                <span>Running…</span>
+                                <span>{t('chat.tasks.running')}</span>
                               </>
                             ) : (
                               <>
                                 <Play size={12} />
-                                <span>Run</span>
+                                <span>{t('chat.tasks.run')}</span>
                               </>
                             )}
                           </button>
@@ -678,7 +681,7 @@ export function ProjectChatTasksDrawer({
                             type="button"
                             className="secondary mini-btn icon-only"
                             onClick={() => void handleOpenEdit(task)}
-                            title="Edit / Modify Task"
+                            title={t('chat.tasks.editTooltip')}
                           >
                             <Pencil size={12} />
                           </button>
@@ -688,7 +691,7 @@ export function ProjectChatTasksDrawer({
                               type="button"
                               className="secondary mini-btn icon-only"
                               onClick={() => handleDiscussInChat(task)}
-                              title="Ask Agent about this Task in Chat"
+                              title={t('chat.tasks.discussTooltip')}
                             >
                               <MessageSquare size={12} />
                             </button>
@@ -698,7 +701,7 @@ export function ProjectChatTasksDrawer({
                             type="button"
                             className="danger mini-btn icon-only"
                             onClick={() => void handleDeleteTask(task)}
-                            title="Delete Task"
+                            title={t('chat.tasks.deleteTooltip')}
                           >
                             <Trash2 size={12} />
                           </button>
@@ -718,12 +721,12 @@ export function ProjectChatTasksDrawer({
                           >
                             {isExpanded ? (
                               <>
-                                <span>Hide details</span>
+                                <span>{t('chat.tasks.hideDetails')}</span>
                                 <ChevronUp size={12} />
                               </>
                             ) : (
                               <>
-                                <span>View details</span>
+                                <span>{t('chat.tasks.viewDetails')}</span>
                                 <ChevronDown size={12} />
                               </>
                             )}
@@ -735,18 +738,18 @@ export function ProjectChatTasksDrawer({
                       {isExpanded && (
                         <div className="task-card-expanded-body">
                           <div className="expanded-detail-row">
-                            <span className="detail-label">File Path:</span>
+                            <span className="detail-label">{t('chat.tasks.filePath')}</span>
                             <code>{task.filePath}</code>
                           </div>
                           {task.nextRunAt && (
                             <div className="expanded-detail-row">
-                              <span className="detail-label">Next Scheduled Run:</span>
-                              <span>{new Date(task.nextRunAt).toLocaleString()}</span>
+                              <span className="detail-label">{t('chat.tasks.nextRun')}</span>
+                              <span>{formatDateTime(task.nextRunAt)}</span>
                             </div>
                           )}
                           <div className="expanded-detail-row">
-                            <span className="detail-label">Created:</span>
-                            <span>{new Date(task.createdAt).toLocaleString()}</span>
+                            <span className="detail-label">{t('chat.tasks.created')}</span>
+                            <span>{formatDateTime(task.createdAt)}</span>
                           </div>
                         </div>
                       )}
@@ -767,20 +770,20 @@ export function ProjectChatTasksDrawer({
             >
               <div className="dynamic-modal-header">
                 <Sparkles size={16} className="text-accent" />
-                <h4>Run Task: {dynamicPromptModalTask.name || dynamicPromptModalTask.id}</h4>
+                <h4>{t('chat.tasks.runTitle', { name: dynamicPromptModalTask.name || dynamicPromptModalTask.id })}</h4>
               </div>
               <p className="muted small">
-                This task accepts additional dynamic instructions for this specific run.
+                {t('chat.tasks.extraHint')}
               </p>
 
               <div className="form-group mt-2">
-                <label className="form-label">Additional Instructions / Extra Prompt (Optional)</label>
+                <label className="form-label">{t('chat.tasks.extraInstructions')}</label>
                 <textarea
                   className="form-textarea"
                   rows={4}
                   value={dynamicExtraPrompt}
                   onChange={e => setDynamicExtraPrompt(e.target.value)}
-                  placeholder="e.g. Focus on edge cases with empty strings, or use production API keys..."
+                  placeholder={t('chat.tasks.extraPlaceholder')}
                   autoFocus
                 />
               </div>
@@ -798,14 +801,14 @@ export function ProjectChatTasksDrawer({
                   }
                 >
                   <Play size={13} className="mr-1" />
-                  <span>Start Run</span>
+                  <span>{t('chat.tasks.startRun')}</span>
                 </button>
                 <button
                   type="button"
                   className="secondary"
                   onClick={() => setDynamicPromptModalTask(null)}
                 >
-                  Cancel
+                  {t('chat.tasks.cancel')}
                 </button>
               </div>
             </div>

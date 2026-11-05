@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import type { createApi } from '@aaif/goose-hub-core'
 import type { FileContentResponse } from '@aaif/goose-hub-core'
+import { useTranslation, Trans } from 'react-i18next'
 import {
   X,
   Copy,
@@ -12,6 +13,7 @@ import {
   ArrowLeft,
   AlertCircle,
 } from 'lucide-react'
+import { formatNumber } from '../i18n/format.ts'
 import {
   isImagePath,
   isMarkdownPath,
@@ -29,6 +31,8 @@ import {
   useSelectionTaskRun,
 } from './DynamicPromptSelectionMenu.tsx'
 
+type ErrorText = { kind: 'raw'; message: string } | { kind: 'fallback'; key: string }
+
 interface FilePreviewModalProps {
   api: ReturnType<typeof createApi>
   projectSlug: string
@@ -40,8 +44,8 @@ interface FilePreviewModalProps {
 function formatBytes(bytes?: number): string {
   if (bytes === undefined || bytes === null) return '—'
   if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`
+  return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`
 }
 
 export function FilePreviewModal({
@@ -51,11 +55,12 @@ export function FilePreviewModal({
   onClose,
   onNavigateToFile,
 }: FilePreviewModalProps) {
+  const { t } = useTranslation()
   const [history, setHistory] = useState<string[]>([filePath])
   const currentPath = history[history.length - 1] || filePath
 
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<ErrorText | null>(null)
   const [fileData, setFileData] = useState<FileContentResponse | null>(null)
   const [viewMode, setViewMode] = useState<'preview' | 'raw'>('preview')
   const [copiedPath, setCopiedPath] = useState(false)
@@ -102,7 +107,7 @@ export function FilePreviewModal({
             })
             setLoading(false)
           } else {
-            setError(err instanceof Error ? err.message : 'Failed to read file')
+            setError(err instanceof Error ? { kind: 'raw', message: err.message } : { kind: 'fallback', key: 'files.preview.errorRead' })
             setLoading(false)
           }
         }
@@ -184,7 +189,7 @@ export function FilePreviewModal({
                 type="button"
                 className="file-preview-btn file-preview-back-btn"
                 onClick={handleBack}
-                title="Back to previous file"
+                title={t('files.preview.backTitle')}
               >
                 <ArrowLeft size={16} />
               </button>
@@ -200,7 +205,7 @@ export function FilePreviewModal({
                   <span className="file-size-badge">{formatBytes(fileData.size)}</span>
                 )}
                 {lines.length > 0 && !isImage && (
-                  <span className="file-lines-badge">{lines.length} lines</span>
+                  <span className="file-lines-badge">{t('files.preview.lines', { count: lines.length })}</span>
                 )}
               </div>
               <p className="file-preview-path" title={currentPath}>
@@ -217,19 +222,19 @@ export function FilePreviewModal({
                   type="button"
                   className={`file-preview-tab-btn ${viewMode === 'preview' ? 'active' : ''}`}
                   onClick={() => setViewMode('preview')}
-                  title="Formatted Markdown"
+                  title={t('files.preview.formattedMarkdown')}
                 >
                   <Eye size={13} />
-                  <span>Preview</span>
+                  <span>{t('files.preview.preview')}</span>
                 </button>
                 <button
                   type="button"
                   className={`file-preview-tab-btn ${viewMode === 'raw' ? 'active' : ''}`}
                   onClick={() => setViewMode('raw')}
-                  title="Raw Markdown"
+                  title={t('files.preview.rawMarkdown')}
                 >
                   <Code size={13} />
-                  <span>Raw</span>
+                  <span>{t('files.preview.raw')}</span>
                 </button>
               </div>
             )}
@@ -239,10 +244,10 @@ export function FilePreviewModal({
               type="button"
               className={`file-preview-btn ${copiedPath ? 'is-copied' : ''}`}
               onClick={handleCopyPath}
-              title="Copy file path"
+              title={t('files.preview.copyPathTitle')}
             >
               {copiedPath ? <Check size={14} /> : <Copy size={14} />}
-              <span>{copiedPath ? 'Copied' : 'Copy Path'}</span>
+              <span>{copiedPath ? t('files.preview.copied') : t('files.preview.copyPath')}</span>
             </button>
 
             {/* Copy Content (for text files) */}
@@ -251,10 +256,10 @@ export function FilePreviewModal({
                 type="button"
                 className={`file-preview-btn ${copiedContent ? 'is-copied' : ''}`}
                 onClick={handleCopyContent}
-                title="Copy file contents"
+                title={t('files.preview.copyContentTitle')}
               >
                 {copiedContent ? <Check size={14} /> : <Copy size={14} />}
-                <span>{copiedContent ? 'Copied' : 'Copy Content'}</span>
+                <span>{copiedContent ? t('files.preview.copied') : t('files.preview.copyContent')}</span>
               </button>
             )}
 
@@ -263,10 +268,10 @@ export function FilePreviewModal({
               href={imageBytesUrl}
               download={fileName}
               className="file-preview-btn file-preview-download-btn"
-              title="Download file"
+              title={t('files.preview.downloadFileTitle')}
             >
               <Download size={14} />
-              <span>Download</span>
+              <span>{t('files.preview.download')}</span>
             </a>
 
             {/* Open in Files Tab */}
@@ -278,10 +283,10 @@ export function FilePreviewModal({
                   onClose()
                   onNavigateToFile(currentPath)
                 }}
-                title="Open in Project Files tab"
+                title={t('files.preview.openInFilesTitle')}
               >
                 <ExternalLink size={14} />
-                <span>Open in Files</span>
+                <span>{t('files.preview.openInFiles')}</span>
               </button>
             )}
 
@@ -290,8 +295,8 @@ export function FilePreviewModal({
               type="button"
               className="file-preview-close-btn"
               onClick={onClose}
-              title="Close preview (Esc)"
-              aria-label="Close"
+              title={t('files.preview.closeTitle')}
+              aria-label={t('files.preview.closeAria')}
             >
               <X size={18} />
             </button>
@@ -305,15 +310,20 @@ export function FilePreviewModal({
           {loading ? (
             <div className="file-preview-loading">
               <div className="file-preview-spinner" />
-              <p>Loading file content…</p>
+              <p>{t('files.preview.loading')}</p>
             </div>
           ) : error ? (
             <div className="file-preview-error">
               <AlertCircle size={32} />
-              <h4>Unable to load file</h4>
-              <p className="file-preview-error-msg">{error}</p>
+              <h4>{t('files.preview.errorHeading')}</h4>
+              <p className="file-preview-error-msg">{error.kind === 'raw' ? error.message : t(error.key)}</p>
               <p className="muted file-preview-error-hint">
-                The file <code>{currentPath}</code> may not exist or has been removed from the repository.
+                <Trans
+                  t={t}
+                  i18nKey="files.preview.errorHint"
+                  values={{ path: currentPath }}
+                  components={{ code: <code /> }}
+                />
               </p>
             </div>
           ) : isImage ? (
@@ -336,9 +346,9 @@ export function FilePreviewModal({
             </div>
           ) : fileData?.isBinary ? (
             <div className="file-preview-binary-notice">
-              <p>Binary file ({formatBytes(fileData.size)}). Viewing inline is not supported.</p>
+              <p>{t('files.preview.binaryNotice', { size: formatBytes(fileData.size) })}</p>
               <a href={imageBytesUrl} download={fileName} className="btn-action file-preview-btn-primary">
-                <Download size={15} /> Download Binary
+                <Download size={15} />{' '}{t('files.preview.downloadBinary')}
               </a>
             </div>
           ) : fileData ? (
