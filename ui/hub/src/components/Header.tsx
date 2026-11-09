@@ -9,8 +9,10 @@ import {
   Moon,
   Terminal,
 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { useTheme } from '../contexts/ThemeContext'
 import type { NavPage } from '../urlNav'
+import { LocaleSwitcher } from './LocaleSwitcher.tsx'
 
 export type { NavPage }
 
@@ -31,6 +33,7 @@ export function Header({
   openProjectsCount,
   runningTasksCount,
 }: HeaderProps) {
+  const { t } = useTranslation()
   const { resolvedTheme, themePreference, toggleTheme } = useTheme()
 
   return (
@@ -42,9 +45,9 @@ export function Header({
           </div>
           <div>
             <div className="eyebrow-row">
-              <span className="eyebrow">Lightweight Agent Harness</span>
+              <span className="eyebrow">{t('app.shell.tagline')}</span>
             </div>
-            <h1 className="brand-title">OpenDuck Hub</h1>
+            <h1 className="brand-title">{t('app.shell.brand')}</h1>
           </div>
         </div>
 
@@ -55,7 +58,7 @@ export function Header({
             onClick={() => onSelectPage('projects')}
           >
             <FolderKanban size={16} />
-            <span>Projects</span>
+            <span>{t('header.projects')}</span>
             {openProjectsCount > 0 && <span className="nav-counter">{openProjectsCount}</span>}
           </button>
           <button
@@ -64,7 +67,7 @@ export function Header({
             onClick={() => onSelectPage('running')}
           >
             <Activity size={16} />
-            <span>Running</span>
+            <span>{t('header.running')}</span>
             {runningTasksCount > 0 && (
               <span className="nav-counter">{runningTasksCount}</span>
             )}
@@ -75,7 +78,7 @@ export function Header({
             onClick={() => onSelectPage('tui-agents')}
           >
             <Terminal size={16} />
-            <span>TUI Agents</span>
+            <span>{t('app.shell.tuiAgents')}</span>
           </button>
           <button
             type="button"
@@ -83,7 +86,7 @@ export function Header({
             onClick={() => onSelectPage('settings')}
           >
             <Settings size={16} />
-            <span>Settings</span>
+            <span>{t('header.settings')}</span>
           </button>
         </nav>
       </div>
@@ -93,29 +96,33 @@ export function Header({
           type="button"
           className="icon-btn theme-toggle-btn"
           onClick={toggleTheme}
-          title={`Theme: ${themePreference} (showing ${resolvedTheme}). Click to switch to ${
-            resolvedTheme === 'dark' ? 'light' : 'dark'
-          } mode.`}
-          aria-label={`Toggle theme (currently ${resolvedTheme})`}
+          title={t('header.themeToggleTitle', {
+            preference: themePreference,
+            resolved: resolvedTheme,
+            next: resolvedTheme === 'dark' ? 'light' : 'dark',
+          })}
+          aria-label={t('header.themeToggleLabel', { resolved: resolvedTheme })}
         >
           {resolvedTheme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
         </button>
 
+        <LocaleSwitcher />
+
         <div
           className={`server-status-pill ${isConnected ? 'online' : 'offline'}`}
-          title={isConnected ? 'Connected to Goose / OpenDuck server' : 'Disconnected from server'}
+          title={isConnected ? t('header.connectedTitle') : t('header.disconnectedTitle')}
           onClick={() => onSelectPage('settings')}
           role="button"
           tabIndex={0}
         >
           <span className="status-dot" />
           <Server size={14} className="status-icon" />
-          <span className="status-text">{isConnected ? 'Server Connected' : 'Server Offline'}</span>
+          <span className="status-text">{isConnected ? t('app.shell.serverConnected') : t('app.shell.serverOffline')}</span>
         </div>
 
         <button type="button" className="btn-primary new-project-btn" onClick={onNewProject}>
           <Plus size={16} />
-          <span>New Project</span>
+          <span>{t('app.shell.newProject')}</span>
         </button>
       </div>
     </header>

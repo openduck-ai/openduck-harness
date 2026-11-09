@@ -1,0 +1,15 @@
+{
+  "projectRoots": {
+    "errors": {
+      "outsideHome": "该文件夹位于主目录之外。请允许添加主目录之外的根目录，然后重试。",
+      "loadFailed": "无法加载项目根目录",
+      "addFailed": "无法添加项目根目录",
+      "removeFailed": "无法移除项目根目录"
+    }
+  },
+  "config": {
+    "providers": {
+      "identicalRoleTargetWarning": "相同的目标会导致重复调用"
+    }
+  }
+}

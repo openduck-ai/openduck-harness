@@ -1,7 +1,9 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { LocaleProvider } from './contexts/LocaleContext.tsx'
 import { ThemeProvider } from './contexts/ThemeContext'
+import { initI18n, resolveInitialLocale, translate } from './i18n/index.ts'
 
 interface ErrorBoundaryProps {
   children: ReactNode
@@ -30,15 +32,15 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
     if (this.state.hasError) {
       return (
         <main style={{ padding: '2rem', maxWidth: '800px', margin: 'auto' }}>
-          <h2 style={{ color: 'var(--accent-rose, #ff9a9a)' }}>Something went wrong in Goose Hub</h2>
-          <p className="error">{this.state.error?.message || 'Unknown error'}</p>
+          <h2 style={{ color: 'var(--accent-rose, #ff9a9a)' }}>{translate('app.errorBoundary.heading')}</h2>
+          <p className="error">{this.state.error?.message || translate('app.errorBoundary.message')}</p>
           <button
             onClick={() => {
               this.setState({ hasError: false, error: null })
               window.location.reload()
             }}
           >
-            Reload application
+            {translate('app.errorBoundary.reload')}
           </button>
         </main>
       )
@@ -47,11 +49,23 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 }
 
-createRoot(document.getElementById('root')!).render(
-  <ErrorBoundary>
-    <ThemeProvider>
-      <App />
-    </ThemeProvider>
-  </ErrorBoundary>,
-)
+async function bootstrap(): Promise<void> {
+  const locale = resolveInitialLocale()
+  await initI18n(locale)
+  if (typeof document !== 'undefined') {
+    document.title = translate('app.documentTitle')
+  }
+
+  createRoot(document.getElementById('root')!).render(
+    <ErrorBoundary>
+      <ThemeProvider>
+        <LocaleProvider initialLocale={locale}>
+          <App />
+        </LocaleProvider>
+      </ThemeProvider>
+    </ErrorBoundary>,
+  )
+}
+
+void bootstrap()
 

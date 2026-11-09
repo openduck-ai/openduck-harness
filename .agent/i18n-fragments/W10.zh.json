@@ -1,0 +1,115 @@
+{
+  "mentions": {
+    "popover": {
+      "title": "提及 (@)",
+      "scanning": "正在扫描仓库…",
+      "matches_one": "{{count}} 个匹配项",
+      "matches_other": "{{count}} 个匹配项",
+      "noMatches": "未找到匹配“@{{query}}”的项",
+      "badge": {
+        "attached": "已附加",
+        "task": "任务",
+        "agent": "智能体",
+        "rule": "规则",
+        "folder": "文件夹",
+        "file": "文件"
+      },
+      "footer": {
+        "navigate": "↑↓ 导航",
+        "select": "↵ / Tab 选择",
+        "dismiss": "Esc 关闭"
+      }
+    },
+    "helper": {
+      "attachedFile": "已附加文件",
+      "agentFallback": "智能体 ({{type}})",
+      "defaultAgentType": "智能体",
+      "ruleSource": "规则源",
+      "taskFallback": "任务 ({{id}})"
+    }
+  },
+  "projectDetail": {
+    "page": {
+      "allProjects": "所有项目",
+      "eyebrow": "项目工作区",
+      "noDescription": "未提供描述",
+      "projectPolicy": "项目策略：{{provider}} / {{model}}",
+      "activeModel": "当前提供商与模型：{{provider}} / {{model}}",
+      "customBadge": "自定义"
+    }
+  },
+  "dynamicPrompt": {
+    "menu": {
+      "runningNotice": "正在使用选定文本运行“{{name}}”…",
+      "doneNotice": "“{{name}}”已完成，状态为 {{status}}。",
+      "runFailed": "运行 {{name}} 失败",
+      "projectUnavailable": "项目不可用",
+      "loadFailed": "加载任务提示词失败",
+      "ariaLabel": "使用选定内容运行动态提示词任务",
+      "title": "使用选定内容运行",
+      "empty": "没有接受动态提示词的任务。",
+      "confirmTitle": "确认提示词",
+      "confirmHint": "{{name}} · 额外指令不会保存到任务中",
+      "currentPrompt": "当前提示词",
+      "loadingPrompt": "正在加载提示词…",
+      "dynamicPrompt": "动态提示词",
+      "confirm": "确认",
+      "cancel": "取消"
+    },
+    "helper": {
+      "selectedExcerpt": "来自 `{{path}}` 的选定摘录："
+    }
+  },
+  "projectRoots": {
+    "editor": {
+      "enterAbsolutePath": "请输入绝对目录路径。",
+      "loading": "正在加载项目根目录…",
+      "empty": "尚未配置根目录。请为您的项目添加一个父文件夹。",
+      "missing": "缺失",
+      "remove": "移除",
+      "removing": "正在移除…",
+      "addLabel": "添加根目录",
+      "allowOutsideHome": "允许此根目录位于主目录之外",
+      "addBtn": "添加根目录",
+      "adding": "正在添加…"
+    }
+  },
+  "tabs": {
+    "harness": "Harness",
+    "chat": "聊天",
+    "git": "Git",
+    "files": "文件",
+    "rules": "规则",
+    "terminal": "终端",
+    "insights": "洞察",
+    "settings": "设置"
+  },
+  "skeletons": {
+    "projectName": "项目名称",
+    "typeStack": "类型与技术栈",
+    "directoryPath": "目录路径",
+    "status": "状态",
+    "lastActive": "最后活跃",
+    "action": "操作"
+  },
+  "harness": {
+    "tasks": {
+      "creator": {
+        "restoredMoment": "已恢复刚才未提交的草稿",
+        "restoredMinutes_one": "已恢复 {{count}} 分钟前未提交的草稿",
+        "restoredMinutes_other": "已恢复 {{count}} 分钟前未提交的草稿",
+        "restoredHours_one": "已恢复 {{count}} 小时前未提交的草稿",
+        "restoredHours_other": "已恢复 {{count}} 小时前未提交的草稿",
+        "restoredDays_one": "已恢复 {{count}} 天前未提交的草稿",
+        "restoredDays_other": "已恢复 {{count}} 天前未提交的草稿"
+      }
+    },
+    "draft": {
+      "helper": {
+        "defaultSubtaskTitle": "子任务 {{index}}",
+        "fileCheckMissingPath": "子任务 {{index}} 的文件检查缺少路径",
+        "commandCheckMissingCommand": "子任务 {{index}} 的命令检查缺少命令"
+      }
+    }
+  }
+}

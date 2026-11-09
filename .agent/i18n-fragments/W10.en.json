@@ -1,0 +1,115 @@
+{
+  "mentions": {
+    "popover": {
+      "title": "Mention (@)",
+      "scanning": "Scanning repository…",
+      "matches_one": "{{count}} match",
+      "matches_other": "{{count}} matches",
+      "noMatches": "No items found matching \"@{{query}}\"",
+      "badge": {
+        "attached": "attached",
+        "task": "task",
+        "agent": "agent",
+        "rule": "rule",
+        "folder": "folder",
+        "file": "file"
+      },
+      "footer": {
+        "navigate": "↑↓ Navigate",
+        "select": "↵ / Tab Select",
+        "dismiss": "Esc Dismiss"
+      }
+    },
+    "helper": {
+      "attachedFile": "Attached file",
+      "agentFallback": "Agent ({{type}})",
+      "defaultAgentType": "agent",
+      "ruleSource": "Rule source",
+      "taskFallback": "Task ({{id}})"
+    }
+  },
+  "projectDetail": {
+    "page": {
+      "allProjects": "All Projects",
+      "eyebrow": "PROJECT WORKSPACE",
+      "noDescription": "No description provided",
+      "projectPolicy": "Project Policy: {{provider}} / {{model}}",
+      "activeModel": "Active Provider & Model: {{provider}} / {{model}}",
+      "customBadge": "custom"
+    }
+  },
+  "dynamicPrompt": {
+    "menu": {
+      "runningNotice": "Running “{{name}}” with the selected text…",
+      "doneNotice": "“{{name}}” finished with status {{status}}.",
+      "runFailed": "Failed to run {{name}}",
+      "projectUnavailable": "Project is not available",
+      "loadFailed": "Failed to load task prompt",
+      "ariaLabel": "Run a dynamic prompt task with the selection",
+      "title": "Run with selection",
+      "empty": "No tasks accept a dynamic prompt.",
+      "confirmTitle": "Confirm prompt",
+      "confirmHint": "{{name}} · extra instructions are not saved to the task",
+      "currentPrompt": "Current prompt",
+      "loadingPrompt": "Loading prompt…",
+      "dynamicPrompt": "Dynamic prompt",
+      "confirm": "Confirm",
+      "cancel": "Cancel"
+    },
+    "helper": {
+      "selectedExcerpt": "Selected excerpt from `{{path}}`:"
+    }
+  },
+  "projectRoots": {
+    "editor": {
+      "enterAbsolutePath": "Enter an absolute directory path.",
+      "loading": "Loading project roots…",
+      "empty": "No roots configured yet. Add a parent folder for your projects.",
+      "missing": "Missing",
+      "remove": "Remove",
+      "removing": "Removing…",
+      "addLabel": "Add root directory",
+      "allowOutsideHome": "Allow this root outside the home directory",
+      "addBtn": "Add root",
+      "adding": "Adding…"
+    }
+  },
+  "tabs": {
+    "harness": "Harness",
+    "chat": "Chat",
+    "git": "Git",
+    "files": "Files",
+    "rules": "Rules",
+    "terminal": "Terminal",
+    "insights": "Insights",
+    "settings": "Settings"
+  },
+  "skeletons": {
+    "projectName": "Project Name",
+    "typeStack": "Type & Stack",
+    "directoryPath": "Directory Path",
+    "status": "Status",
+    "lastActive": "Last Active",
+    "action": "Action"
+  },
+  "harness": {
+    "tasks": {
+      "creator": {
+        "restoredMoment": "Restored your unsubmitted draft from a moment ago",
+        "restoredMinutes_one": "Restored your unsubmitted draft from {{count}} minute ago",
+        "restoredMinutes_other": "Restored your unsubmitted draft from {{count}} minutes ago",
+        "restoredHours_one": "Restored your unsubmitted draft from {{count}} hour ago",
+        "restoredHours_other": "Restored your unsubmitted draft from {{count}} hours ago",
+        "restoredDays_one": "Restored your unsubmitted draft from {{count}} day ago",
+        "restoredDays_other": "Restored your unsubmitted draft from {{count}} days ago"
+      }
+    },
+    "draft": {
+      "helper": {
+        "defaultSubtaskTitle": "Subtask {{index}}",
+        "fileCheckMissingPath": "Subtask {{index}} has a file check without a path",
+        "commandCheckMissingCommand": "Subtask {{index}} has a command check without a command"
+      }
+    }
+  }
+}

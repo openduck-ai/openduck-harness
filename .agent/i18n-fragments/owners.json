@@ -1,0 +1,74 @@
+{
+  "W1": [
+    "harness.page"
+  ],
+  "W2": [
+    "trajectory.viewer"
+  ],
+  "W3": [
+    "tuiAgents.page"
+  ],
+  "W4": [
+    "config.panel",
+    "config.editor",
+    "config.providers"
+  ],
+  "W5": [
+    "trajectory.log",
+    "trajectory.helper",
+    "chat.tasks"
+  ],
+  "W6": [
+    "terminal.page",
+    "git.page",
+    "git.graph",
+    "rules.page",
+    "rules.helper"
+  ],
+  "W7": [
+    "export.pdf",
+    "files.page",
+    "files.preview",
+    "markdown.preview",
+    "projectRegistration.modal"
+  ],
+  "W8": [
+    "settings.server",
+    "chat.page",
+    "projectList.page",
+    "harness.draft.panel",
+    "projectSettings.page",
+    "harness.tasks"
+  ],
+  "W9": [
+    "network.panel",
+    "harness.history",
+    "runningTasks.page",
+    "runningTasks.helper",
+    "memory.panel",
+    "insights.page",
+    "app.shell"
+  ],
+  "W10": [
+    "mentions.popover",
+    "mentions.helper",
+    "projectDetail.page",
+    "dynamicPrompt.menu",
+    "dynamicPrompt.helper",
+    "projectRoots",
+    "tabs",
+    "skeletons",
+    "harness.tasks.creator",
+    "harness.draft.helper",
+    "main"
+  ],
+  "W11": [
+    "format",
+    "config.stats"
+  ],
+  "W12": [
+    "projectRoots.errors",
+    "taskAttachments",
+    "config.providers.identicalRoleTargetWarning"
+  ]
+}

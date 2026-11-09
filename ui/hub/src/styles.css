@@ -414,6 +414,30 @@ button:disabled {
   color: var(--text-primary);
 }
 
+.locale-switcher {
+  height: 30px;
+  padding: 0 0.4rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  max-width: 8rem;
+  text-overflow: ellipsis;
+}
+
+.locale-switcher:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.locale-switcher:focus-visible {
+  outline: 2px solid var(--accent-sky);
+  outline-offset: 1px;
+}
+
 .server-status-pill {
   display: inline-flex;
   align-items: center;

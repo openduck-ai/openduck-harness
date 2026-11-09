@@ -1,0 +1,15 @@
+{
+  "projectRoots": {
+    "errors": {
+      "outsideHome": "That folder is outside the home directory. Allow roots outside the home directory, then try again.",
+      "loadFailed": "Unable to load project roots",
+      "addFailed": "Unable to add project root",
+      "removeFailed": "Unable to remove project root"
+    }
+  },
+  "config": {
+    "providers": {
+      "identicalRoleTargetWarning": "Identical targets cause duplicate invocations"
+    }
+  }
+}
