@@ -23,6 +23,7 @@ import {
   useDynamicPromptTasks,
   useSelectionTaskRun,
 } from './DynamicPromptSelectionMenu.tsx'
+import { CopyLinkButton } from './CopyLinkButton.tsx'
 
 const MarkdownPreview = lazy(() =>
   import('./MarkdownPreview').then(module => ({ default: module.MarkdownPreview })),
@@ -41,9 +42,19 @@ interface ProjectFilesProps {
   api: ReturnType<typeof createApi>
   slug: string
   rootPath: string
+  linkedFile?: string | null
+  shareUrl?: string
+  onLinkedFileChange?: (path: string | null, replace?: boolean) => void
 }
 
-export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
+export function ProjectFiles({
+  api,
+  slug,
+  rootPath,
+  linkedFile = null,
+  shareUrl,
+  onLinkedFileChange,
+}: ProjectFilesProps) {
   const { t } = useTranslation()
   const [currentPath, setCurrentPath] = useState('')
   const [parentPath, setParentPath] = useState<string | null>(null)
@@ -61,6 +72,8 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
   const [saving, setSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState('')
   const [viewMode, setViewMode] = useState<'edit' | 'preview'>('edit')
+  const [readOnlyPreview, setReadOnlyPreview] = useState(false)
+  const [linkedFileError, setLinkedFileError] = useState('')
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [diskNotice, setDiskNotice] = useState<'modified' | 'missing' | null>(null)
   const [previewRevision, setPreviewRevision] = useState(0)
@@ -312,7 +325,19 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
     }
   }, [slug])
 
-  const openFile = async (entry: ProjectFileEntry) => {
+  const confirmLeaveFile = () => {
+    if (fileContentRef.current === originalContentRef.current) return true
+    return window.confirm(t('files.page.unsavedNavigate'))
+  }
+
+  const openFile = async (
+    entry: ProjectFileEntry,
+    options?: { preview?: boolean; fromDestination?: boolean; force?: boolean },
+  ) => {
+    if (!options?.force && entry.path !== selectedFileRef.current && !confirmLeaveFile()) {
+      if (options?.fromDestination) onLinkedFileChange?.(selectedFileRef.current, true)
+      return
+    }
     const syncToken = ++suspendOpenFileSyncRef.current
     selectedFileRef.current = entry.path
     dismissedStampRef.current = null
@@ -336,10 +361,20 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
       setIsBinary(res.isBinary)
       setFileSize(res.size)
       setIsFullscreen(false)
-      setViewMode(!res.isBinary && isMarkdownPath(res.path) ? 'preview' : 'edit')
+      setLinkedFileError('')
+      const preview = Boolean(options?.preview) || (!res.isBinary && isMarkdownPath(res.path))
+      setReadOnlyPreview(Boolean(options?.preview) && !isMarkdownPath(res.path) && !res.isBinary && !isImagePath(res.path))
+      setViewMode(preview && !res.isBinary ? 'preview' : 'edit')
+      if (options?.fromDestination) {
+        if (res.path !== entry.path) onLinkedFileChange?.(res.path, true)
+      } else {
+        onLinkedFileChange?.(res.path)
+      }
     } catch (cause) {
       if (suspendOpenFileSyncRef.current !== syncToken) return
-      setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'files.page.errorRead' })
+      const message = cause instanceof Error ? cause.message : t('files.page.errorRead')
+      if (options?.fromDestination) setLinkedFileError(message)
+      else setError(cause instanceof Error ? { kind: 'raw', message: cause.message } : { kind: 'fallback', key: 'files.page.errorRead' })
     } finally {
       if (suspendOpenFileSyncRef.current === syncToken) setLoading(false)
     }
@@ -445,7 +480,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
     }
   }, [isFullscreen])
 
-  const closeFile = () => {
+  const closeFile = (notify = true) => {
     selectedFileRef.current = null
     dismissedStampRef.current = null
     conflictStampRef.current = null
@@ -453,7 +488,31 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
     setSelectedFile(null)
     setDiskNotice(null)
     setIsFullscreen(false)
+    setReadOnlyPreview(false)
+    if (notify) onLinkedFileChange?.(null)
   }
+
+  const linkedSlugRef = useRef(slug)
+  useEffect(() => {
+    const slugChanged = linkedSlugRef.current !== slug
+    linkedSlugRef.current = slug
+    if (!linkedFile) {
+      if (!selectedFileRef.current) return
+      if (!slugChanged && !confirmLeaveFile()) {
+        onLinkedFileChange?.(selectedFileRef.current, true)
+        return
+      }
+      closeFile(false)
+      return
+    }
+    if (!slugChanged && linkedFile === selectedFileRef.current) return
+    const directory = parentDirectory(linkedFile)
+    if (directory !== currentPathRef.current) void loadDirectory(directory)
+    void openFile(
+      { name: linkedFile.split('/').pop() || linkedFile, path: linkedFile, kind: 'file' },
+      { preview: true, fromDestination: true, force: slugChanged },
+    )
+  }, [linkedFile, slug])
 
   const reloadFromDisk = async () => {
     const path = selectedFileRef.current
@@ -508,6 +567,13 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
           {saveStatus && <span className="save-status">{saveStatus}</span>}
         </div>
         <div className="editor-actions">
+          {shareUrl && <CopyLinkButton url={shareUrl} />}
+          {readOnlyPreview && !isBinary && !isImage && (
+            <button type="button" className="secondary mini-btn" onClick={() => setReadOnlyPreview(false)}>
+              <Pencil size={13} />
+              {t('files.page.editTab')}
+            </button>
+          )}
           {isMarkdown && !isBinary && (
             <div className="view-mode-toggle" role="group" aria-label={t('files.page.viewModeAria')}>
               <button
@@ -568,7 +634,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
             type="button"
             className="icon-btn"
             title={t('files.page.closeViewerTitle')}
-            onClick={closeFile}
+            onClick={() => closeFile()}
           >
             ×
           </button>
@@ -594,7 +660,7 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
               </>
             )}
             {diskNotice === 'missing' && (
-              <button type="button" className="secondary mini-btn" onClick={closeFile}>
+              <button type="button" className="secondary mini-btn" onClick={() => closeFile()}>
                 {t('files.page.closeNotice')}
               </button>
             )}
@@ -626,6 +692,8 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
             >
               <MarkdownPreview content={fileContent} resolveImageUrl={resolveImageUrl} />
             </Suspense>
+          ) : readOnlyPreview ? (
+            <pre className="code-editor">{fileContent}</pre>
           ) : (
             <textarea
               className="code-editor"
@@ -652,6 +720,25 @@ export function ProjectFiles({ api, slug, rootPath }: ProjectFilesProps) {
 
   return (
     <div className="panel files-panel">
+      {linkedFileError && (
+        <div className="error-banner" role="alert">
+          <p>{t('deepLink.fileMissingHint')}</p>
+          <p>{linkedFileError}</p>
+          <button
+            type="button"
+            className="btn-secondary mini-btn"
+            onClick={() => {
+              if (!linkedFile) return
+              void openFile(
+                { name: linkedFile.split('/').pop() || linkedFile, path: linkedFile, kind: 'file' },
+                { preview: true, fromDestination: true },
+              )
+            }}
+          >
+            {t('deepLink.retryFile')}
+          </button>
+        </div>
+      )}
       <div className="files-header">
         <div className="breadcrumbs">
           <button

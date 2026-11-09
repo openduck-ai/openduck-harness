@@ -17,6 +17,7 @@ activities:
   - Validate project task FIFO queueing, cancellation, and isolation between projects
   - Validate default project task Git commits and the auto-commit setting
   - Validate recorded TUI agent status in task run Agent Logs
+  - Validate Hub deep-link URL parsing for task history, agent logs, and file previews
   - Test load tool for knowledge injection and discovery
   - Test delegate tool for task delegation (sync and async)
   - Validate harness context memory, compaction carry-forward, and repetition warnings
@@ -65,6 +66,14 @@ instructions: |
   This is meta-testing in the truest sense: not unit tests or external test harnesses, but you using your tools
   to validate your own functionality from within your active session. You can only test what you can observe and
   control from inside your running instance - your tools, your behaviors, your error handling, your consistency.
+
+  ## Hub Deep Links
+  From `ui/hub`, run `pnpm exec node --experimental-strip-types --test src/urlNav.test.ts`.
+  Confirm history, live job, file-preview, and Agent Log `logPage`/`logSize` queries
+  round-trip, invalid log links fall back to task history, and changing project or tab
+  clears the nested destination. `logPage` is the transcript page; the top-level `page`
+  parameter stays the hub section. These links are navigation only: opening one must
+  not start or continue a task.
 
   ## Harness Context Memory Validation
   In a temporary workspace, run a deterministic harness policy through several compactions

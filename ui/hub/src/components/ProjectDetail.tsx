@@ -16,6 +16,7 @@ import {
   Cpu,
 } from 'lucide-react'
 import { TabSkeleton, ProjectDetailHeaderSkeleton } from './Skeletons'
+import type { HubDestination } from '../urlNav'
 
 export type ProjectSubTab =
   | 'harness'
@@ -95,6 +96,12 @@ interface ProjectDetailProps {
   isLoadingDetail?: boolean
   initialTab?: ProjectSubTab
   onTabChange?: (tab: ProjectSubTab) => void
+  destination?: HubDestination | null
+  shareUrl?: string
+  onHubNavigate?: (
+    update: { tab?: ProjectSubTab | null; destination?: HubDestination | null },
+    replace?: boolean,
+  ) => void
 }
 
 export function ProjectDetail({
@@ -110,6 +117,9 @@ export function ProjectDetail({
   isLoadingDetail = false,
   initialTab,
   onTabChange,
+  destination = null,
+  shareUrl,
+  onHubNavigate,
 }: ProjectDetailProps) {
   const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<ProjectSubTab>(
@@ -367,7 +377,13 @@ export function ProjectDetail({
               <ProjectHarnessTab
                 api={api}
                 selectedProjectSlug={detail.project.slug}
-                onNavigateToFiles={() => setActiveTab('files')}
+                destination={destination}
+                shareUrl={shareUrl}
+                onHubNavigate={onHubNavigate}
+                onNavigateToFiles={path => {
+                  setActiveTab('files')
+                  onHubNavigate?.({ tab: 'files', destination: { kind: 'file', path } })
+                }}
               />
             </div>
           )}
@@ -397,6 +413,11 @@ export function ProjectDetail({
                 api={api}
                 slug={detail.project.slug}
                 rootPath={detail.project.path}
+                linkedFile={destination?.kind === 'file' ? destination.path : null}
+                shareUrl={shareUrl}
+                onLinkedFileChange={(path, replace) => {
+                  onHubNavigate?.({ tab: 'files', destination: path ? { kind: 'file', path } : null }, replace)
+                }}
               />
             </div>
           )}

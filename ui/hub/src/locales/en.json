@@ -149,6 +149,19 @@
     "retry": "Retry",
     "save": "Save"
   },
+  "deepLink": {
+    "backToHistory": "Back to task history",
+    "backToProjects": "All projects",
+    "copyLink": "Copy link",
+    "copyLinkFailed": "Could not copy link",
+    "fileMissingHint": "This file could not be opened. The link stays in the address bar so you can retry or copy it.",
+    "linkCopied": "Link copied",
+    "logUnavailable": "This agent log is unavailable.",
+    "logUnavailableHint": "The run may have finished or been removed. This link stays in the address bar so you can retry or copy it.",
+    "projectMissing": "Project “{{project}}” is unavailable.",
+    "projectMissingHint": "It may have been removed, or this connection cannot open it. The link is unchanged.",
+    "retryFile": "Retry file"
+  },
   "config": {
     "editor": {
       "anthropicHost": "Anthropic host",
@@ -505,6 +518,7 @@
       "deleteTitle": "Delete",
       "directoryEmpty": "Directory is empty.",
       "discard": "Discard",
+      "unsavedNavigate": "Discard unsaved changes and leave this file?",
       "editTab": "Edit",
       "errorCreate": "Failed to create",
       "errorDelete": "Failed to delete",
@@ -558,6 +572,7 @@
       "errorHeading": "Unable to load file",
       "errorHint": "The file <code>{{path}}</code> may not exist or has been removed from the repository.",
       "errorRead": "Failed to read file",
+      "retry": "Retry",
       "formattedMarkdown": "Formatted Markdown",
       "lines_one": "{{count}} line",
       "lines_other": "{{count}} lines",

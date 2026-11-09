@@ -149,6 +149,19 @@
     "retry": "重试",
     "save": "保存"
   },
+  "deepLink": {
+    "backToHistory": "返回任务历史",
+    "backToProjects": "全部项目",
+    "copyLink": "复制链接",
+    "copyLinkFailed": "无法复制链接",
+    "fileMissingHint": "无法打开此文件。链接仍留在地址栏，便于重试或复制。",
+    "linkCopied": "链接已复制",
+    "logUnavailable": "此智能体日志不可用。",
+    "logUnavailableHint": "该运行可能已结束或已被删除。链接仍留在地址栏，便于重试或复制。",
+    "projectMissing": "项目“{{project}}”不可用。",
+    "projectMissingHint": "项目可能已删除，或当前连接无法打开它。链接保持不变。",
+    "retryFile": "重试打开文件"
+  },
   "config": {
     "editor": {
       "anthropicHost": "Anthropic 主机",
@@ -505,6 +518,7 @@
       "deleteTitle": "删除",
       "directoryEmpty": "目录为空。",
       "discard": "放弃更改",
+      "unsavedNavigate": "放弃未保存的更改并离开此文件？",
       "editTab": "编辑",
       "errorCreate": "创建失败",
       "errorDelete": "删除失败",
@@ -558,6 +572,7 @@
       "errorHeading": "无法加载文件",
       "errorHint": "文件 <code>{{path}}</code> 可能不存在或已从仓库中移除。",
       "errorRead": "读取文件失败",
+      "retry": "重试",
       "formattedMarkdown": "格式化 Markdown",
       "lines_one": "{{count}} 行",
       "lines_other": "{{count}} 行",

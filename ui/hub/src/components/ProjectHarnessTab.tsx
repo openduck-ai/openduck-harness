@@ -47,6 +47,17 @@ import {
   type ScheduleKind,
 } from '@aaif/goose-hub-core'
 import { inspectProjectHarnessJob } from '../api.ts'
+import { CopyLinkButton } from './CopyLinkButton'
+import {
+  isValidProjectFilePath,
+  liveSubscriptionTarget,
+  logPagingFields,
+  logPagingKey,
+  logTargetKey,
+  requestStillCurrent,
+  resolvedLogPaging,
+  type HubDestination,
+} from '../urlNav'
 import { escapeClosesTaskEditor } from '../taskEditorDismiss.ts'
 import { defaultTaskCreateDraftData, type TaskCreateSection } from '../taskCreateDraft.ts'
 import { createTaskDraftAutosave, prepareTaskCreator } from '../taskCreateDraftFlow.ts'
@@ -125,6 +136,25 @@ interface ProjectHarnessTabProps {
   onSelectProject?: (slug: string) => void
   onInspectTrajectory?: (run: HarnessRunResponse) => void
   onNavigateToFiles?: (path: string) => void
+  destination?: HubDestination | null
+  shareUrl?: string
+  onHubNavigate?: (
+    update: { tab?: 'harness' | 'files' | null; destination?: HubDestination | null },
+    replace?: boolean,
+  ) => void
+}
+
+function savedAgentLogPageSize(): number {
+  try {
+    const saved = localStorage.getItem('openduck.agentLog.pageSize')
+    if (saved !== null) {
+      const parsed = parseInt(saved, 10)
+      if (!Number.isNaN(parsed) && [25, 50, 100, 0].includes(parsed)) return parsed
+    }
+  } catch {
+    // Ignore
+  }
+  return 50
 }
 
 type ProjectSubTab = 'tasks' | 'config' | 'reports' | 'cassettes' | 'history' | 'trajectory'
@@ -187,6 +217,9 @@ export function ProjectHarnessTab({
   onSelectProject: _onSelectProject,
   onInspectTrajectory: _onInspectTrajectory,
   onNavigateToFiles,
+  destination = null,
+  shareUrl,
+  onHubNavigate,
 }: ProjectHarnessTabProps) {
   const { t, i18n } = useTranslation()
   const locale = i18n.language
@@ -215,7 +248,11 @@ export function ProjectHarnessTab({
     }
     return paused ? t('harness.page.schedule.description.paused', { description }) : description
   }
-  const [subTab, setSubTab] = useState<ProjectSubTab>('tasks')
+  const [subTab, setSubTab] = useState<ProjectSubTab>(() => {
+    if (destination?.kind === 'history') return 'history'
+    if (destination?.kind === 'log') return 'trajectory'
+    return 'tasks'
+  })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<PageMessage>('')
   const [successMsg, setSuccessMsg] = useState<PageMessage>('')
@@ -242,21 +279,6 @@ export function ProjectHarnessTab({
   const [historyPagination, setHistoryPagination] = useState<HarnessPagination | null>(null)
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null)
   const [selectedHistoryFileName, setSelectedHistoryFileName] = useState<string | null>(null)
-
-  const getSavedLogPageSize = () => {
-    try {
-      const saved = localStorage.getItem('openduck.agentLog.pageSize')
-      if (saved !== null) {
-        const parsed = parseInt(saved, 10)
-        if (!Number.isNaN(parsed) && [25, 50, 100, 0].includes(parsed)) {
-          return parsed
-        }
-      }
-    } catch {
-      // Ignore
-    }
-    return 50
-  }
 
   // Task editing / creation
   const [isEditingTask, setIsEditingTask] = useState(false)
@@ -323,7 +345,24 @@ export function ProjectHarnessTab({
   const [historyTaskFilter, setHistoryTaskFilter] = useState<string>('')
   const [openMenuTaskId, setOpenMenuTaskId] = useState<string | null>(null)
   const [moreNavOpen, setMoreNavOpen] = useState(false)
-  const [logOrigin, setLogOrigin] = useState<LogOrigin | null>(null)
+  const [logOrigin, setLogOrigin] = useState<LogOrigin | null>(
+    destination?.kind === 'log' ? 'history' : null,
+  )
+  const [logRetry, setLogRetry] = useState(0)
+  const [logError, setLogError] = useState<PageMessage>('')
+  const [logPageLoading, setLogPageLoading] = useState(false)
+  const sectionIntentRef = useRef<ProjectSubTab | null>(null)
+  const logRequestRef = useRef(0)
+  const logPagingGenRef = useRef(0)
+  const appliedPagingKeyRef = useRef<string | null>(null)
+  const suppressPagingFetchRef = useRef(false)
+  const slugRef = useRef(selectedProjectSlug)
+  const targetKeyRef = useRef('')
+  const destinationRef = useRef(destination)
+  const appliedKindRef = useRef<HubDestination['kind'] | 'none' | null>(null)
+  slugRef.current = selectedProjectSlug
+  targetKeyRef.current = logTargetKey(destination)
+  destinationRef.current = destination
   const [savedScrollY, setSavedScrollY] = useState(0)
   const [now, setNow] = useState(() => Date.now())
 
@@ -380,6 +419,46 @@ export function ProjectHarnessTab({
     setInspectingTaskId(null)
     setLiveInspect(false)
   }, [])
+
+  const applyLogSlice = useCallback(async (
+    slug: string,
+    dest: Extract<HubDestination, { kind: 'log' }>,
+    gen: number,
+    requested?: { page: number; limit: number } | null,
+  ) => {
+    const paging = requested === undefined
+      ? resolvedLogPaging(dest, savedAgentLogPageSize())
+      : requested === null
+        ? undefined
+        : requested
+    const target = dest.target
+    if (target.kind === 'history') {
+      const fileName = target.fileName
+      const run = await api.getProjectHistoryDetail(slug, fileName, paging)
+      if (logPagingGenRef.current !== gen || slugRef.current !== slug) return
+      if (logTargetKey(destinationRef.current) !== `history:${fileName}`) return
+      setActiveTrajectoryView(run)
+      setSelectedHistoryFileName(fileName)
+      setSelectedHistoryId(current => current ?? fileName)
+      setError('')
+      setLogError('')
+      return
+    }
+    const jobId = target.jobId
+    const detail = await inspectProjectHarnessJob(slug, jobId, paging)
+    if (logPagingGenRef.current !== gen || slugRef.current !== slug) return
+    if (logTargetKey(destinationRef.current) !== `job:${jobId}`) return
+    if (!detail.snapshot) {
+      setActiveTrajectoryView(null)
+      setLogError('deepLink.logUnavailable')
+      return
+    }
+    setActiveTrajectoryView(detail.snapshot)
+    setSelectedHistoryFileName(null)
+    setError('')
+    setLogError('')
+    if (detail.live) startLiveInspect(jobId, detail.job.taskId)
+  }, [api, startLiveInspect])
 
   // Continue task modal and turn selection state
   const [continueModalTask, setContinueModalTask] = useState<{
@@ -790,18 +869,36 @@ export function ProjectHarnessTab({
 
   const handleSelectHistory = async (item: HarnessHistorySummary, origin: LogOrigin = 'history') => {
     if (!selectedProjectSlug) return
+    sectionIntentRef.current = null
     setLogOrigin(origin)
     setSavedScrollY(window.scrollY)
     setSelectedHistoryId(item.id)
     setSelectedHistoryFileName(item.fileName)
+    setSubTab('trajectory')
+    setLogError('')
+    setError('')
+    if (onHubNavigate) {
+      if (logTargetKey(destination) !== `history:${item.fileName}`) {
+        setLoadingHistoryId(item.id)
+        setLoadingTrajectory(true)
+      }
+      onHubNavigate({
+        tab: 'harness',
+        destination: {
+          kind: 'log',
+          target: { kind: 'history', fileName: item.fileName },
+          file: null,
+          logPage: null,
+          logSize: null,
+        },
+      })
+      return
+    }
+    stopLiveInspect()
     setLoadingHistoryId(item.id)
     setLoadingTrajectory(true)
-    setSubTab('trajectory')
-    stopLiveInspect()
-    setError('')
     try {
-      const savedPageSize = getSavedLogPageSize()
-      const paging = savedPageSize > 0 ? { page: 1, limit: savedPageSize } : undefined
+      const paging = resolvedLogPaging(null, savedAgentLogPageSize())
       const run = await api.getProjectHistoryDetail(selectedProjectSlug, item.fileName, paging)
       setActiveTrajectoryView(run)
     } catch (err) {
@@ -819,16 +916,31 @@ export function ProjectHarnessTab({
       ((['tasks', 'history', 'reports', 'config', 'cassettes'].includes(subTab)
         ? subTab
         : 'tasks') as LogOrigin)
+    sectionIntentRef.current = null
     setLogOrigin(effectiveOrigin)
     setSavedScrollY(window.scrollY)
+    setSubTab('trajectory')
+    setLogError('')
+    setError('')
+    if (onHubNavigate) {
+      if (logTargetKey(destination) !== `job:${job.jobId}`) setLoadingTrajectory(true)
+      onHubNavigate({
+        tab: 'harness',
+        destination: {
+          kind: 'log',
+          target: { kind: 'job', jobId: job.jobId },
+          file: null,
+          logPage: null,
+          logSize: null,
+        },
+      })
+      return
+    }
 
     startLiveInspect(job.jobId, job.taskId)
     setLoadingTrajectory(true)
-    setSubTab('trajectory')
-    setError('')
     try {
-      const savedPageSize = getSavedLogPageSize()
-      const paging = savedPageSize > 0 ? { page: 1, limit: savedPageSize } : undefined
+      const paging = resolvedLogPaging(null, savedAgentLogPageSize())
       const detail = await inspectProjectHarnessJob(selectedProjectSlug, job.jobId, paging)
       if (inspectingJobIdRef.current !== job.jobId) return
       if (detail.snapshot) {
@@ -845,10 +957,21 @@ export function ProjectHarnessTab({
   }
 
   const handleBackFromTrajectory = () => {
-    const targetTab = logOrigin || 'tasks'
-    setSubTab(targetTab)
+    const targetTab = logOrigin || 'history'
     setLogOrigin(null)
     stopLiveInspect()
+    setActiveTrajectoryView(null)
+    setLoadingTrajectory(false)
+    setLogError('')
+    if (targetTab === 'history') {
+      sectionIntentRef.current = null
+      setSubTab('history')
+      onHubNavigate?.({ tab: 'harness', destination: { kind: 'history' } })
+    } else {
+      sectionIntentRef.current = targetTab
+      setSubTab(targetTab)
+      onHubNavigate?.({ tab: 'harness', destination: null })
+    }
     setTimeout(() => {
       window.scrollTo({ top: savedScrollY, behavior: 'instant' })
     }, 0)
@@ -893,9 +1016,121 @@ export function ProjectHarnessTab({
     }
   }
 
+  const activeLogKey = logTargetKey(destination)
+  const liveJobId = liveSubscriptionTarget(destination)
+
+  useEffect(() => {
+    if (!selectedProjectSlug) return
+    const dest = destination
+    const kind = dest?.kind ?? 'none'
+    const previousKind = appliedKindRef.current
+    appliedKindRef.current = kind
+    if (dest?.kind === 'log') {
+      const targetKey = logTargetKey(dest)
+      const request = { id: ++logRequestRef.current, projectSlug: selectedProjectSlug, targetKey }
+      const gen = ++logPagingGenRef.current
+      appliedPagingKeyRef.current = logPagingKey(dest)
+      setSubTab('trajectory')
+      setLogOrigin(current => current ?? 'history')
+      setLoadingTrajectory(true)
+      setLogPageLoading(false)
+      setLogError('')
+      const sameTarget = () =>
+        requestStillCurrent(request, {
+          id: logRequestRef.current,
+          projectSlug: slugRef.current,
+          targetKey: targetKeyRef.current,
+        })
+      const target = dest.target
+      void (async () => {
+        try {
+          if (target.kind === 'history') {
+            stopLiveInspect()
+            setSelectedHistoryFileName(target.fileName)
+          } else {
+            stopLiveInspect()
+          }
+          await applyLogSlice(selectedProjectSlug, dest, gen)
+        } catch (err) {
+          if (!sameTarget() || logPagingGenRef.current !== gen) return
+          stopLiveInspect()
+          setActiveTrajectoryView(null)
+          setLogError(err instanceof Error && err.message ? err.message : 'deepLink.logUnavailable')
+        } finally {
+          if (sameTarget()) {
+            setLoadingTrajectory(false)
+            setLoadingHistoryId(null)
+          }
+        }
+      })()
+      return
+    }
+
+    if (dest?.kind === 'history') {
+      logRequestRef.current += 1
+      logPagingGenRef.current += 1
+      stopLiveInspect()
+      setActiveTrajectoryView(null)
+      setLoadingTrajectory(false)
+      setLoadingHistoryId(null)
+      setLogError('')
+      setSubTab('history')
+      return
+    }
+
+    const intent = sectionIntentRef.current
+    sectionIntentRef.current = null
+    if (previousKind !== 'log' && previousKind !== 'history' && !intent) return
+
+    logRequestRef.current += 1
+    logPagingGenRef.current += 1
+    stopLiveInspect()
+    setActiveTrajectoryView(null)
+    setLoadingTrajectory(false)
+    setLoadingHistoryId(null)
+    setLogError('')
+    if (intent && intent !== 'trajectory') {
+      setSubTab(intent)
+      return
+    }
+    setSubTab(current => (current === 'trajectory' || current === 'history' ? 'tasks' : current))
+  }, [selectedProjectSlug, activeLogKey, destination?.kind, logRetry, api, applyLogSlice, startLiveInspect, stopLiveInspect])
+
+  const pagingKey = logPagingKey(destination)
+
+  useEffect(() => {
+    if (!selectedProjectSlug || destination?.kind !== 'log') return
+    if (suppressPagingFetchRef.current) {
+      suppressPagingFetchRef.current = false
+      appliedPagingKeyRef.current = pagingKey
+      return
+    }
+    if (appliedPagingKeyRef.current === null || appliedPagingKeyRef.current === pagingKey) return
+    const dest = destination
+    const slug = selectedProjectSlug
+    const gen = ++logPagingGenRef.current
+    appliedPagingKeyRef.current = pagingKey
+    setLogPageLoading(true)
+    void (async () => {
+      try {
+        await applyLogSlice(slug, dest, gen)
+      } catch (err) {
+        if (logPagingGenRef.current !== gen || slugRef.current !== slug) return
+        setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.historicalRun'))
+      } finally {
+        if (logPagingGenRef.current === gen) setLogPageLoading(false)
+      }
+    })()
+  }, [selectedProjectSlug, pagingKey, destination, applyLogSlice])
+
+  useEffect(() => {
+    if (liveJobId) return
+    stopLiveInspect()
+  }, [liveJobId, stopLiveInspect])
+
   // 2. Real-time SSE Stream for Live Job Inspection
   useEffect(() => {
-    if (!selectedProjectSlug || !inspectingJobId) return
+    if (!selectedProjectSlug || !inspectingJobId || inspectingJobId !== liveJobId) return
 
     const unsubscribe = api.subscribeJobLiveStream(
       selectedProjectSlug,
@@ -970,15 +1205,19 @@ export function ProjectHarnessTab({
       },
       async () => {
         const taskId = inspectingTaskId
+        const jobId = inspectingJobId
         stopLiveInspect()
         try {
+          if (liveSubscriptionTarget(destinationRef.current) !== jobId) return
+          if (slugRef.current !== selectedProjectSlug) return
           const historyRes = await api.listProjectHistory(selectedProjectSlug)
           const historyList = normalizeHistoryResponse(historyRes).items
           const latest = historyList.find(item => !taskId || item.taskId === taskId)
+          if (liveSubscriptionTarget(destinationRef.current) !== jobId) return
           if (latest) {
-            const savedPageSize = getSavedLogPageSize()
-            const paging = savedPageSize > 0 ? { page: 1, limit: savedPageSize } : undefined
+            const paging = resolvedLogPaging(destinationRef.current, savedAgentLogPageSize())
             const run = await api.getProjectHistoryDetail(selectedProjectSlug, latest.fileName, paging)
+            if (liveSubscriptionTarget(destinationRef.current) !== jobId) return
             setActiveTrajectoryView(run)
             setSelectedHistoryId(latest.id)
             setSelectedHistoryFileName(latest.fileName)
@@ -986,14 +1225,16 @@ export function ProjectHarnessTab({
         } catch {
           // Retain last live snapshot if history is not yet available
         }
-        void loadTasksAndJobs(selectedProjectSlug, true)
+        if (slugRef.current === selectedProjectSlug) {
+          void loadTasksAndJobs(selectedProjectSlug, true)
+        }
       },
     )
 
     return () => {
       unsubscribe()
     }
-  }, [selectedProjectSlug, inspectingJobId, inspectingTaskId, api])
+  }, [selectedProjectSlug, inspectingJobId, inspectingTaskId, liveJobId, api])
 
   const newTaskFormBase = (): ProjectTaskDefinition => ({
     id: `task-${Date.now().toString().slice(-6)}`,
@@ -1957,8 +2198,10 @@ export function ProjectHarnessTab({
               type="button"
               className={`project-subnav-btn ${subTab === 'tasks' ? 'active' : ''}`}
               onClick={() => {
+                sectionIntentRef.current = 'tasks'
                 setSubTab('tasks')
                 setMoreNavOpen(false)
+                onHubNavigate?.({ tab: 'harness', destination: null })
               }}
             >
               {t('harness.page.nav.tasks', { count: tasks.length })}
@@ -1967,8 +2210,10 @@ export function ProjectHarnessTab({
               type="button"
               className={`project-subnav-btn ${subTab === 'history' ? 'active' : ''}`}
               onClick={() => {
+                sectionIntentRef.current = null
                 setSubTab('history')
                 setMoreNavOpen(false)
+                onHubNavigate?.({ tab: 'harness', destination: { kind: 'history' } })
               }}
             >
               {t('harness.page.nav.history', { countLabel: loadedSections.history ? `(${history.length})` : '' })}
@@ -1990,8 +2235,10 @@ export function ProjectHarnessTab({
                     className={`subnav-more-item ${subTab === 'reports' ? 'active' : ''}`}
                     role="menuitem"
                     onClick={() => {
+                      sectionIntentRef.current = 'reports'
                       setSubTab('reports')
                       setMoreNavOpen(false)
+                      onHubNavigate?.({ tab: 'harness', destination: null })
                     }}
                   >
                     <BarChart3 size={14} />
@@ -2002,8 +2249,10 @@ export function ProjectHarnessTab({
                     className={`subnav-more-item ${subTab === 'config' ? 'active' : ''}`}
                     role="menuitem"
                     onClick={() => {
+                      sectionIntentRef.current = 'config'
                       setSubTab('config')
                       setMoreNavOpen(false)
+                      onHubNavigate?.({ tab: 'harness', destination: null })
                     }}
                   >
                     <Settings size={14} />
@@ -2014,8 +2263,10 @@ export function ProjectHarnessTab({
                     className={`subnav-more-item ${subTab === 'cassettes' ? 'active' : ''}`}
                     role="menuitem"
                     onClick={() => {
+                      sectionIntentRef.current = 'cassettes'
                       setSubTab('cassettes')
                       setMoreNavOpen(false)
+                      onHubNavigate?.({ tab: 'harness', destination: null })
                     }}
                   >
                     <Disc size={14} />
@@ -3275,7 +3526,9 @@ export function ProjectHarnessTab({
                                       onClick={() => {
                                         setOpenMenuTaskId(null)
                                         setHistoryTaskFilter(task.id)
+                                        sectionIntentRef.current = null
                                         setSubTab('history')
+                                        onHubNavigate?.({ tab: 'harness', destination: { kind: 'history' } })
                                       }}
                                     >
                                       <History size={13} />
@@ -3761,6 +4014,7 @@ export function ProjectHarnessTab({
               <p className="section-desc">
                 {t('harness.page.history.help')}</p>
             </div>
+            {shareUrl && <CopyLinkButton url={shareUrl} />}
           </div>
 
           {historyError && history.length > 0 && !isHistoryLoading && (
@@ -3869,6 +4123,32 @@ export function ProjectHarnessTab({
             projectSlug={selectedProjectSlug}
             maxTurnsLimit={maxTurnsLimit}
             onNavigateToFiles={onNavigateToFiles}
+            previewFilePath={destination?.kind === 'log' ? destination.file : null}
+            onPreviewFilePath={path => {
+              if (destination?.kind !== 'log') return
+              if (path && !isValidProjectFilePath(path)) return
+              onHubNavigate?.({
+                tab: 'harness',
+                destination: { ...destination, file: path },
+              })
+            }}
+            shareUrl={shareUrl}
+            linkedLogPage={destination?.kind === 'log' ? destination.logPage : null}
+            linkedLogSize={destination?.kind === 'log' ? destination.logSize : null}
+            pageLoading={logPageLoading}
+            onResumeLiveFollow={() => {
+              const dest = destinationRef.current
+              if (dest?.kind !== 'log' || dest.logPage == null) return
+              suppressPagingFetchRef.current = true
+              onHubNavigate?.({
+                tab: 'harness',
+                destination: {
+                  ...dest,
+                  logPage: null,
+                  logSize: dest.logSize === 50 ? null : dest.logSize,
+                },
+              })
+            }}
             liveInspect={liveInspect}
             inspectingJobId={inspectingJobId}
             selectedHistoryId={selectedHistoryId}
@@ -3882,6 +4162,22 @@ export function ProjectHarnessTab({
             backLabel={logOrigin ? t('harness.page.logs.back', { origin: ({ tasks: t('harness.page.logs.origin.tasks'), history: t('harness.page.logs.origin.history'), reports: t('harness.page.logs.origin.reports'), config: t('harness.page.logs.origin.config'), cassettes: t('harness.page.logs.origin.cassettes') })[logOrigin] }) : t('harness.page.logs.backTasks')}
             onPageChange={async (page: number, pageSize: number) => {
               if (!selectedProjectSlug) return
+              const dest = destinationRef.current
+              const fields = logPagingFields(page, pageSize, liveInspect && page === 1)
+              if (dest?.kind === 'log' && onHubNavigate) {
+                const next: HubDestination = { ...dest, ...fields }
+                if (logPagingKey(next) !== logPagingKey(dest)) suppressPagingFetchRef.current = true
+                const gen = ++logPagingGenRef.current
+                onHubNavigate({ tab: 'harness', destination: next })
+                const requested = pageSize > 0 ? { page, limit: pageSize } : null
+                try {
+                  await applyLogSlice(selectedProjectSlug, next, gen, requested)
+                } catch (err) {
+                  if (logPagingGenRef.current !== gen) return
+                  setError(err instanceof Error ? err.message : pageMessage('harness.page.errors.historicalRun'))
+                }
+                return
+              }
               const paging = pageSize > 0 ? { page, limit: pageSize } : undefined
               if (selectedHistoryFileName) {
                 const run = await api.getProjectHistoryDetail(
@@ -3896,9 +4192,7 @@ export function ProjectHarnessTab({
                   inspectingJobId,
                   paging,
                 )
-                if (detail.snapshot) {
-                  setActiveTrajectoryView(detail.snapshot)
-                }
+                if (detail.snapshot) setActiveTrajectoryView(detail.snapshot)
               }
             }}
             onContinueTask={async (taskId, extraTurns, extraPrompt) => {
@@ -3913,6 +4207,22 @@ export function ProjectHarnessTab({
             }}
             onOpenContinueModal={handleOpenContinueModal}
           />
+        ) : logError ? (
+          <div className="harness-card">
+            <h3 className="section-title">{t('deepLink.logUnavailable')}</h3>
+            <p className="section-desc">
+              {logError === 'deepLink.logUnavailable' ? t('deepLink.logUnavailableHint') : renderMessage(logError)}
+            </p>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button type="button" className="btn-secondary" onClick={() => setLogRetry(count => count + 1)}>
+                {t('common.retry')}
+              </button>
+              <button type="button" className="btn-secondary" onClick={handleBackFromTrajectory}>
+                {t('deepLink.backToHistory')}
+              </button>
+              {shareUrl && <CopyLinkButton url={shareUrl} />}
+            </div>
+          </div>
         ) : (
           <div className="harness-card">
             <p className="empty-text">{t('harness.page.logs.empty')}</p>

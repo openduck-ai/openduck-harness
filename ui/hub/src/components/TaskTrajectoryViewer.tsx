@@ -31,6 +31,7 @@ import { isContinuableStatus, isHistoryFollowUpStatus } from '../taskContinuatio
 import { MarkdownPreview } from './MarkdownPreview.tsx'
 import { AgentLogTranscript } from './AgentLogTranscript.tsx'
 import { FilePreviewModal } from './FilePreviewModal.tsx'
+import { CopyLinkButton } from './CopyLinkButton.tsx'
 import { ProviderStatsDashboard } from './ProviderStatsDashboard.tsx'
 import { formatSelectionExtraPrompt } from '../dynamicPrompt.ts'
 import {
@@ -76,6 +77,16 @@ interface TaskTrajectoryViewerProps {
   api?: ReturnType<typeof createApi>
   projectSlug?: string
   onNavigateToFiles?: (path: string) => void
+  previewFilePath?: string | null
+  onPreviewFilePath?: (path: string | null) => void
+  shareUrl?: string
+  /** Page from the hub URL. Null keeps the first page and, while live, follow. */
+  linkedLogPage?: number | null
+  /** Page size from the hub URL. Null keeps the saved size. */
+  linkedLogSize?: number | null
+  pageLoading?: boolean
+  /** Clears a pinned log page so live follow is not written into the URL. */
+  onResumeLiveFollow?: () => void
   liveInspect?: boolean
   inspectingJobId?: string | null
   selectedHistoryId?: string | null
@@ -102,6 +113,19 @@ interface TaskTrajectoryViewerProps {
   ) => void
 }
 
+function savedAgentLogPageSize(): number {
+  try {
+    const saved = localStorage.getItem('openduck.agentLog.pageSize')
+    if (saved !== null) {
+      const parsed = parseInt(saved, 10)
+      if (!Number.isNaN(parsed) && [25, 50, 100, 0].includes(parsed)) return parsed
+    }
+  } catch {
+    // Ignore
+  }
+  return 50
+}
+
 type TelemetryTab = 'prompt' | 'response' | 'thinking' | 'tokens' | 'raw' | 'provider_calls'
 type MsgRoleFilter = 'all' | 'user' | 'assistant' | 'tool' | 'system'
 
@@ -110,6 +134,13 @@ export function TaskTrajectoryViewer({
   api,
   projectSlug,
   onNavigateToFiles,
+  previewFilePath: controlledPreviewFilePath,
+  onPreviewFilePath,
+  shareUrl,
+  linkedLogPage = null,
+  linkedLogSize = null,
+  pageLoading = false,
+  onResumeLiveFollow,
   liveInspect = false,
   inspectingJobId,
   selectedHistoryId,
@@ -155,7 +186,12 @@ export function TaskTrajectoryViewer({
     running: selectionRunBusy,
     runWithSelection,
   } = useSelectionTaskRun(api, effectiveProjectSlug)
-  const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
+  const [uncontrolledPreviewFilePath, setUncontrolledPreviewFilePath] = useState<string | null>(null)
+  const previewFilePath = onPreviewFilePath ? controlledPreviewFilePath ?? null : uncontrolledPreviewFilePath
+  const setPreviewFilePath = (path: string | null) => {
+    if (onPreviewFilePath) onPreviewFilePath(path)
+    else setUncontrolledPreviewFilePath(path)
+  }
   const [copiedRunId, setCopiedRunId] = useState(false)
   // Navigation & View state
   const [viewMode, setViewMode] = useState<TrajectoryViewMode>('log')
@@ -226,32 +262,54 @@ export function TaskTrajectoryViewer({
     () => filterAgentLogTurns(agentLog, filterType, searchQuery),
     [agentLog, filterType, searchQuery, i18n.language],
   )
-  const [logPage, setLogPage] = useState(() => run.pagination?.page ?? 1)
+  const [logPage, setLogPage] = useState(() => linkedLogPage ?? run.pagination?.page ?? 1)
   const [logPageSize, setLogPageSize] = useState<number>(() => {
-    if (run.pagination?.limit) {
-      return run.pagination.limit
-    }
-    try {
-      const saved = localStorage.getItem('openduck.agentLog.pageSize')
-      if (saved !== null) {
-        const parsed = parseInt(saved, 10)
-        if (!Number.isNaN(parsed) && [25, 50, 100, 0].includes(parsed)) {
-          return parsed
-        }
-      }
-    } catch {
-      // Ignore
-    }
-    return 50
+    if (linkedLogSize != null) return linkedLogSize
+    if (run.pagination?.limit) return run.pagination.limit
+    return savedAgentLogPageSize()
   })
   const [loadingPage, setLoadingPage] = useState(false)
+  const pageBusy = loadingPage || pageLoading
+  const linkedLogPageRef = useRef(linkedLogPage)
+  const linkedLogSizeRef = useRef(linkedLogSize)
 
   useEffect(() => {
-    if (run.pagination) {
-      setLogPage(run.pagination.page)
-      setLogPageSize(run.pagination.limit)
+    if (!run.pagination) return
+    if (linkedLogPage != null && run.pagination.page !== linkedLogPage) return
+    if (linkedLogSize != null && run.pagination.limit !== linkedLogSize) return
+    setLogPage(run.pagination.page)
+    setLogPageSize(run.pagination.limit)
+  }, [run.pagination?.page, run.pagination?.limit, linkedLogPage, linkedLogSize])
+
+  useEffect(() => {
+    const previous = linkedLogPageRef.current
+    linkedLogPageRef.current = linkedLogPage
+    if (linkedLogPage != null) {
+      setLogPage(linkedLogPage)
+      userPagedAwayRef.current = true
+      autoScrollRef.current = false
+      setAutoScroll(false)
+      return
     }
-  }, [run.pagination?.page, run.pagination?.limit])
+    if (previous === linkedLogPage) return
+    if (liveInspect) {
+      userPagedAwayRef.current = false
+      autoScrollRef.current = true
+      setAutoScroll(true)
+      return
+    }
+    setLogPage(1)
+  }, [linkedLogPage, liveInspect])
+
+  useEffect(() => {
+    const previous = linkedLogSizeRef.current
+    linkedLogSizeRef.current = linkedLogSize
+    if (linkedLogSize != null) {
+      setLogPageSize(linkedLogSize)
+      return
+    }
+    if (previous != null) setLogPageSize(savedAgentLogPageSize())
+  }, [linkedLogSize])
 
   const logPagination: AgentLogPagination = useMemo(() => {
     if (run.pagination) {
@@ -281,14 +339,14 @@ export function TaskTrajectoryViewer({
   }, [run.pagination, filteredLogTurns, logPage, logPageSize])
 
   useEffect(() => {
-    if (liveInspect && autoScrollRef.current) {
+    if (liveInspect && autoScrollRef.current && linkedLogPage == null) {
       if (logPagination.totalPages !== logPage) {
         setLogPage(logPagination.totalPages)
       }
-    } else if (logPage > logPagination.totalPages) {
+    } else if (linkedLogPage == null && logPage > logPagination.totalPages) {
       setLogPage(logPagination.totalPages)
     }
-  }, [liveInspect, logPagination.totalPages, logPage])
+  }, [liveInspect, logPagination.totalPages, logPage, linkedLogPage])
 
   useEffect(() => {
     if (!run.pagination) {
@@ -339,7 +397,7 @@ export function TaskTrajectoryViewer({
   const showAgentLog = viewMode === 'log' && (steps.length > 0 || filteredLogTurns.length > 0)
   if (liveFollowKeyRef.current !== liveFollowKey) {
     liveFollowKeyRef.current = liveFollowKey
-    if (liveInspect) {
+    if (liveInspect && linkedLogPage == null) {
       userPagedAwayRef.current = false
       userExplicitlyDisabledRef.current = false
       autoScrollRef.current = true
@@ -579,8 +637,9 @@ export function TaskTrajectoryViewer({
     autoScrollRef.current = true
     setAutoScroll(true)
     setLogPage(logPagination.totalPages)
+    onResumeLiveFollow?.()
     pinLogToBottom(true)
-  }, [logPagination.totalPages, pinLogToBottom])
+  }, [logPagination.totalPages, onResumeLiveFollow, pinLogToBottom])
 
   // Scroll active pill into view in the scrubber rail
   useEffect(() => {
@@ -824,6 +883,7 @@ export function TaskTrajectoryViewer({
           </div>
 
           <div className="trajectory-header-actions">
+            {shareUrl && <CopyLinkButton url={shareUrl} />}
             {liveInspect && onStopTask && (
               <button
                 type="button"
@@ -1405,6 +1465,7 @@ export function TaskTrajectoryViewer({
                 <select
                   aria-label={t('trajectory.viewer.turnsPerPage')}
                   value={logPageSize}
+                  disabled={pageBusy}
                   onChange={e => handleLogPageSizeChange(Number(e.target.value))}
                 >
                   <option value={25}>{t('trajectory.viewer.pageSize25')}</option>
@@ -1483,7 +1544,7 @@ export function TaskTrajectoryViewer({
                 type="button"
                 className="stepper-btn"
                 onClick={() => handleLogPageChange(1)}
-                disabled={loadingPage || logPage <= 1}
+                disabled={pageBusy || logPage <= 1}
                 title={t('trajectory.viewer.firstPage')}
               >
                 {t('trajectory.viewer.first')}
@@ -1492,20 +1553,20 @@ export function TaskTrajectoryViewer({
                 type="button"
                 className="stepper-btn"
                 onClick={() => handleLogPageChange(logPage - 1)}
-                disabled={loadingPage || logPage <= 1}
+                disabled={pageBusy || logPage <= 1}
                 title={t('trajectory.viewer.previousPage')}
               >
                 <ChevronLeft size={14} /> {t('trajectory.viewer.previous')}
               </button>
               <span className="stepper-count-indicator">
                 <Trans t={t} i18nKey="trajectory.viewer.pageIndicator" values={{ page: logPage, total: logPagination.totalPages }} components={{ current: <strong />, total: <strong /> }} />
-                {loadingPage && <span className="stepper-loading-tag"> …</span>}
+                {pageBusy && <span className="stepper-loading-tag"> …</span>}
               </span>
               <button
                 type="button"
                 className="stepper-btn"
                 onClick={() => handleLogPageChange(logPage + 1)}
-                disabled={loadingPage || logPage >= logPagination.totalPages}
+                disabled={pageBusy || logPage >= logPagination.totalPages}
                 title={t('trajectory.viewer.nextPage')}
               >
                 {t('trajectory.viewer.next')} <ChevronRight size={14} />
@@ -1514,7 +1575,7 @@ export function TaskTrajectoryViewer({
                 type="button"
                 className="stepper-btn"
                 onClick={() => handleLogPageChange(logPagination.totalPages)}
-                disabled={loadingPage || logPage >= logPagination.totalPages}
+                disabled={pageBusy || logPage >= logPagination.totalPages}
                 title={t('trajectory.viewer.lastPage')}
               >
                 {t('trajectory.viewer.last')}
@@ -1954,8 +2015,10 @@ export function TaskTrajectoryViewer({
           api={api}
           projectSlug={effectiveProjectSlug}
           filePath={previewFilePath}
+          shareUrl={shareUrl}
           onClose={() => setPreviewFilePath(null)}
-          onNavigateToFile={onNavigateToFiles}
+          onOpenLinkedFile={setPreviewFilePath}
+          onOpenInFiles={onNavigateToFiles}
         />
       )}
     </div>

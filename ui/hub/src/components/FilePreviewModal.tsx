@@ -23,6 +23,8 @@ import {
   normalizeMentionedPath,
 } from '../pathUtils.ts'
 import { MarkdownPreview } from './MarkdownPreview.tsx'
+import { CopyLinkButton } from './CopyLinkButton.tsx'
+import { isValidProjectFilePath } from '../urlNav.ts'
 import { formatSelectionExtraPrompt } from '../dynamicPrompt.ts'
 import {
   DynamicPromptRunNotice,
@@ -37,8 +39,10 @@ interface FilePreviewModalProps {
   api: ReturnType<typeof createApi>
   projectSlug: string
   filePath: string
+  shareUrl?: string
   onClose: () => void
-  onNavigateToFile?: (path: string) => void
+  onOpenLinkedFile?: (path: string) => void
+  onOpenInFiles?: (path: string) => void
 }
 
 function formatBytes(bytes?: number): string {
@@ -52,12 +56,27 @@ export function FilePreviewModal({
   api,
   projectSlug,
   filePath,
+  shareUrl,
   onClose,
-  onNavigateToFile,
+  onOpenLinkedFile,
+  onOpenInFiles,
 }: FilePreviewModalProps) {
   const { t } = useTranslation()
-  const [history, setHistory] = useState<string[]>([filePath])
-  const currentPath = history[history.length - 1] || filePath
+  const currentPath = filePath
+  const stackRef = useRef<string[]>([filePath])
+  const [canGoBack, setCanGoBack] = useState(false)
+  const [reloadToken, setReloadToken] = useState(0)
+
+  useEffect(() => {
+    const stack = stackRef.current
+    if (stack[stack.length - 1] === filePath) {
+      setCanGoBack(stack.length > 1)
+      return
+    }
+    if (stack.length > 1 && stack[stack.length - 2] === filePath) stack.pop()
+    else stack.push(filePath)
+    setCanGoBack(stack.length > 1)
+  }, [filePath])
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<ErrorText | null>(null)
@@ -116,7 +135,7 @@ export function FilePreviewModal({
     return () => {
       cancelled = true
     }
-  }, [api, projectSlug, currentPath, isImage])
+  }, [api, projectSlug, currentPath, isImage, reloadToken])
 
   // Keyboard shortcut to close on Escape
   useEffect(() => {
@@ -157,16 +176,16 @@ export function FilePreviewModal({
   }
 
   const handleNavigateInternal = (nextPath: string) => {
-    const clean = normalizeMentionedPath(nextPath)
-    if (clean && clean !== currentPath) {
-      setHistory((prev) => [...prev, clean])
+    let clean = normalizeMentionedPath(nextPath)
+    if (!isValidProjectFilePath(clean)) {
+      clean = resolveProjectAssetPath(currentPath, nextPath)
     }
+    if (!isValidProjectFilePath(clean) || clean === currentPath) return
+    onOpenLinkedFile?.(clean)
   }
 
   const handleBack = () => {
-    if (history.length > 1) {
-      setHistory((prev) => prev.slice(0, -1))
-    }
+    if (canGoBack) window.history.back()
   }
 
   const lines = useMemo(() => {
@@ -184,7 +203,7 @@ export function FilePreviewModal({
         {/* Header */}
         <div className="file-preview-header">
           <div className="file-preview-header-left">
-            {history.length > 1 && (
+            {canGoBack && (
               <button
                 type="button"
                 className="file-preview-btn file-preview-back-btn"
@@ -239,6 +258,8 @@ export function FilePreviewModal({
               </div>
             )}
 
+            {shareUrl && <CopyLinkButton url={shareUrl} className="file-preview-btn" />}
+
             {/* Copy Path */}
             <button
               type="button"
@@ -275,14 +296,11 @@ export function FilePreviewModal({
             </a>
 
             {/* Open in Files Tab */}
-            {onNavigateToFile && (
+            {onOpenInFiles && (
               <button
                 type="button"
                 className="file-preview-btn file-preview-external-btn"
-                onClick={() => {
-                  onClose()
-                  onNavigateToFile(currentPath)
-                }}
+                onClick={() => onOpenInFiles(currentPath)}
                 title={t('files.preview.openInFilesTitle')}
               >
                 <ExternalLink size={14} />
@@ -325,6 +343,9 @@ export function FilePreviewModal({
                   components={{ code: <code /> }}
                 />
               </p>
+              <button type="button" className="btn-secondary" onClick={() => setReloadToken(token => token + 1)}>
+                {t('files.preview.retry')}
+              </button>
             </div>
           ) : isImage ? (
             <div className="file-preview-image-container">

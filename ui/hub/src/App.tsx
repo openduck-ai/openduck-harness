@@ -15,7 +15,14 @@ import { ProjectList } from './components/ProjectList'
 import { RunningTasksPage } from './components/RunningTasksPage'
 import { RegisterProjectModal } from './components/RegisterProjectModal'
 import { TabSkeleton, ProjectDetailHeaderSkeleton } from './components/Skeletons'
-import { parseUrlNav, syncUrlNav } from './urlNav'
+import {
+  absoluteHubUrl,
+  formatUrlNavQuery,
+  parseUrlNav,
+  syncUrlNav,
+  type HubDestination,
+  type UrlNavState,
+} from './urlNav'
 import type { ProjectSubTab } from './lazyTabs'
 import {
   LayoutDashboard,
@@ -44,10 +51,10 @@ const TuiAgentsPage = lazy(() =>
 
 export default function App() {
   const { t } = useTranslation()
-  const [initialNav] = useState(() =>
+  const [initialNav] = useState<UrlNavState>(() =>
     typeof window !== 'undefined'
       ? parseUrlNav(window.location.search)
-      : { page: 'projects' as NavPage, project: null, tab: null, split: null },
+      : { page: 'projects', project: null, tab: null, split: null, destination: null },
   )
   const [currentPage, setCurrentPage] = useState<NavPage>(initialNav.page)
   const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem('goose-hub-url') ?? '')
@@ -61,6 +68,15 @@ export default function App() {
   const [activeSlug, setActiveSlug] = useState<string | null>(initialNav.project)
   const [activeTab, setActiveTab] = useState<ProjectSubTab | null>(initialNav.tab)
   const [splitSlug, setSplitSlug] = useState<string | null>(initialNav.split)
+  const [destination, setDestination] = useState<HubDestination | null>(initialNav.destination)
+  const navRef = useRef<UrlNavState>(initialNav)
+  navRef.current = {
+    page: currentPage,
+    project: activeSlug,
+    tab: activeTab,
+    split: splitSlug,
+    destination,
+  }
   const [showRegisterModal, setShowRegisterModal] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -74,6 +90,37 @@ export default function App() {
   const runningRequestRef = useRef(0)
 
   const allSessions = useAllProjectSessions()
+
+  const publishNav = useCallback((patch: Partial<UrlNavState>, replace = false) => {
+    const current = navRef.current
+    const nextProject = patch.project !== undefined ? patch.project : current.project
+    const nextTab = patch.tab !== undefined ? patch.tab : current.tab
+    const nextPage = patch.page !== undefined ? patch.page : current.page
+    const nextSplit = patch.split !== undefined ? patch.split : current.split
+    let nextDestination = patch.destination !== undefined ? patch.destination : current.destination
+    if (patch.project !== undefined && patch.project !== current.project && patch.destination === undefined) {
+      nextDestination = null
+    }
+    if (patch.tab !== undefined && patch.tab !== current.tab && patch.destination === undefined) {
+      nextDestination = null
+    }
+    if (!nextProject) nextDestination = null
+
+    const next: UrlNavState = {
+      page: nextProject ? 'projects' : nextPage,
+      project: nextProject,
+      tab: nextProject ? nextTab : null,
+      split: nextProject ? nextSplit : null,
+      destination: nextDestination,
+    }
+    navRef.current = next
+    setCurrentPage(next.page)
+    setActiveSlug(next.project)
+    setActiveTab(next.tab)
+    setSplitSlug(next.split)
+    setDestination(next.destination)
+    syncUrlNav(next, replace)
+  }, [])
 
   const load = useCallback(async () => {
     setBusy(true)
@@ -91,20 +138,17 @@ export default function App() {
   }, [api])
 
   const open = useCallback(
-    async (project: Project, tab?: ProjectSubTab | null) => {
+    async (project: Project, tab?: ProjectSubTab | null, options?: { destination?: HubDestination | null }) => {
       setError('')
-      const targetTab = tab ?? activeTab
+      const targetTab = tab ?? navRef.current.tab
 
       const alreadyOpen = openProjects.find(p => p.project.slug === project.slug)
       if (alreadyOpen) {
-        setActiveSlug(project.slug)
-        setCurrentPage('projects')
-        if (tab) setActiveTab(tab)
-        syncUrlNav({
+        publishNav({
           page: 'projects',
           project: project.slug,
           tab: targetTab,
-          split: splitSlug,
+          ...(options?.destination !== undefined ? { destination: options.destination } : {}),
         })
         return
       }
@@ -120,14 +164,11 @@ export default function App() {
       }
 
       setOpenProjects(current => [...current, initialDetail])
-      setActiveSlug(project.slug)
-      setCurrentPage('projects')
-      if (tab) setActiveTab(tab)
-      syncUrlNav({
+      publishNav({
         page: 'projects',
         project: project.slug,
         tab: targetTab,
-        split: splitSlug,
+        ...(options?.destination !== undefined ? { destination: options.destination } : {}),
       })
 
       try {
@@ -139,8 +180,15 @@ export default function App() {
         setError(cause instanceof Error ? cause.message : 'app.shell.detailsError')
       }
     },
-    [activeTab, api, openProjects, splitSlug],
+    [api, openProjects, publishNav],
   )
+
+  useEffect(() => {
+    const canonical = formatUrlNavQuery(initialNav)
+    if (canonical !== window.location.search) {
+      syncUrlNav(initialNav, true)
+    }
+  }, [initialNav])
 
   useEffect(() => {
     let ignore = false
@@ -154,14 +202,14 @@ export default function App() {
           setIsConnected(true)
 
           if (initialNav.project) {
-            const matched = res.projects.find((p: any) => p.slug === initialNav.project)
+            const matched = res.projects.find((p: Project) => p.slug === initialNav.project)
             if (matched) {
-              void open(matched, initialNav.tab)
+              void open(matched, initialNav.tab, { destination: initialNav.destination })
             }
           }
 
           if (initialNav.split && initialNav.split !== initialNav.project) {
-            const splitMatch = res.projects.find((p: any) => p.slug === initialNav.split)
+            const splitMatch = res.projects.find((p: Project) => p.slug === initialNav.split)
             if (splitMatch) {
               try {
                 const detail = await api.getProject(splitMatch.slug, { lazy: true })
@@ -199,15 +247,20 @@ export default function App() {
   useEffect(() => {
     const handlePopState = () => {
       const nav = parseUrlNav(window.location.search)
+      navRef.current = nav
       setCurrentPage(nav.page)
       setActiveSlug(nav.project)
       setActiveTab(nav.tab)
       setSplitSlug(nav.split)
+      setDestination(nav.destination)
+      if (formatUrlNavQuery(nav) !== window.location.search) {
+        syncUrlNav(nav, true)
+      }
 
       if (nav.project && projects.length > 0) {
         const found = projects.find(p => p.slug === nav.project)
         if (found && !openProjects.some(p => p.project.slug === found.slug)) {
-          void open(found, nav.tab)
+          void open(found, nav.tab, { destination: nav.destination })
         }
       }
     }
@@ -217,13 +270,13 @@ export default function App() {
   }, [projects, openProjects, open])
 
   const handleSelectPage = (page: NavPage) => {
-    setCurrentPage(page)
     const stayOnProject = page === 'projects'
-    syncUrlNav({
+    publishNav({
       page,
-      project: stayOnProject ? activeSlug : null,
-      tab: stayOnProject ? activeTab : null,
-      split: stayOnProject ? splitSlug : null,
+      project: stayOnProject ? navRef.current.project : null,
+      tab: stayOnProject ? navRef.current.tab : null,
+      split: stayOnProject ? navRef.current.split : null,
+      destination: stayOnProject ? navRef.current.destination : null,
     })
   }
 
@@ -290,18 +343,14 @@ export default function App() {
     if (activeSlug === slug) {
       const remaining = openProjects.filter(p => p.project.slug !== slug)
       nextActive = remaining[remaining.length - 1]?.project.slug ?? null
-      setActiveSlug(nextActive)
     }
-    let nextSplit = splitSlug
-    if (splitSlug === slug) {
-      nextSplit = null
-      setSplitSlug(null)
-    }
-    syncUrlNav({
+    const nextSplit = splitSlug === slug ? null : splitSlug
+    publishNav({
       page: 'projects',
       project: nextActive,
       tab: nextActive ? activeTab : null,
       split: nextSplit,
+      ...(nextActive !== activeSlug ? { destination: null } : {}),
     })
   }
 
@@ -334,6 +383,18 @@ export default function App() {
   }
 
   const activeProject = openProjects.find(p => p.project.slug === activeSlug) ?? null
+  const shareUrl = absoluteHubUrl({
+    page: currentPage,
+    project: activeSlug,
+    tab: activeTab,
+    split: splitSlug,
+    destination,
+  })
+  const projectMissing =
+    Boolean(activeSlug) &&
+    isConnected &&
+    !busy &&
+    !projects.some(project => project.slug === activeSlug)
   const splitProject = splitSlug
     ? openProjects.find(p => p.project.slug === splitSlug) ?? null
     : null
@@ -371,8 +432,7 @@ export default function App() {
                   type="button"
                   className={`tab ${activeSlug === null ? 'active' : ''}`}
                   onClick={() => {
-                    setActiveSlug(null)
-                    syncUrlNav({ page: 'projects', project: null })
+                    publishNav({ page: 'projects', project: null, destination: null })
                   }}
                 >
                   <LayoutDashboard size={14} />
@@ -393,8 +453,7 @@ export default function App() {
                         isSplit ? 'split' : ''
                       }`}
                       onClick={() => {
-                        setActiveSlug(slug)
-                        syncUrlNav({
+                        publishNav({
                           page: 'projects',
                           project: slug,
                           tab: activeTab,
@@ -443,12 +502,12 @@ export default function App() {
                         value={splitSlug ?? ''}
                         onChange={e => {
                           const nextSplit = e.target.value || null
-                          setSplitSlug(nextSplit)
-                          syncUrlNav({
+                          publishNav({
                             page: 'projects',
                             project: activeSlug,
                             tab: activeTab,
                             split: nextSplit,
+                            destination,
                           })
                         }}
                         title={t('app.shell.splitTitle')}
@@ -487,18 +546,29 @@ export default function App() {
                       secret={secret}
                       api={api}
                       initialTab={activeTab ?? undefined}
+                      destination={destination}
+                      shareUrl={shareUrl}
                       onTabChange={tab => {
-                        setActiveTab(tab)
-                        syncUrlNav({
+                        publishNav({
                           page: 'projects',
                           project: activeProject.project.slug,
                           tab,
                           split: splitSlug,
                         })
                       }}
+                      onHubNavigate={(update, replace) => {
+                        publishNav(
+                          {
+                            page: 'projects',
+                            project: activeProject.project.slug,
+                            split: splitSlug,
+                            ...update,
+                          },
+                          replace,
+                        )
+                      }}
                       onBack={() => {
-                        setActiveSlug(null)
-                        syncUrlNav({ page: 'projects', project: null })
+                        publishNav({ page: 'projects', project: null, destination: null })
                       }}
                       onArchive={() => handleArchiveProject(activeProject.project.slug)}
                       onDelete={() => handleDeleteProject(activeProject.project.slug)}
@@ -531,12 +601,12 @@ export default function App() {
                         secret={secret}
                         api={api}
                         onBack={() => {
-                          setSplitSlug(null)
-                          syncUrlNav({
+                          publishNav({
                             page: 'projects',
                             project: activeSlug,
                             tab: activeTab,
                             split: null,
+                            destination,
                           })
                         }}
                         onArchive={() => handleArchiveProject(splitProject.project.slug)}
@@ -553,6 +623,23 @@ export default function App() {
                     </Suspense>
                   </div>
                 )}
+              </div>
+            ) : projectMissing ? (
+              <div className="harness-card" style={{ margin: '1.5rem' }}>
+                <h3 className="section-title">{t('deepLink.projectMissing', { project: activeSlug })}</h3>
+                <p className="section-desc">{t('deepLink.projectMissingHint')}</p>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button type="button" className="btn-secondary" onClick={() => void load()}>
+                    {t('common.retry')}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => publishNav({ page: 'projects', project: null, destination: null })}
+                  >
+                    {t('deepLink.backToProjects')}
+                  </button>
+                </div>
               </div>
             ) : (
               <ProjectList
