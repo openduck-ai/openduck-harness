@@ -28,9 +28,10 @@ pub use policy::{
 };
 pub use project::{
     compose_dynamic_run_prompt, draft_system_prompt, heuristic_task_draft, parse_model_task_draft,
-    ExecutionConfig, JudgeConfig, PathsConfig, PolicyConfig, ProjectHarnessConfig,
-    ProjectTaskDefinition, ProjectTaskStore, ProjectTaskSummary, SandboxConfig, TaskDraft,
-    TaskDraftMessage, TaskDraftTurn, TaskVerifierSpec,
+    resolve_task_providers, ExecutionConfig, JudgeConfig, PathsConfig, PolicyConfig,
+    ProjectHarnessConfig, ProjectTaskDefinition, ProjectTaskStore, ProjectTaskSummary,
+    ResolvedTaskProviders, SandboxConfig, TaskDraft, TaskDraftMessage, TaskDraftTurn,
+    TaskProviderRequest, TaskVerifierSpec,
 };
 pub use replay::{Cassette, CassetteFrame, RecordMode, ReplayPolicy};
 pub use runtime::{

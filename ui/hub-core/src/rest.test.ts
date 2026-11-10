@@ -661,6 +661,16 @@ test('REST client reads and updates OpenDuck config', async () => {
     })
     await api.removeAppConfig('OLLAMA_HOST')
     await api.removeJudgeConfig()
+    await api.getProjectProvidersConfig('my-proj')
+    await api.updateProjectProvidersConfig('my-proj', {
+      majorProvider: 'openai',
+      majorModel: 'gpt-4o',
+      secondaryProvider: 'anthropic',
+      secondaryModel: 'claude-3-5-sonnet',
+      providers: {
+        openai: { enabled: true, model: 'gpt-4o' },
+      },
+    })
     assert.deepEqual(
       calls.map(call => `${call.method} ${call.url}`),
       [
@@ -674,12 +684,16 @@ test('REST client reads and updates OpenDuck config', async () => {
         'PUT http://host/api/v1/config/judge',
         'DELETE http://host/api/v1/config?key=OLLAMA_HOST',
         'DELETE http://host/api/v1/config/judge',
+        'GET http://host/api/v1/projects/my-proj/providers',
+        'PUT http://host/api/v1/projects/my-proj/providers',
       ],
     )
     assert.equal(JSON.parse(calls[2]?.body ?? '{}').majorProvider, 'openai')
     assert.equal(JSON.parse(calls[4]?.body ?? '{}').proxies[0].id, 'clash')
     assert.equal(calls[5]?.body, JSON.stringify({ key: 'OLLAMA_HOST', value: 'http://127.0.0.1:11434' }))
     assert.equal(JSON.parse(calls[6]?.body ?? '{}').maxTurns, 40)
+    assert.equal(JSON.parse(calls[11]?.body ?? '{}').majorProvider, 'openai')
+    assert.equal(JSON.parse(calls[11]?.body ?? '{}').secondaryProvider, 'anthropic')
   } finally {
     globalThis.fetch = originalFetch
   }

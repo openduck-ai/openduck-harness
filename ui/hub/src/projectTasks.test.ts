@@ -14,6 +14,7 @@ import {
   presentLastRun,
   projectTaskListEmpty,
   runDetailLine,
+  taskProviderLines,
 } from './projectTasks.ts'
 
 function task(
@@ -72,6 +73,27 @@ test('filterAndSortProjectTasks keeps newest-created-first after search filter w
     ordered.map(item => item.id),
     ['zzz', 'aaa'],
   )
+})
+
+test('filterAndSortProjectTasks matches a task provider', () => {
+  const tasks = [
+    task('p1', '2024-01-01T00:00:00.000Z', { provider: 'gemini', model: 'gemini-flash' }),
+    task('p2', '2024-01-02T00:00:00.000Z', { secondaryProvider: 'openai' }),
+  ]
+  const matched = filterAndSortProjectTasks(tasks, { query: 'gemini' })
+  assert.deepEqual(matched.map(item => item.id), ['p1'])
+  assert.deepEqual(taskProviderLines(tasks[0]), {
+    primary: 'gemini · gemini-flash',
+    fallback: undefined,
+  })
+  assert.deepEqual(taskProviderLines(tasks[1]), {
+    primary: undefined,
+    fallback: 'openai',
+  })
+  assert.deepEqual(taskProviderLines(task('plain', '2024-01-03T00:00:00.000Z')), {
+    primary: undefined,
+    fallback: undefined,
+  })
 })
 
 test('filterAndSortProjectTasks matches promptPreview substring', () => {

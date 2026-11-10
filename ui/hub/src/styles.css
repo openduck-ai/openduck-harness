@@ -8226,6 +8226,14 @@ textarea {
   border: 1px solid var(--accent-emerald-border);
 }
 
+.task-card-providers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
 .task-card-prompt-preview {
   font-size: 0.8125rem;
   line-height: 1.45;

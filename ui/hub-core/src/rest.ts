@@ -43,6 +43,8 @@ import type {
   ProjectHarnessEvalRequest,
   ProjectHarnessOverview,
   ProjectInput,
+  ProjectProvidersConfigPutBody,
+  ProjectProvidersConfigResponse,
   ProjectTaskDefinition,
   ProjectTaskDraftRequest,
   ProjectTaskDraftResponse,
@@ -559,6 +561,21 @@ export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}
         method: 'PUT',
         body: JSON.stringify(config),
       }),
+    getProjectProvidersConfig: (slug: string) =>
+      request<ProjectProvidersConfigResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/providers`,
+      ),
+    updateProjectProvidersConfig: (
+      slug: string,
+      body: ProjectProvidersConfigPutBody,
+    ) =>
+      request<ProjectProvidersConfigResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/providers`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(body),
+        },
+      ),
     listProjectTasks: (slug: string) =>
       request<ProjectTaskSummary[]>(`/api/v1/projects/${encodeURIComponent(slug)}/harness/tasks`),
     estimateProjectTask: (slug: string, req: ProjectTaskEstimateRequest) =>

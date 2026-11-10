@@ -199,6 +199,10 @@ export interface ProviderModelOption {
   id: string
   name: string
   recommended?: boolean
+  /** USD per million input tokens. */
+  inputCost?: number | null
+  /** USD per million output tokens. */
+  outputCost?: number | null
 }
 
 export interface ProviderDetail {
@@ -933,11 +937,43 @@ export interface ProjectHarnessOverview {
   maxTurnsLimit?: number
 }
 
+export interface ProjectProviderEntry {
+  enabled?: boolean
+  model?: string
+  fastModel?: string
+  secondaryModel?: string
+  proxy?: string
+}
+
+export interface ProjectProvidersConfigResponse {
+  majorProvider?: string
+  majorModel?: string
+  secondaryProvider?: string
+  secondaryModel?: string
+  providers: Record<string, ProjectProviderEntry>
+  globalMajorProvider?: string
+  globalMajorModel?: string
+  globalSecondaryProvider?: string
+  globalSecondaryModel?: string
+  availableProviders?: string[]
+  providerModels?: Record<string, string[]>
+}
+
+export interface ProjectProvidersConfigPutBody {
+  majorProvider?: string
+  majorModel?: string
+  secondaryProvider?: string
+  secondaryModel?: string
+  providers: Record<string, ProjectProviderEntry>
+}
+
 export interface ProjectHarnessConfig {
   version: string
   policy: {
     provider?: string
     model?: string
+    secondaryProvider?: string
+    secondaryModel?: string
     systemPrompt?: string
   }
   sandbox: {
@@ -959,6 +995,7 @@ export interface ProjectHarnessConfig {
     resultsDir: string
     cassettesDir: string
   }
+  providers?: Record<string, ProjectProviderEntry>
 }
 
 export type TaskVerifierSpec =
@@ -1014,6 +1051,14 @@ export interface ProjectTaskDefinition {
   subtasks?: SubtaskSpec[]
   /** When true, a run can append extra instructions without rewriting the saved prompt. */
   dynamicPrompt?: boolean
+  /** Major provider. Blank inherits the project provider, then the global provider. */
+  provider?: string
+  /** Model for `provider`. Blank uses that provider's configured model. */
+  model?: string
+  /** Fallback provider. Blank inherits the project fallback, then the global fallback. */
+  secondaryProvider?: string
+  /** Model for `secondaryProvider`. Blank uses that provider's configured model. */
+  secondaryModel?: string
 }
 
 export interface ProjectTaskSummary {
@@ -1030,6 +1075,10 @@ export interface ProjectTaskSummary {
   nextRunAt?: string
   currentlyRunning?: boolean
   dynamicPrompt?: boolean
+  provider?: string
+  model?: string
+  secondaryProvider?: string
+  secondaryModel?: string
 }
 
 export interface ProjectTaskSchedulePatch {
@@ -1040,6 +1089,8 @@ export interface ProjectTaskSchedulePatch {
 export interface ProjectTaskRunRequest {
   provider?: string
   model?: string
+  secondaryProvider?: string
+  secondaryModel?: string
   maxTurns?: number
   echo?: boolean
   record?: boolean
@@ -1062,6 +1113,8 @@ export interface ProjectHarnessEvalRequest {
   maxTurns?: number
   provider?: string
   model?: string
+  secondaryProvider?: string
+  secondaryModel?: string
   echo?: boolean
   outputDir?: string
 }

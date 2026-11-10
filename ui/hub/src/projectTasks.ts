@@ -18,6 +18,26 @@ export function historyTaskTitle(
 
 export type ProjectTaskSort = 'activity' | 'created'
 
+function providerLabel(provider?: string | null, model?: string | null): string | undefined {
+  const name = provider?.trim()
+  const modelName = model?.trim()
+  if (name && modelName) return `${name} · ${modelName}`
+  return name || modelName || undefined
+}
+
+/** Compact provider text for a task card. Empty when the task inherits both providers. */
+export function taskProviderLines(task: {
+  provider?: string | null
+  model?: string | null
+  secondaryProvider?: string | null
+  secondaryModel?: string | null
+}): { primary?: string; fallback?: string } {
+  return {
+    primary: providerLabel(task.provider, task.model),
+    fallback: providerLabel(task.secondaryProvider, task.secondaryModel),
+  }
+}
+
 export function filterAndSortProjectTasks(
   tasks: ProjectTaskSummary[],
   options: {
@@ -42,7 +62,11 @@ export function filterAndSortProjectTasks(
         (task.name && task.name.toLowerCase().includes(query)) ||
         (task.category && task.category.toLowerCase().includes(query)) ||
         taskTags.some(t => t.toLowerCase().includes(query)) ||
-        Boolean(task.promptPreview && task.promptPreview.toLowerCase().includes(query))
+        Boolean(task.promptPreview && task.promptPreview.toLowerCase().includes(query)) ||
+        Boolean(task.provider && task.provider.toLowerCase().includes(query)) ||
+        Boolean(task.model && task.model.toLowerCase().includes(query)) ||
+        Boolean(task.secondaryProvider && task.secondaryProvider.toLowerCase().includes(query)) ||
+        Boolean(task.secondaryModel && task.secondaryModel.toLowerCase().includes(query))
       )
     })
     .sort((a, b) => {

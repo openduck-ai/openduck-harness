@@ -149,15 +149,22 @@ export function ProjectDetail({
     let cancelled = false
     async function loadProviderAndModel() {
       try {
-        const [appConfig, harnessConfig, providersConfig] = await Promise.all([
+        const [appConfig, harnessConfig, providersConfig, projectProvidersConfig] = await Promise.all([
           api.getAppConfig().catch(() => null),
           api.getProjectHarnessConfig?.(detail.project.slug).catch(() => null),
           api.getProvidersConfig().catch(() => null),
+          api.getProjectProvidersConfig?.(detail.project.slug).catch(() => null),
         ])
         if (cancelled) return
 
-        const harnessProvider = harnessConfig?.policy?.provider?.trim()
-        const harnessModel = harnessConfig?.policy?.model?.trim()
+        const harnessProvider =
+          projectProvidersConfig?.majorProvider?.trim() ||
+          harnessConfig?.policy?.provider?.trim()
+        const harnessModel =
+          projectProvidersConfig?.majorModel?.trim() ||
+          harnessConfig?.policy?.model?.trim() ||
+          (harnessProvider && projectProvidersConfig?.providers?.[harnessProvider]?.model?.trim()) ||
+          (harnessProvider && harnessConfig?.providers?.[harnessProvider]?.model?.trim())
 
         if (harnessProvider || harnessModel) {
           const provider =

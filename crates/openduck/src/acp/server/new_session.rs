@@ -11,7 +11,7 @@ use agent_client_protocol::{Client, ConnectionTo};
 use openduck_providers::model::ModelConfig;
 use openduck_providers::thinking::ThinkingEffortSupport;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::warn;
 
 struct InitialSessionConfig {
@@ -139,7 +139,12 @@ impl GooseAcpAgent {
 
         let recipe_settings = rendered.as_ref().and_then(|r| r.settings.as_ref());
         let (provider, model_config) = self
-            .resolve_provider_and_model(config, args.meta.as_ref(), recipe_settings)
+            .resolve_provider_and_model(
+                config,
+                args.meta.as_ref(),
+                recipe_settings,
+                Some(&args.cwd),
+            )
             .await?;
 
         let goose_extensions = meta_goose_extensions(args.meta.as_ref())?;
@@ -183,6 +188,7 @@ impl GooseAcpAgent {
         config: &Config,
         meta: Option<&Meta>,
         recipe_settings: Option<&Settings>,
+        cwd: Option<&Path>,
     ) -> Result<(String, ModelConfig), agent_client_protocol::Error> {
         let recipe_provider = recipe_settings.and_then(|s| s.goose_provider.clone());
         let recipe_model = recipe_settings.and_then(|s| s.goose_model.clone());
@@ -199,6 +205,30 @@ impl GooseAcpAgent {
                         })?;
                         let model_config = model_config_from_recipe_settings(&provider, model)?;
                         return Ok((provider, model_config));
+                    }
+
+                    if let Some(cwd) = cwd {
+                        let project_cfg =
+                            openduck_harness::project::ProjectHarnessConfig::load_or_default(cwd)
+                                .await;
+                        if let Some(proj_provider) = project_cfg.policy.provider {
+                            let proj_model = project_cfg.policy.model.or_else(|| {
+                                project_cfg
+                                    .providers
+                                    .get(&proj_provider)
+                                    .and_then(|p| p.model.clone())
+                            });
+                            let model_config = match proj_model {
+                                Some(model) => {
+                                    model_config_from_recipe_settings(&proj_provider, &model)?
+                                }
+                                None => {
+                                    super::resolve_provider_default_model_config(&proj_provider)
+                                        .await?
+                                }
+                            };
+                            return Ok((proj_provider, model_config));
+                        }
                     }
 
                     return super::resolve_default_provider_model_config(config);

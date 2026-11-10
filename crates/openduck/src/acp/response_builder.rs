@@ -541,6 +541,8 @@ mod tests {
                     context_limit: None,
                     reasoning: None,
                     recommended: false,
+                    input_cost: None,
+                    output_cost: None,
                 })
                 .collect(),
             last_updated_at: None,

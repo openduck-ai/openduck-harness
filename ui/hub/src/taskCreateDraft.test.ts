@@ -231,6 +231,16 @@ test('blank project ids never touch storage', () => {
   assert.equal(storage.entries.size, 0)
 })
 
+test('isMeaningfulTaskDraft keeps a provider-only draft', () => {
+  assert.equal(
+    isMeaningfulTaskDraft({
+      ...defaultTaskCreateDraftData(),
+      form: { ...defaultTaskCreateDraftData().form, provider: 'gemini' },
+    }),
+    true,
+  )
+})
+
 test('isMeaningfulTaskDraft ignores an untouched blank form', () => {
   assert.equal(isMeaningfulTaskDraft(defaultTaskCreateDraftData()), false)
   assert.equal(isMeaningfulTaskDraft(draftData()), true)

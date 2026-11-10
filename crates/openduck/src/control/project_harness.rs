@@ -17,8 +17,8 @@ use openduck_harness::eval::{
 use openduck_harness::policy::adapters::EchoPolicy;
 use openduck_harness::project::{
     compose_dynamic_run_prompt, draft_system_prompt, heuristic_task_draft, parse_model_task_draft,
-    ProjectHarnessConfig, ProjectTaskDefinition, ProjectTaskStore, ProjectTaskSummary, TaskDraft,
-    TaskDraftMessage,
+    resolve_task_providers, ProjectHarnessConfig, ProjectTaskDefinition, ProjectTaskStore,
+    ProjectTaskSummary, ResolvedTaskProviders, TaskDraft, TaskDraftMessage, TaskProviderRequest,
 };
 use openduck_harness::replay::{Cassette, ReplayPolicy};
 use openduck_harness::runtime::{AgentHarness, HistoryFollowUp};
@@ -36,13 +36,13 @@ use crate::control::harness::{
     get_live_snapshot, inspect_active_job, internal_list_cassettes, internal_list_reports,
     list_history_for_project, new_harness_job_id, paginate_history, persist_harness_run,
     project_runs_dir, read_history_run, register_abort_handle, register_active_job,
-    remove_active_job, resolve_harness_policy, stop_active_job, subscribe_job_live_events,
-    subscribe_project_events, to_run_dto, try_register_active_job, update_active_job_status,
-    upsert_live_snapshot, with_live_snapshot, with_task_notes_plan, ActiveJobRegisterError,
-    HarnessActiveJobDto, HarnessCassetteSummaryDto, HarnessHistoryListResponseDto,
-    HarnessHistoryPageResponseDto, HarnessHistorySummaryDto, HarnessJobInspectDto,
-    HarnessJobLiveEvent, HarnessProjectEvent, HarnessReportSummaryDto, HarnessRunResponseDto,
-    TrajectoryPagingQuery,
+    remove_active_job, resolve_harness_policy_with_secondary, stop_active_job,
+    subscribe_job_live_events, subscribe_project_events, to_run_dto, try_register_active_job,
+    update_active_job_status, upsert_live_snapshot, with_live_snapshot, with_task_notes_plan,
+    ActiveJobRegisterError, HarnessActiveJobDto, HarnessCassetteSummaryDto,
+    HarnessHistoryListResponseDto, HarnessHistoryPageResponseDto, HarnessHistorySummaryDto,
+    HarnessJobInspectDto, HarnessJobLiveEvent, HarnessProjectEvent, HarnessReportSummaryDto,
+    HarnessRunResponseDto, TrajectoryPagingQuery,
 };
 use crate::sources;
 
@@ -142,6 +142,8 @@ pub fn resolve_project_root(slug: &str) -> Result<(SourceEntry, PathBuf)> {
 pub struct ProjectTaskRunRequest {
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub secondary_provider: Option<String>,
+    pub secondary_model: Option<String>,
     pub max_turns: Option<usize>,
     pub echo: Option<bool>,
     pub record: Option<bool>,
@@ -174,8 +176,37 @@ pub struct ProjectHarnessEvalRequest {
     pub max_turns: Option<usize>,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub secondary_provider: Option<String>,
+    pub secondary_model: Option<String>,
     pub echo: Option<bool>,
     pub output_dir: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectProvidersConfigResponse {
+    pub major_provider: Option<String>,
+    pub major_model: Option<String>,
+    pub secondary_provider: Option<String>,
+    pub secondary_model: Option<String>,
+    pub providers: HashMap<String, openduck_harness::project::ProjectProviderEntry>,
+    pub global_major_provider: Option<String>,
+    pub global_major_model: Option<String>,
+    pub global_secondary_provider: Option<String>,
+    pub global_secondary_model: Option<String>,
+    pub available_providers: Vec<String>,
+    pub provider_models: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectProvidersConfigPutRequest {
+    pub major_provider: Option<String>,
+    pub major_model: Option<String>,
+    pub secondary_provider: Option<String>,
+    pub secondary_model: Option<String>,
+    #[serde(default)]
+    pub providers: HashMap<String, openduck_harness::project::ProjectProviderEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -416,6 +447,84 @@ pub async fn update_project_harness_config(
     Ok(Json(config_response(&root, loaded)))
 }
 
+pub async fn get_project_providers_config(
+    axum::extract::State(server): axum::extract::State<
+        std::sync::Arc<crate::acp::server_factory::AcpServer>,
+    >,
+    AxumPath(slug): AxumPath<String>,
+) -> Result<Json<ProjectProvidersConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let (_entry, root) = resolve_project_root(&slug).map_err(not_found)?;
+    let config = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        ProjectHarnessConfig::load_or_default(&root),
+    )
+    .await
+    .map_err(|_| bad("Timed out loading harness config"))?;
+
+    let global_config = crate::config::Config::global();
+    let global_major_provider = crate::config::get_active_provider(global_config);
+    let global_major_model = crate::config::get_active_model(global_config);
+    let global_secondary_provider = crate::config::providers::get_secondary_provider(global_config);
+    let global_secondary_model =
+        crate::config::providers::file_secondary_provider_model(global_config);
+
+    let _ = crate::providers::refresh_custom_providers().await;
+    let registry_list = crate::providers::providers().await;
+    let mut available_providers: Vec<String> = registry_list
+        .iter()
+        .map(|(meta, _)| meta.name.clone())
+        .collect();
+    available_providers.sort();
+    available_providers.dedup();
+
+    let mut provider_models: HashMap<String, Vec<String>> = HashMap::new();
+    if let Ok(inv) = server.provider_inventory().await {
+        if let Ok(entries) = inv.entries(&available_providers).await {
+            for entry in entries {
+                let model_ids: Vec<String> = entry.models.into_iter().map(|m| m.id).collect();
+                if !model_ids.is_empty() {
+                    provider_models.insert(entry.provider_id, model_ids);
+                }
+            }
+        }
+    }
+
+    Ok(Json(ProjectProvidersConfigResponse {
+        major_provider: config.policy.provider,
+        major_model: config.policy.model,
+        secondary_provider: config.policy.secondary_provider,
+        secondary_model: config.policy.secondary_model,
+        providers: config.providers,
+        global_major_provider,
+        global_major_model,
+        global_secondary_provider,
+        global_secondary_model,
+        available_providers,
+        provider_models,
+    }))
+}
+
+pub async fn update_project_providers_config(
+    axum::extract::State(server): axum::extract::State<
+        std::sync::Arc<crate::acp::server_factory::AcpServer>,
+    >,
+    AxumPath(slug): AxumPath<String>,
+    Json(payload): Json<ProjectProvidersConfigPutRequest>,
+) -> Result<Json<ProjectProvidersConfigResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let (_entry, root) = resolve_project_root(&slug).map_err(not_found)?;
+    let mut config = ProjectHarnessConfig::load_or_default(&root).await;
+
+    config.policy.provider = payload.major_provider.filter(|s| !s.trim().is_empty());
+    config.policy.model = payload.major_model.filter(|s| !s.trim().is_empty());
+    config.policy.secondary_provider = payload.secondary_provider.filter(|s| !s.trim().is_empty());
+    config.policy.secondary_model = payload.secondary_model.filter(|s| !s.trim().is_empty());
+    config.providers = payload.providers;
+
+    config.save_to_file(&root).await.map_err(bad)?;
+
+    get_project_providers_config(axum::extract::State(server), AxumPath(slug)).await
+}
+
 pub async fn list_project_tasks(
     AxumPath(slug): AxumPath<String>,
 ) -> Result<Json<Vec<ProjectTaskSummary>>, (StatusCode, Json<serde_json::Value>)> {
@@ -449,6 +558,7 @@ pub async fn create_project_task(
     if task_def.id.trim().is_empty() {
         return Err(bad("Task ID cannot be empty"));
     }
+    task_def.normalize_providers();
     prepare_task_schedule(&mut task_def)?;
 
     ProjectTaskStore::save_task(&tasks_dir, &task_def)
@@ -490,6 +600,7 @@ pub async fn update_project_task(
     let tasks_dir = config.resolve_tasks_dir(&root);
 
     task_def.id = task_id;
+    task_def.normalize_providers();
     prepare_task_schedule(&mut task_def)?;
     ProjectTaskStore::save_task(&tasks_dir, &task_def)
         .await
@@ -550,6 +661,7 @@ pub async fn patch_project_task_schedule(
     if let Some(paused) = patch.paused {
         task_def.schedule_paused = paused;
     }
+    task_def.normalize_providers();
     prepare_task_schedule(&mut task_def)?;
 
     ProjectTaskStore::save_task(&tasks_dir, &task_def)
@@ -705,7 +817,19 @@ pub async fn launch_project_task(
         .clone()
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| task_spec.problem_statement.clone());
-    let notify_model = req.model.clone().or(config.policy.model.clone());
+    let resolved = resolve_task_providers(
+        &TaskProviderRequest {
+            provider: req.provider.clone(),
+            model: req.model.clone(),
+            secondary_provider: req.secondary_provider.clone(),
+            secondary_model: req.secondary_model.clone(),
+        },
+        &task_def,
+        &config.policy,
+        &config.providers,
+    );
+    let notify_provider = resolved.provider.clone();
+    let notify_model = resolved.model.clone();
 
     let (queue_entry, ready) = ProjectTaskQueueEntry::enqueue(HarnessActiveJobDto {
         job_id: job_id.clone(),
@@ -714,7 +838,7 @@ pub async fn launch_project_task(
         description: notify_task_name.clone(),
         started_at: started_at.clone(),
         current_status: "running".to_string(),
-        provider: req.provider.clone().or(config.policy.provider.clone()),
+        provider: notify_provider.clone(),
         model: notify_model.clone(),
         project_slug: Some(slug.to_string()),
     })?;
@@ -745,6 +869,7 @@ pub async fn launch_project_task(
                     spawn_job_id.clone(),
                     continuation,
                     history_follow_up,
+                    resolved,
                 )
                 .await
             }
@@ -984,6 +1109,7 @@ async fn execute_project_task(
     job_id: String,
     continuation: Option<ContinuationCheckpoint>,
     history_follow_up: Option<HistoryFollowUp>,
+    resolved: ResolvedTaskProviders,
 ) -> Result<HarnessRunResponseDto> {
     let extra_turns = req.extra_turns;
     if continuation.is_none() && history_follow_up.is_none() {
@@ -1044,12 +1170,13 @@ async fn execute_project_task(
         .await;
     }
 
-    let provider = req
-        .provider
-        .as_deref()
-        .or(config.policy.provider.as_deref());
-    let model = req.model.as_deref().or(config.policy.model.as_deref());
-    let mut base_policy = resolve_harness_policy(provider, model).await?;
+    let mut base_policy = resolve_harness_policy_with_secondary(
+        resolved.provider.as_deref(),
+        resolved.model.as_deref(),
+        resolved.secondary_provider.as_deref(),
+        resolved.secondary_model.as_deref(),
+    )
+    .await?;
 
     // Load active global and project-level rules
     let rules = crate::rules::discover_rules(Some(sandbox.workspace_root()), &[]);
@@ -1322,7 +1449,17 @@ pub async fn eval_project_tasks(
         started_at: eval_started_at.to_rfc3339(),
         current_status: "running".to_string(),
         provider: req.provider.clone().or(config.policy.provider.clone()),
-        model: req.model.clone().or(config.policy.model.clone()),
+        model: req
+            .model
+            .clone()
+            .or(config.policy.model.clone())
+            .or_else(|| {
+                let p = req.provider.as_ref().or(config.policy.provider.as_ref())?;
+                config
+                    .providers
+                    .get(p)
+                    .and_then(|entry| entry.model.clone())
+            }),
         project_slug: Some(slug.clone()),
     })
     .map_err(unavailable)?;
@@ -1336,9 +1473,32 @@ pub async fn eval_project_tasks(
             .provider
             .as_deref()
             .or(config.policy.provider.as_deref());
-        let model = req.model.as_deref().or(config.policy.model.as_deref());
+        let mut model = req.model.as_deref().or(config.policy.model.as_deref());
+        if model.is_none() {
+            if let Some(p) = provider {
+                if let Some(entry) = config.providers.get(p) {
+                    model = entry.model.as_deref();
+                }
+            }
+        }
+        let sec_provider = req
+            .secondary_provider
+            .as_deref()
+            .or(config.policy.secondary_provider.as_deref());
+        let mut sec_model = req
+            .secondary_model
+            .as_deref()
+            .or(config.policy.secondary_model.as_deref());
+        if sec_model.is_none() {
+            if let Some(sp) = sec_provider {
+                if let Some(entry) = config.providers.get(sp) {
+                    sec_model = entry.model.as_deref().or(entry.secondary_model.as_deref());
+                }
+            }
+        }
 
-        match resolve_harness_policy(provider, model).await {
+        match resolve_harness_policy_with_secondary(provider, model, sec_provider, sec_model).await
+        {
             Ok(mut policy) => {
                 if let Some(sys_prompt) = &config.policy.system_prompt {
                     policy = policy.with_system_prompt(sys_prompt);
@@ -2114,9 +2274,20 @@ async fn estimate_with_model(
         .filter(|s| !s.is_empty())
     {
         Some(m) => m.to_string(),
-        None => global_config
-            .get_goose_model()
-            .context("No model configured for active provider")?,
+        None => {
+            if let Some(entry_model) = config
+                .providers
+                .get(&provider_name)
+                .and_then(|p| p.model.as_deref())
+                .filter(|m| !m.trim().is_empty())
+            {
+                entry_model.trim().to_string()
+            } else {
+                global_config
+                    .get_goose_model()
+                    .context("No model configured for active provider")?
+            }
+        }
     };
 
     let model_config = model_config_from_user_config(&provider_name, &model_name)?;
@@ -2273,9 +2444,20 @@ async fn draft_with_model(
         .filter(|model| !model.is_empty())
     {
         Some(model) => model.to_string(),
-        None => global_config
-            .get_goose_model()
-            .context("No model configured for active provider")?,
+        None => {
+            if let Some(entry_model) = config
+                .providers
+                .get(&provider_name)
+                .and_then(|p| p.model.as_deref())
+                .filter(|m| !m.trim().is_empty())
+            {
+                entry_model.trim().to_string()
+            } else {
+                global_config
+                    .get_goose_model()
+                    .context("No model configured for active provider")?
+            }
+        }
     };
     let model_config = model_config_from_user_config(&provider_name, &model_name)?;
     let provider = crate::providers::create(&provider_name, vec![]).await?;

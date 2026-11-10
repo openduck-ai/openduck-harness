@@ -284,7 +284,7 @@ impl TuiManagementService {
         } else if resolved_proxy_mode == "named" {
             if let Some(ref pid) = resolved_proxy_id {
                 let config = crate::config::Config::global();
-                crate::config::proxies::get_proxy_entry(&config, pid)
+                crate::config::proxies::get_proxy_entry(config, pid)
                     .map(|e| e.url)
                     .or_else(|| {
                         if pid.starts_with("http://")
@@ -301,7 +301,7 @@ impl TuiManagementService {
             }
         } else {
             let config = crate::config::Config::global();
-            crate::config::proxies::get_proxy_entry(&config, "default").map(|e| e.url)
+            crate::config::proxies::get_proxy_entry(config, "default").map(|e| e.url)
         };
 
         let op_id = format!("op_{}", uuid::Uuid::new_v4());
@@ -518,8 +518,9 @@ impl TuiManagementService {
                     .map(|s| s.to_string())
                     .or_else(|| sess_rec.owner_run_id.clone()),
                 subtask_id: sess_rec.created_by_subtask_id.clone(),
-                summary: Some(if prompt.len() > 100 {
-                    format!("{}...", &prompt[..100])
+                summary: Some(if prompt.chars().count() > 100 {
+                    let truncated: String = prompt.chars().take(100).collect();
+                    format!("{truncated}...")
                 } else {
                     prompt.to_string()
                 }),

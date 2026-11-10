@@ -44,6 +44,10 @@ export interface TaskCreateDraftForm {
   timeoutSeconds: number
   dynamicPrompt: boolean
   subtasks: SubtaskSpec[]
+  provider: string
+  model: string
+  secondaryProvider: string
+  secondaryModel: string
 }
 
 export interface TaskCreateDraftSchedule {
@@ -106,6 +110,10 @@ export function defaultTaskCreateDraftForm(): TaskCreateDraftForm {
     timeoutSeconds: 300,
     dynamicPrompt: false,
     subtasks: [],
+    provider: '',
+    model: '',
+    secondaryProvider: '',
+    secondaryModel: '',
   }
 }
 
@@ -252,6 +260,10 @@ function sanitizeForm(value: unknown): TaskCreateDraftForm {
     timeoutSeconds: int(record.timeoutSeconds, fallback.timeoutSeconds, 1, 86400),
     dynamicPrompt: bool(record.dynamicPrompt, fallback.dynamicPrompt),
     subtasks: subtasks(record.subtasks),
+    provider: text(record.provider, fallback.provider),
+    model: text(record.model, fallback.model),
+    secondaryProvider: text(record.secondaryProvider, fallback.secondaryProvider),
+    secondaryModel: text(record.secondaryModel, fallback.secondaryModel),
   }
 }
 
@@ -311,6 +323,10 @@ export function isMeaningfulTaskDraft(data: TaskCreateDraftData): boolean {
     form.tagsInput.trim() !== '' ||
     form.prompt.trim() !== '' ||
     form.dynamicPrompt ||
+    form.provider.trim() !== '' ||
+    form.model.trim() !== '' ||
+    form.secondaryProvider.trim() !== '' ||
+    form.secondaryModel.trim() !== '' ||
     form.subtasks.some(
       subtask => subtask.title.trim() !== '' || subtask.description.trim() !== '',
     ) ||

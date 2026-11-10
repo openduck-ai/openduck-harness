@@ -144,11 +144,17 @@ pub struct ModelSelectorField {
     pub source: ModelSource,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelDto {
     pub id: String,
     pub name: String,
+    /// USD per million input tokens, when the canonical catalog has a price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_cost: Option<f64>,
+    /// USD per million output tokens, when the canonical catalog has a price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_cost: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -174,7 +180,7 @@ pub struct RefreshPlanDto {
     pub skipped: Vec<RefreshSkipDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderDetail {
     pub name: String,
@@ -227,7 +233,7 @@ pub struct ProxiesConfigPutBody {
     pub proxies: Vec<ProxyItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvidersConfigResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -991,6 +997,8 @@ pub async fn get_providers_config(
                         .map(|m| ProviderModelDto {
                             id: m.id.clone(),
                             name: m.name.clone(),
+                            input_cost: m.input_cost,
+                            output_cost: m.output_cost,
                         })
                         .collect::<Vec<_>>(),
                 ),

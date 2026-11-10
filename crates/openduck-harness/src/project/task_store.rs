@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -7,6 +8,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
+use super::config::{PolicyConfig, ProjectProviderEntry};
 use crate::eval::datasets::jsonl::BenchmarkItem;
 use crate::eval::task::{
     CommandVerifier, DiffVerifier, EnvironmentSpec, SubtaskSpec, TaskSpec, Verifier,
@@ -114,6 +116,170 @@ pub struct ProjectTaskDefinition {
     /// When true, a run may append extra instructions without rewriting the saved prompt.
     #[serde(default, alias = "dynamic_prompt", skip_serializing_if = "is_false")]
     pub dynamic_prompt: bool,
+    /// Major provider for this task. Blank inherits the project policy, then the global provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model for `provider`. Blank uses that provider's configured model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Fallback provider for this task. Blank inherits the project policy, then the global fallback.
+    #[serde(
+        default,
+        alias = "secondary_provider",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub secondary_provider: Option<String>,
+    /// Model for `secondary_provider`. Blank uses that provider's configured model.
+    #[serde(
+        default,
+        alias = "secondary_model",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub secondary_model: Option<String>,
+}
+
+/// One-run provider overrides. Blank strings are unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskProviderRequest {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub secondary_provider: Option<String>,
+    pub secondary_model: Option<String>,
+}
+
+/// Provider and model a task run should use after request, task, and project policy are applied.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolvedTaskProviders {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub secondary_provider: Option<String>,
+    pub secondary_model: Option<String>,
+}
+
+fn trimmed_nonempty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|text| !text.is_empty())
+}
+
+fn blank_option(value: Option<String>) -> Option<String> {
+    value.and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else if trimmed.len() == text.len() {
+            Some(text)
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+/// A set provider replaces both sides of the pair. A set model alone replaces only the model.
+fn overlay_pair<'a>(
+    layer_provider: Option<&'a str>,
+    layer_model: Option<&'a str>,
+    base_provider: Option<&'a str>,
+    base_model: Option<&'a str>,
+) -> (Option<&'a str>, Option<&'a str>) {
+    let provider = trimmed_nonempty(layer_provider);
+    let model = trimmed_nonempty(layer_model);
+    if provider.is_some() {
+        (provider, model)
+    } else if model.is_some() {
+        (base_provider, model)
+    } else {
+        (base_provider, base_model)
+    }
+}
+
+fn entry_model(entry: &ProjectProviderEntry, secondary: bool) -> Option<String> {
+    let preferred = if secondary {
+        entry.model.as_deref().or(entry.secondary_model.as_deref())
+    } else {
+        entry.model.as_deref()
+    };
+    blank_option(preferred.map(str::to_string))
+}
+
+impl ProjectTaskDefinition {
+    /// Drops blank provider fields so a cleared selection is not stored.
+    pub fn normalize_providers(&mut self) {
+        self.provider = blank_option(self.provider.take());
+        self.model = blank_option(self.model.take());
+        self.secondary_provider = blank_option(self.secondary_provider.take());
+        self.secondary_model = blank_option(self.secondary_model.take());
+    }
+}
+
+/// Resolves the providers for one task run.
+///
+/// Order is the run request, then the task file, then the project policy. A provider set at a
+/// layer drops the model from the layers below it. A missing model is filled from that
+/// provider's project entry. Project evaluation still uses the suite request and project policy.
+pub fn resolve_task_providers(
+    request: &TaskProviderRequest,
+    task: &ProjectTaskDefinition,
+    policy: &PolicyConfig,
+    providers: &HashMap<String, ProjectProviderEntry>,
+) -> ResolvedTaskProviders {
+    let (provider, model) = overlay_pair(
+        policy.provider.as_deref(),
+        policy.model.as_deref(),
+        None,
+        None,
+    );
+    let (provider, model) = overlay_pair(
+        task.provider.as_deref(),
+        task.model.as_deref(),
+        provider,
+        model,
+    );
+    let (provider, model) = overlay_pair(
+        request.provider.as_deref(),
+        request.model.as_deref(),
+        provider,
+        model,
+    );
+
+    let (secondary_provider, secondary_model) = overlay_pair(
+        policy.secondary_provider.as_deref(),
+        policy.secondary_model.as_deref(),
+        None,
+        None,
+    );
+    let (secondary_provider, secondary_model) = overlay_pair(
+        task.secondary_provider.as_deref(),
+        task.secondary_model.as_deref(),
+        secondary_provider,
+        secondary_model,
+    );
+    let (secondary_provider, secondary_model) = overlay_pair(
+        request.secondary_provider.as_deref(),
+        request.secondary_model.as_deref(),
+        secondary_provider,
+        secondary_model,
+    );
+
+    let provider = provider.map(str::to_string);
+    let secondary_provider = secondary_provider.map(str::to_string);
+    let model = model.map(str::to_string).or_else(|| {
+        provider
+            .as_deref()
+            .and_then(|name| providers.get(name))
+            .and_then(|entry| entry_model(entry, false))
+    });
+    let secondary_model = secondary_model.map(str::to_string).or_else(|| {
+        secondary_provider
+            .as_deref()
+            .and_then(|name| providers.get(name))
+            .and_then(|entry| entry_model(entry, true))
+    });
+
+    ResolvedTaskProviders {
+        provider,
+        model,
+        secondary_provider,
+        secondary_model,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,6 +304,22 @@ pub struct ProjectTaskSummary {
     pub currently_running: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub dynamic_prompt: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(
+        default,
+        alias = "secondary_provider",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub secondary_provider: Option<String>,
+    #[serde(
+        default,
+        alias = "secondary_model",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub secondary_model: Option<String>,
 }
 
 /// Builds a short prompt preview from a task prompt.
@@ -257,6 +439,10 @@ impl ProjectTaskStore {
                             next_run_at: None,
                             currently_running: false,
                             dynamic_prompt: task_def.dynamic_prompt,
+                            provider: blank_option(task_def.provider),
+                            model: blank_option(task_def.model),
+                            secondary_provider: blank_option(task_def.secondary_provider),
+                            secondary_model: blank_option(task_def.secondary_model),
                         },
                     ));
                 }
@@ -314,8 +500,10 @@ impl ProjectTaskStore {
                 .with_context(|| format!("Failed to create tasks directory: {:?}", tasks_dir))?;
         }
 
+        let mut task = task.clone();
+        task.normalize_providers();
         let file_path = tasks_dir.join(format!("{}.yaml", task.id));
-        let yaml_str = serde_yaml::to_string(task).context("Failed to serialize task to YAML")?;
+        let yaml_str = serde_yaml::to_string(&task).context("Failed to serialize task to YAML")?;
         fs::write(&file_path, yaml_str)
             .await
             .with_context(|| format!("Failed to write task file {:?}", file_path))?;

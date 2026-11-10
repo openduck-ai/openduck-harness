@@ -78,6 +78,12 @@ pub struct InventoryModel {
     pub reasoning: Option<bool>,
     /// Whether this model should appear in the compact recommended picker.
     pub recommended: bool,
+    /// USD per million input tokens, from the bundled canonical catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_cost: Option<f64>,
+    /// USD per million output tokens, from the bundled canonical catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_cost: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1034,6 +1040,8 @@ impl ProviderInventoryService {
                     recommended: row
                         .try_get::<Option<bool>, _>("recommended")?
                         .unwrap_or(false),
+                    input_cost: None,
+                    output_cost: None,
                 })
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
@@ -1296,6 +1304,8 @@ fn enrich_model_ids_with_canonical(
                 context_limit: None,
                 reasoning: None,
                 recommended: false,
+                input_cost: None,
+                output_cost: None,
             })
             .collect();
     }
@@ -1380,15 +1390,48 @@ fn inventory_models_from_snapshot(
     configured_models: &[ModelInfo],
     supports_refresh: bool,
 ) -> Vec<InventoryModel> {
-    if !supports_refresh {
-        return configured_models_to_inventory(provider_family, configured_models);
-    }
-
-    match snapshot {
-        Some(snapshot) if !snapshot.models.is_empty() || snapshot.last_updated_at.is_some() => {
-            snapshot.models.clone()
+    let mut models = if !supports_refresh {
+        configured_models_to_inventory(provider_family, configured_models)
+    } else {
+        match snapshot {
+            Some(snapshot) if !snapshot.models.is_empty() || snapshot.last_updated_at.is_some() => {
+                snapshot.models.clone()
+            }
+            _ => configured_models_to_inventory(provider_family, configured_models),
         }
-        _ => configured_models_to_inventory(provider_family, configured_models),
+    };
+    apply_canonical_costs(provider_family, &mut models);
+    models
+}
+
+/// Fill USD-per-million prices from the bundled catalog. Stored inventory rows
+/// do not keep prices, so this runs whenever a list is served.
+fn apply_canonical_costs(provider_family: &str, models: &mut [InventoryModel]) {
+    if provider_family == "litellm" || models.is_empty() {
+        return;
+    }
+    let Ok(registry) = CanonicalModelRegistry::bundled() else {
+        return;
+    };
+    for model in models.iter_mut() {
+        let Some(canonical_id) = map_to_canonical_model(provider_family, &model.id, &registry)
+        else {
+            model.input_cost = None;
+            model.output_cost = None;
+            continue;
+        };
+        let Some((provider, name)) = canonical_id.split_once('/') else {
+            model.input_cost = None;
+            model.output_cost = None;
+            continue;
+        };
+        let Some(canonical) = registry.get(provider, name) else {
+            model.input_cost = None;
+            model.output_cost = None;
+            continue;
+        };
+        model.input_cost = canonical.cost.input;
+        model.output_cost = canonical.cost.output;
     }
 }
 
@@ -1417,6 +1460,8 @@ fn enriched_model(
             .or(fallback_context_limit),
         reasoning: canonical.as_ref().and_then(|model| model.reasoning),
         recommended: false,
+        input_cost: None,
+        output_cost: None,
     }
 }
 
@@ -1632,6 +1677,8 @@ mod tests {
                 context_limit: None,
                 reasoning: None,
                 recommended: false,
+                input_cost: None,
+                output_cost: None,
             }],
             last_updated_at: Some(Utc::now()),
             last_refresh_attempt_at: Some(Utc::now()),
@@ -1647,6 +1694,51 @@ mod tests {
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "gpt-5.6");
+    }
+
+    #[test]
+    fn inventory_attaches_canonical_prices_for_opencode_go() {
+        let configured = [ModelInfo::new("kimi-k2.6", 262144)];
+        let models = inventory_models_from_snapshot(None, "opencode_go", &configured, false);
+        assert_eq!(models.len(), 1);
+        assert!(
+            models[0]
+                .input_cost
+                .is_some_and(|price| (price - 0.95).abs() < 1e-9),
+            "input price: {:?}",
+            models[0].input_cost
+        );
+        assert!(
+            models[0]
+                .output_cost
+                .is_some_and(|price| (price - 4.0).abs() < 1e-9),
+            "output price: {:?}",
+            models[0].output_cost
+        );
+
+        let stored = InventorySnapshot {
+            models: vec![InventoryModel {
+                id: "kimi-k2.6".to_string(),
+                name: "Kimi K2.6".to_string(),
+                family: Some("kimi-k2".to_string()),
+                context_limit: Some(262144),
+                reasoning: Some(true),
+                recommended: false,
+                input_cost: None,
+                output_cost: None,
+            }],
+            last_updated_at: Some(Utc::now()),
+            last_refresh_attempt_at: Some(Utc::now()),
+            last_refresh_error: None,
+        };
+        let refreshed =
+            inventory_models_from_snapshot(Some(&stored), "opencode-go", &configured, true);
+        assert!(refreshed[0]
+            .input_cost
+            .is_some_and(|price| (price - 0.95).abs() < 1e-9));
+        assert!(refreshed[0]
+            .output_cost
+            .is_some_and(|price| (price - 4.0).abs() < 1e-9));
     }
 
     #[test]

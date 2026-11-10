@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use openduck_harness::project::{
-    compose_dynamic_run_prompt, ProjectHarnessConfig, ProjectTaskDefinition, ProjectTaskStore,
+    compose_dynamic_run_prompt, resolve_task_providers, PolicyConfig, ProjectHarnessConfig,
+    ProjectProviderEntry, ProjectTaskDefinition, ProjectTaskStore, TaskProviderRequest,
     TaskVerifierSpec,
 };
 use tempfile::tempdir;
@@ -78,6 +81,10 @@ async fn test_project_task_store_crud() {
         schedule_paused: false,
         subtasks: None,
         dynamic_prompt: false,
+        provider: None,
+        model: None,
+        secondary_provider: None,
+        secondary_model: None,
     };
 
     let saved_path = ProjectTaskStore::save_task(&tasks_dir, &task1)
@@ -141,6 +148,10 @@ async fn test_project_task_prompt_preview() {
         schedule_paused: false,
         subtasks: None,
         dynamic_prompt: false,
+        provider: None,
+        model: None,
+        secondary_provider: None,
+        secondary_model: None,
     };
     ProjectTaskStore::save_task(&tasks_dir, &task_multi)
         .await
@@ -162,6 +173,10 @@ async fn test_project_task_prompt_preview() {
         schedule_paused: false,
         subtasks: None,
         dynamic_prompt: false,
+        provider: None,
+        model: None,
+        secondary_provider: None,
+        secondary_model: None,
     };
     ProjectTaskStore::save_task(&tasks_dir, &task_long)
         .await
@@ -195,6 +210,10 @@ async fn test_project_task_schedule_roundtrip() {
         schedule_paused: true,
         subtasks: None,
         dynamic_prompt: false,
+        provider: None,
+        model: None,
+        secondary_provider: None,
+        secondary_model: None,
     };
 
     ProjectTaskStore::save_task(&tasks_dir, &task)
@@ -234,6 +253,10 @@ fn sample_task(id: &str, tags: Vec<String>) -> ProjectTaskDefinition {
         schedule_paused: false,
         subtasks: None,
         dynamic_prompt: false,
+        provider: None,
+        model: None,
+        secondary_provider: None,
+        secondary_model: None,
     }
 }
 
@@ -347,4 +370,138 @@ dynamic_prompt: true
         .await
         .unwrap();
     assert!(yaml_out.contains("dynamicPrompt: true"));
+}
+
+fn task_with_prompt(id: &str) -> ProjectTaskDefinition {
+    ProjectTaskDefinition {
+        id: id.into(),
+        name: None,
+        category: None,
+        tags: vec![],
+        prompt: "do the work".into(),
+        environment: None,
+        verifier: None,
+        max_turns: None,
+        timeout_seconds: None,
+        cron: None,
+        schedule_paused: false,
+        subtasks: None,
+        dynamic_prompt: false,
+        provider: None,
+        model: None,
+        secondary_provider: None,
+        secondary_model: None,
+    }
+}
+
+fn provider_entry(model: &str) -> ProjectProviderEntry {
+    ProjectProviderEntry {
+        model: Some(model.into()),
+        ..ProjectProviderEntry::default()
+    }
+}
+
+#[test]
+fn test_resolve_task_providers_prefers_request_then_task_then_project() {
+    let mut policy = PolicyConfig::default();
+    policy.provider = Some("anthropic".into());
+    policy.model = Some("claude".into());
+    policy.secondary_provider = Some("openai".into());
+    policy.secondary_model = Some("gpt-4o".into());
+
+    let mut providers = HashMap::new();
+    providers.insert("gemini".into(), provider_entry("gemini-flash"));
+    providers.insert("openai".into(), provider_entry("gpt-4.1"));
+
+    let mut task = task_with_prompt("task-providers");
+    let inherited =
+        resolve_task_providers(&TaskProviderRequest::default(), &task, &policy, &providers);
+    assert_eq!(inherited.provider.as_deref(), Some("anthropic"));
+    assert_eq!(inherited.model.as_deref(), Some("claude"));
+    assert_eq!(inherited.secondary_provider.as_deref(), Some("openai"));
+    assert_eq!(inherited.secondary_model.as_deref(), Some("gpt-4o"));
+
+    task.provider = Some(" gemini ".into());
+    task.model = None;
+    let pinned =
+        resolve_task_providers(&TaskProviderRequest::default(), &task, &policy, &providers);
+    assert_eq!(pinned.provider.as_deref(), Some("gemini"));
+    assert_eq!(pinned.model.as_deref(), Some("gemini-flash"));
+    assert_eq!(pinned.secondary_provider.as_deref(), Some("openai"));
+
+    task.model = Some("gemini-pro".into());
+    task.secondary_provider = Some("openai".into());
+    task.secondary_model = None;
+    let request = TaskProviderRequest {
+        provider: Some("openai".into()),
+        model: None,
+        secondary_provider: None,
+        secondary_model: Some("gpt-4.1-mini".into()),
+    };
+    let overridden = resolve_task_providers(&request, &task, &policy, &providers);
+    assert_eq!(overridden.provider.as_deref(), Some("openai"));
+    assert_eq!(overridden.model.as_deref(), Some("gpt-4.1"));
+    assert_eq!(overridden.secondary_provider.as_deref(), Some("openai"));
+    assert_eq!(overridden.secondary_model.as_deref(), Some("gpt-4.1-mini"));
+
+    let model_only = TaskProviderRequest {
+        provider: None,
+        model: Some("haiku".into()),
+        secondary_provider: Some("  ".into()),
+        secondary_model: None,
+    };
+    let model_override = resolve_task_providers(&model_only, &task, &policy, &providers);
+    assert_eq!(model_override.provider.as_deref(), Some("gemini"));
+    assert_eq!(model_override.model.as_deref(), Some("haiku"));
+    assert_eq!(model_override.secondary_provider.as_deref(), Some("openai"));
+    assert_eq!(model_override.secondary_model.as_deref(), Some("gpt-4.1"));
+}
+
+#[tokio::test]
+async fn test_task_provider_roundtrip() {
+    let dir = tempdir().unwrap();
+    let tasks_dir = dir.path().join(".goose/tasks");
+    tokio::fs::create_dir_all(&tasks_dir).await.unwrap();
+    let yaml = r#"
+id: task-providers
+prompt: Use the pinned providers.
+provider: " gemini "
+model: ""
+secondary_provider: openai
+secondary_model: gpt-4.1
+"#;
+    tokio::fs::write(tasks_dir.join("task-providers.yaml"), yaml)
+        .await
+        .unwrap();
+
+    let fetched = ProjectTaskStore::get_task(&tasks_dir, "task-providers")
+        .await
+        .unwrap();
+    assert_eq!(fetched.provider.as_deref(), Some(" gemini "));
+    assert_eq!(fetched.model.as_deref(), Some(""));
+    assert_eq!(fetched.secondary_provider.as_deref(), Some("openai"));
+    assert_eq!(fetched.secondary_model.as_deref(), Some("gpt-4.1"));
+
+    ProjectTaskStore::save_task(&tasks_dir, &fetched)
+        .await
+        .unwrap();
+    let saved = ProjectTaskStore::get_task(&tasks_dir, "task-providers")
+        .await
+        .unwrap();
+    assert_eq!(saved.provider.as_deref(), Some("gemini"));
+    assert_eq!(saved.model, None);
+    assert_eq!(saved.secondary_provider.as_deref(), Some("openai"));
+    assert_eq!(saved.secondary_model.as_deref(), Some("gpt-4.1"));
+
+    let listed = ProjectTaskStore::list_tasks(&tasks_dir).await.unwrap();
+    assert_eq!(listed[0].provider.as_deref(), Some("gemini"));
+    assert_eq!(listed[0].model, None);
+    assert_eq!(listed[0].secondary_provider.as_deref(), Some("openai"));
+
+    let yaml_out = tokio::fs::read_to_string(tasks_dir.join("task-providers.yaml"))
+        .await
+        .unwrap();
+    assert!(yaml_out.contains("provider: gemini"));
+    assert!(yaml_out.contains("secondaryProvider: openai"));
+    assert!(!yaml_out.contains("\nmodel:"));
 }

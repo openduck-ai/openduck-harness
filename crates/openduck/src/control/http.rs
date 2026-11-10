@@ -1796,6 +1796,11 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
                 .put(super::project_harness::update_project_harness_config),
         )
         .route(
+            "/api/v1/projects/{slug}/providers",
+            get(super::project_harness::get_project_providers_config)
+                .put(super::project_harness::update_project_providers_config),
+        )
+        .route(
             "/api/v1/projects/{slug}/harness/tasks",
             get(super::project_harness::list_project_tasks)
                 .post(super::project_harness::create_project_task),

@@ -11,7 +11,9 @@ import {
   filterModelOptions,
   findMatchingProxyId,
   identicalRoleTargetWarning,
+  formatUsdPerMillion,
   modelChoiceState,
+  modelPriceLabel,
   nextRefreshGeneration,
   normalizeFastModel,
   normalizeProxy,
@@ -446,6 +448,33 @@ test('switching provider clears the model draft and restores a buffered choice',
   assert.equal(back.majorModel, 'deepseek-v3')
   assert.equal(back.dirty, true)
   assert.equal(draftFromResponse(v2Response).dirty, false)
+})
+
+test('model options include catalog prices in USD per million tokens', () => {
+  assert.equal(formatUsdPerMillion(0.95), '$0.95')
+  assert.equal(formatUsdPerMillion(4), '$4')
+  assert.equal(formatUsdPerMillion(0.035), '$0.035')
+  assert.equal(
+    modelPriceLabel({ inputCost: 0.95, outputCost: 4 }),
+    '$0.95 in / $4 out per 1M tokens',
+  )
+  assert.equal(modelPriceLabel({ inputCost: null, outputCost: null }), null)
+
+  const choice = modelChoiceState({
+    models: [
+      { id: 'kimi-k2.6', name: 'Kimi K2.6', inputCost: 0.95, outputCost: 4, recommended: true },
+      { id: 'local-model', name: 'Local Model' },
+    ],
+    defaultModel: 'kimi-k2.6',
+    explicitModel: null,
+    effectiveModel: 'kimi-k2.6',
+  })
+  const kimi = choice.options.find((option) => option.value === 'kimi-k2.6')
+  assert.match(kimi?.label ?? '', /Kimi K2\.6/)
+  assert.match(kimi?.label ?? '', /\$0\.95 in \/ \$4 out per 1M tokens/)
+  assert.match(choice.options[0]?.label ?? '', /\$0\.95 in \/ \$4 out per 1M tokens/)
+  const local = choice.options.find((option) => option.value === 'local-model')
+  assert.equal(local?.label, 'Local Model')
 })
 
 test('an effective model missing from inventory is labeled custom / not listed', () => {

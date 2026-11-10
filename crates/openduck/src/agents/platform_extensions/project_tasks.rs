@@ -55,6 +55,14 @@ pub struct CreateTaskParams {
     pub verifier_command: Option<String>,
     /// Optional maximum number of turns for the task execution
     pub max_turns: Option<usize>,
+    /// Major provider for this task. Blank inherits the project, then the global provider.
+    pub provider: Option<String>,
+    /// Model for the major provider. Blank uses that provider's configured model.
+    pub model: Option<String>,
+    /// Fallback provider. Blank inherits the project, then the global fallback.
+    pub secondary_provider: Option<String>,
+    /// Model for the fallback provider. Blank uses that provider's configured model.
+    pub secondary_model: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -77,6 +85,14 @@ pub struct UpdateTaskParams {
     pub verifier_command: Option<String>,
     /// New max turns (omit to leave unchanged)
     pub max_turns: Option<usize>,
+    /// Major provider. Blank clears it. Omit to leave unchanged.
+    pub provider: Option<String>,
+    /// Model for the major provider. Blank clears it. Omit to leave unchanged.
+    pub model: Option<String>,
+    /// Fallback provider. Blank clears it. Omit to leave unchanged.
+    pub secondary_provider: Option<String>,
+    /// Model for the fallback provider. Blank clears it. Omit to leave unchanged.
+    pub secondary_model: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -89,6 +105,27 @@ pub struct RunTaskParams {
     pub max_turns: Option<usize>,
     /// Whether to wait for task completion (true) or launch in background (false, default)
     pub wait: Option<bool>,
+}
+
+fn blank_provider_field(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn format_provider_choice(provider: Option<&str>, model: Option<&str>) -> String {
+    match (
+        provider.filter(|value| !value.is_empty()),
+        model.filter(|value| !value.is_empty()),
+    ) {
+        (Some(provider), Some(model)) => format!("{provider} ({model})"),
+        (Some(provider), None) => provider.to_string(),
+        (None, Some(model)) => model.to_string(),
+        (None, None) => "(project default)".to_string(),
+    }
 }
 
 pub struct ProjectTasksClient {
@@ -258,7 +295,7 @@ impl ProjectTasksClient {
             .map_err(|e| format!("Failed to serialize task definition: {e}"))?;
 
         let text = format!(
-            "# Task: {}\n\n- ID: `{}`\n- Name: {}\n- Category: {}\n- Tags: {}\n- Dynamic Prompt: {}\n- Cron: {}\n\n## Prompt\n{}\n\n```yaml\n{}\n```",
+            "# Task: {}\n\n- ID: `{}`\n- Name: {}\n- Category: {}\n- Tags: {}\n- Dynamic Prompt: {}\n- Cron: {}\n- Provider: {}\n- Fallback provider: {}\n\n## Prompt\n{}\n\n```yaml\n{}\n```",
             task.name.as_deref().unwrap_or(&task.id),
             task.id,
             task.name.as_deref().unwrap_or("(none)"),
@@ -266,6 +303,11 @@ impl ProjectTasksClient {
             if task.tags.is_empty() { "(none)".to_string() } else { task.tags.join(", ") },
             task.dynamic_prompt,
             task.cron.as_deref().unwrap_or("(none)"),
+            format_provider_choice(task.provider.as_deref(), task.model.as_deref()),
+            format_provider_choice(
+                task.secondary_provider.as_deref(),
+                task.secondary_model.as_deref(),
+            ),
             task.prompt,
             yaml
         );
@@ -305,6 +347,10 @@ impl ProjectTasksClient {
             schedule_paused: false,
             dynamic_prompt: params.dynamic_prompt.unwrap_or(false),
             subtasks: None,
+            provider: params.provider,
+            model: params.model,
+            secondary_provider: params.secondary_provider,
+            secondary_model: params.secondary_model,
         };
 
         let (_status, Json(created)) = create_project_task(AxumPath(slug.clone()), Json(task_def))
@@ -375,6 +421,18 @@ impl ProjectTasksClient {
         }
         if let Some(mt) = params.max_turns {
             task.max_turns = Some(mt);
+        }
+        if let Some(provider) = params.provider {
+            task.provider = blank_provider_field(provider);
+        }
+        if let Some(model) = params.model {
+            task.model = blank_provider_field(model);
+        }
+        if let Some(provider) = params.secondary_provider {
+            task.secondary_provider = blank_provider_field(provider);
+        }
+        if let Some(model) = params.secondary_model {
+            task.secondary_model = blank_provider_field(model);
         }
 
         let Json(updated) =

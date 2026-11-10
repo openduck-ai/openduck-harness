@@ -4,6 +4,41 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectProviderEntry {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "fast_model")]
+    pub fast_model: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "secondary_model"
+    )]
+    pub secondary_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+}
+
+impl Default for ProjectProviderEntry {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: None,
+            fast_model: None,
+            secondary_model: None,
+            proxy: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyConfig {
@@ -11,6 +46,18 @@ pub struct PolicyConfig {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "secondary_provider"
+    )]
+    pub secondary_provider: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "secondary_model"
+    )]
+    pub secondary_model: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -265,6 +312,8 @@ pub struct ProjectHarnessConfig {
     pub advisors: HashMap<String, crate::types::AdvisorProxyConfig>,
     #[serde(default)]
     pub judge: JudgeConfig,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub providers: HashMap<String, ProjectProviderEntry>,
 }
 
 impl Default for ProjectHarnessConfig {
@@ -277,6 +326,7 @@ impl Default for ProjectHarnessConfig {
             paths: PathsConfig::default(),
             advisors: HashMap::new(),
             judge: JudgeConfig::default(),
+            providers: HashMap::new(),
         }
     }
 }
@@ -301,17 +351,102 @@ fn apply_global_max_turns(
     cfg
 }
 
+fn merge_project_config_yaml_fallbacks(
+    mut cfg: ProjectHarnessConfig,
+    project_root: &Path,
+) -> ProjectHarnessConfig {
+    let config_yaml_candidates = [
+        project_root.join(".openduck").join("config.yaml"),
+        project_root.join(".goose").join("config.yaml"),
+    ];
+    for cand in config_yaml_candidates {
+        if cand.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&cand) {
+                if let Ok(val) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                    if cfg.policy.provider.is_none() {
+                        if let Some(p) = val
+                            .get("active_provider")
+                            .or_else(|| val.get("GOOSE_PROVIDER"))
+                            .and_then(|v| v.as_str())
+                        {
+                            if !p.trim().is_empty() {
+                                cfg.policy.provider = Some(p.trim().to_string());
+                            }
+                        }
+                    }
+                    if cfg.policy.model.is_none() {
+                        if let Some(m) = val
+                            .get("active_model")
+                            .or_else(|| val.get("GOOSE_MODEL"))
+                            .and_then(|v| v.as_str())
+                        {
+                            if !m.trim().is_empty() {
+                                cfg.policy.model = Some(m.trim().to_string());
+                            }
+                        }
+                    }
+                    if cfg.policy.secondary_provider.is_none() {
+                        if let Some(sp) = val
+                            .get("secondary_provider")
+                            .or_else(|| val.get("GOOSE_SECONDARY_PROVIDER"))
+                            .and_then(|v| v.as_str())
+                        {
+                            if !sp.trim().is_empty() {
+                                cfg.policy.secondary_provider = Some(sp.trim().to_string());
+                            }
+                        }
+                    }
+                    if cfg.policy.secondary_model.is_none() {
+                        if let Some(sm) = val
+                            .get("secondary_provider_model")
+                            .or_else(|| val.get("GOOSE_SECONDARY_MODEL"))
+                            .and_then(|v| v.as_str())
+                        {
+                            if !sm.trim().is_empty() {
+                                cfg.policy.secondary_model = Some(sm.trim().to_string());
+                            }
+                        }
+                    }
+                    if let Some(providers_val) = val.get("providers").and_then(|p| p.as_mapping()) {
+                        for (k, v) in providers_val {
+                            if let (Some(provider_name), Ok(entry)) = (
+                                k.as_str(),
+                                serde_yaml::from_value::<ProjectProviderEntry>(v.clone()),
+                            ) {
+                                cfg.providers
+                                    .entry(provider_name.to_string())
+                                    .or_insert(entry);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    cfg
+}
+
 impl ProjectHarnessConfig {
-    pub const CONFIG_FILE_REL_PATH: &'static str = ".goose/harness.yaml";
+    pub const CONFIG_FILE_REL_PATH: &'static str = ".openduck/harness.yaml";
+    pub const LEGACY_CONFIG_FILE_REL_PATH: &'static str = ".goose/harness.yaml";
 
     pub fn config_path(project_root: &Path) -> PathBuf {
-        project_root.join(Self::CONFIG_FILE_REL_PATH)
+        let openduck_path = project_root.join(Self::CONFIG_FILE_REL_PATH);
+        if openduck_path.exists() {
+            return openduck_path;
+        }
+        let goose_path = project_root.join(Self::LEGACY_CONFIG_FILE_REL_PATH);
+        if goose_path.exists() {
+            return goose_path;
+        }
+        openduck_path
     }
 
     pub async fn load_or_default(project_root: &Path) -> Self {
         let path = Self::config_path(project_root);
         let global = crate::types::discover_global_harness_settings(Some(project_root));
-        match fs::read_to_string(&path).await {
+        let loaded = match fs::read_to_string(&path).await {
             Ok(content) => {
                 let mut cfg: Self = serde_yaml::from_str(&content).unwrap_or_default();
                 let raw_val = serde_yaml::from_str::<serde_yaml::Value>(&content).ok();
@@ -331,7 +466,8 @@ impl ProjectHarnessConfig {
                 }
                 apply_global_max_turns(cfg, None, global.max_turns)
             }
-        }
+        };
+        merge_project_config_yaml_fallbacks(loaded, project_root)
     }
 
     pub async fn save_to_file(&self, project_root: &Path) -> Result<PathBuf> {
@@ -412,5 +548,47 @@ mod tests {
         cfg.execution.max_turns = 12;
         let merged = apply_global_max_turns(cfg, Some(&raw), Some(800));
         assert_eq!(merged.execution.max_turns, 12);
+    }
+
+    #[test]
+    fn policy_and_providers_round_trip() {
+        let yaml = r#"
+version: "1.0"
+policy:
+  provider: openai
+  model: gpt-4o
+  secondaryProvider: anthropic
+  secondaryModel: claude-3-7-sonnet
+providers:
+  openai:
+    enabled: true
+    model: gpt-4o
+    fastModel: gpt-4o-mini
+    proxy: http://127.0.0.1:8080
+  anthropic:
+    enabled: true
+    model: claude-3-7-sonnet
+"#;
+        let parsed: ProjectHarnessConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.policy.provider.as_deref(), Some("openai"));
+        assert_eq!(parsed.policy.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(
+            parsed.policy.secondary_provider.as_deref(),
+            Some("anthropic")
+        );
+        assert_eq!(
+            parsed.policy.secondary_model.as_deref(),
+            Some("claude-3-7-sonnet")
+        );
+        assert_eq!(parsed.providers.len(), 2);
+        let openai = &parsed.providers["openai"];
+        assert!(openai.enabled);
+        assert_eq!(openai.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(openai.fast_model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(openai.proxy.as_deref(), Some("http://127.0.0.1:8080"));
+
+        let serialized = serde_yaml::to_string(&parsed).unwrap();
+        let reloaded: ProjectHarnessConfig = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(parsed, reloaded);
     }
 }

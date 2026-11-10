@@ -248,7 +248,47 @@ function copyModels(
     id: model.id,
     name: model.name,
     ...(model.recommended ? { recommended: true } : {}),
+    inputCost: finiteCost(model.inputCost),
+    outputCost: finiteCost(model.outputCost),
   }))
+}
+
+function finiteCost(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+export function formatUsdPerMillion(value: number): string {
+  const abs = Math.abs(value)
+  const digits = abs === 0 || abs >= 1 ? 2 : abs >= 0.01 ? 3 : 4
+  return `$${value.toFixed(digits).replace(/\.?0+$/, '')}`
+}
+
+export function modelPriceLabel(
+  model: Pick<ProviderModelOption, 'inputCost' | 'outputCost'> | null | undefined,
+): string | null {
+  const input = finiteCost(model?.inputCost)
+  const output = finiteCost(model?.outputCost)
+  if (input == null && output == null) return null
+  if (input != null && output != null) {
+    return translate('config.providers.modelPrice', {
+      input: formatUsdPerMillion(input),
+      output: formatUsdPerMillion(output),
+    })
+  }
+  if (input != null) {
+    return translate('config.providers.modelInputPrice', { input: formatUsdPerMillion(input) })
+  }
+  return translate('config.providers.modelOutputPrice', {
+    output: formatUsdPerMillion(output as number),
+  })
+}
+
+function labelWithPrice(
+  label: string,
+  model: Pick<ProviderModelOption, 'inputCost' | 'outputCost'> | null | undefined,
+): string {
+  const price = modelPriceLabel(model)
+  return price ? `${label} · ${price}` : label
 }
 
 function rowFromDetail(provider: ProvidersConfigResponse['providers'][number]): ProviderRowDraft {
@@ -519,9 +559,13 @@ export function modelChoiceState(input: {
   const inventory = input.models ?? null
   const options: ModelChoiceOption[] = []
   if (defaultTrimmed) {
+    const defaultModel = (inventory ?? []).find((model) => model.id === defaultTrimmed)
     options.push({
       value: '',
-      label: translate('config.providers.inheritDefault', { model: defaultTrimmed }),
+      label: labelWithPrice(
+        translate('config.providers.inheritDefault', { model: defaultTrimmed }),
+        defaultModel,
+      ),
       recommended: false,
       custom: false,
       inherit: true,
@@ -534,9 +578,12 @@ export function modelChoiceState(input: {
     const recommended = model.recommended === true
     options.push({
       value: model.id,
-      label: recommended
-        ? translate('config.providers.recommendedModel', { name: model.name })
-        : model.name,
+      label: labelWithPrice(
+        recommended
+          ? translate('config.providers.recommendedModel', { name: model.name })
+          : model.name,
+        model,
+      ),
       recommended,
       custom: false,
       inherit: false,

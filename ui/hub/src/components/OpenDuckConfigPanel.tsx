@@ -17,6 +17,7 @@ import {
   findMatchingProxyId,
   identicalRoleTargetWarning,
   inventoryStatusLabel,
+  modelPriceLabel,
   markProviderRefreshFailed,
   markProviderRefreshing,
   modelChoiceState,
@@ -299,6 +300,12 @@ function ProviderSettingsRow({
   const isCustomProxy = Boolean(row.proxy.trim() && !matchedProxyId)
   const selectVal = matchedProxyId ? matchedProxyId : isCustomProxy ? '__custom__' : ''
   const statusLabel = inventoryStatusLabel(row.inventoryStatus)
+  const shownModel = (
+    modelLocked
+      ? ((isMajorRow ? row.modelEnvValue : row.secondaryModelEnvValue) ?? row.model)
+      : row.model
+  ).trim()
+  const shownModelPrice = modelPriceLabel(row.models?.find((model) => model.id === shownModel))
   const refreshDisabled = saving || legacy || row.supportsRefresh === false || row.refreshing
   const refreshLabel = row.refreshing
     ? t('config.panel.refreshing')
@@ -339,6 +346,11 @@ function ProviderSettingsRow({
               row.fileModel,
               (isMajorRow ? row.modelEnvValue : row.secondaryModelEnvValue) ?? row.model,
             )}
+          </div>
+        )}
+        {shownModelPrice && (
+          <div className="form-hint" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
+            {shownModelPrice}
           </div>
         )}
       </td>

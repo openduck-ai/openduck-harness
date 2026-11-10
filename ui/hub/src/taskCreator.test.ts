@@ -49,6 +49,24 @@ test('round-trips every persisted field through the draft shape', () => {
   })
 })
 
+test('provider fields survive a create draft', () => {
+  const data = defaultTaskCreateDraftData()
+  data.form.provider = 'gemini'
+  data.form.model = 'gemini-3.8-flash'
+  data.form.secondaryProvider = 'openai'
+  data.form.secondaryModel = 'gpt-4.1'
+
+  const state = taskCreatorStateFromDraft(data, { base: baseTask(), schedule: baseSchedule })
+  assert.equal(state.taskForm.provider, 'gemini')
+  assert.equal(state.taskForm.secondaryModel, 'gpt-4.1')
+
+  const restored = taskCreatorDataToDraft(state)
+  assert.equal(restored.form.provider, 'gemini')
+  assert.equal(restored.form.model, 'gemini-3.8-flash')
+  assert.equal(restored.form.secondaryProvider, 'openai')
+  assert.equal(restored.form.secondaryModel, 'gpt-4.1')
+})
+
 test('restoring a draft replaces the freshly generated id so the task is not created twice', () => {
   const data = defaultTaskCreateDraftData()
   data.form.id = 'fetch-markets'

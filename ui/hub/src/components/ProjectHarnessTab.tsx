@@ -40,6 +40,8 @@ import {
   type HarnessRunResponse,
   type Project,
   type ProjectHarnessConfig,
+  type ProjectProvidersConfigResponse,
+  type ProvidersConfigResponse,
   type ProjectTaskDefinition,
   type ProjectTaskEstimateResponse,
   type ProjectTaskSummary,
@@ -47,6 +49,7 @@ import {
   type ScheduleKind,
 } from '@aaif/goose-hub-core'
 import { inspectProjectHarnessJob } from '../api.ts'
+import { projectModelChoices, projectProviderChoices } from '../projectProviderOptions.ts'
 import { CopyLinkButton } from './CopyLinkButton'
 import {
   isValidProjectFilePath,
@@ -90,6 +93,7 @@ import {
   latestRunForTask,
   presentLastRun,
   projectTaskListEmpty,
+  taskProviderLines,
   type ProjectTaskSort,
 } from '../projectTasks.ts'
 import {
@@ -183,6 +187,8 @@ function normalizeHarnessConfig(raw: Partial<ProjectHarnessConfig> | any): Proje
     policy: {
       provider: raw?.policy?.provider || undefined,
       model: raw?.policy?.model || undefined,
+      secondaryProvider: raw?.policy?.secondaryProvider || raw?.policy?.secondary_provider || undefined,
+      secondaryModel: raw?.policy?.secondaryModel || raw?.policy?.secondary_model || undefined,
       systemPrompt: raw?.policy?.systemPrompt || raw?.policy?.system_prompt || undefined,
     },
     sandbox: {
@@ -207,6 +213,7 @@ function normalizeHarnessConfig(raw: Partial<ProjectHarnessConfig> | any): Proje
       resultsDir: raw?.paths?.resultsDir || raw?.paths?.results_dir || '.goose/harness_results',
       cassettesDir: raw?.paths?.cassettesDir || raw?.paths?.cassettes_dir || '.goose/cassettes',
     },
+    providers: raw?.providers || {},
   }
 }
 
@@ -259,6 +266,8 @@ export function ProjectHarnessTab({
 
   // Project data
   const [config, setConfig] = useState<ProjectHarnessConfig | null>(null)
+  const [providerCatalog, setProviderCatalog] = useState<ProjectProvidersConfigResponse | null>(null)
+  const [globalProviders, setGlobalProviders] = useState<ProvidersConfigResponse | null>(null)
   const maxTurnsLimit = Math.max(1, config?.maxTurnsLimit || 500)
   const [tasks, setTasks] = useState<ProjectTaskSummary[]>([])
   const [reports, setReports] = useState<HarnessReportSummary[]>([])
@@ -808,11 +817,66 @@ export function ProjectHarnessTab({
       setActiveTrajectoryView(null)
       setLoadingTrajectory(false)
       setLoadingHistoryId(null)
+      setProviderCatalog(null)
+      setGlobalProviders(null)
       void loadSubTabData(selectedProjectSlug, subTab, true)
     } else {
       void loadSubTabData(selectedProjectSlug, subTab, false)
     }
   }, [selectedProjectSlug, subTab])
+
+  useEffect(() => {
+    if (!selectedProjectSlug || subTab !== 'config') return
+    let cancelled = false
+    void Promise.all([
+      api.getProjectProvidersConfig(selectedProjectSlug).catch(() => null),
+      api.getProvidersConfig().catch(() => null),
+    ]).then(([catalog, providers]) => {
+      if (cancelled) return
+      setProviderCatalog(catalog)
+      setGlobalProviders(providers)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [api, selectedProjectSlug, subTab])
+
+  const providerChoices = useMemo(
+    () =>
+      projectProviderChoices({
+        availableProviders: providerCatalog?.availableProviders,
+        globalProviderNames: globalProviders
+          ? globalProviders.providers.map(provider => provider.name)
+          : undefined,
+        current: [
+          config?.policy?.provider,
+          config?.policy?.secondaryProvider,
+          taskForm.provider,
+          taskForm.secondaryProvider,
+        ],
+      }),
+    [
+      providerCatalog,
+      globalProviders,
+      config?.policy?.provider,
+      config?.policy?.secondaryProvider,
+      taskForm.provider,
+      taskForm.secondaryProvider,
+    ],
+  )
+
+  const modelChoicesFor = (providerName: string | undefined, current: string | undefined) => {
+    const provider = providerName?.trim() || ''
+    const globalModels = globalProviders?.providers
+      .find(row => row.name === provider)
+      ?.models?.map(model => model.id)
+    return projectModelChoices({
+      provider,
+      providerModels: providerCatalog?.providerModels,
+      globalModels,
+      current,
+    })
+  }
 
   // 1. Real-time SSE Stream for Project Harness Events
   useEffect(() => {
@@ -1892,6 +1956,10 @@ export function ProjectHarnessTab({
         cron,
         schedulePaused: Boolean(cron) && Boolean(taskForm.schedulePaused),
         subtasks: subtasksForSave(taskForm.subtasks),
+        provider: taskForm.provider?.trim() || undefined,
+        model: taskForm.model?.trim() || undefined,
+        secondaryProvider: taskForm.secondaryProvider?.trim() || undefined,
+        secondaryModel: taskForm.secondaryModel?.trim() || undefined,
       }
 
       if (editingTaskId) {
@@ -2576,6 +2644,103 @@ export function ProjectHarnessTab({
                           />
                         </div>
                       </div>
+
+                      <p className="form-hint">{t('harness.page.editor.providerHelp')}</p>
+                      <div className="form-row-2">
+                        <div className="form-group">
+                          <label className="form-label">{t('harness.page.editor.provider')}</label>
+                          <select
+                            className="form-input"
+                            value={taskForm.provider || ''}
+                            onChange={e =>
+                              setTaskForm({
+                                ...taskForm,
+                                provider: e.target.value || undefined,
+                                model: undefined,
+                              })
+                            }
+                          >
+                            <option value="">{t('harness.page.editor.useProject')}</option>
+                            {providerChoices.map(name => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">{t('harness.page.editor.model')}</label>
+                          <input
+                            type="text"
+                            list="task-major-model-options"
+                            className="form-input"
+                            value={taskForm.model || ''}
+                            onChange={e =>
+                              setTaskForm({ ...taskForm, model: e.target.value || undefined })
+                            }
+                            placeholder={t('harness.page.editor.modelPlaceholder')}
+                          />
+                          <datalist id="task-major-model-options">
+                            {modelChoicesFor(
+                              taskForm.provider ||
+                                config?.policy?.provider ||
+                                providerCatalog?.globalMajorProvider,
+                              taskForm.model,
+                            ).map(model => (
+                              <option key={model} value={model} />
+                            ))}
+                          </datalist>
+                        </div>
+                      </div>
+                      <div className="form-row-2">
+                        <div className="form-group">
+                          <label className="form-label">{t('harness.page.editor.fallbackProvider')}</label>
+                          <select
+                            className="form-input"
+                            value={taskForm.secondaryProvider || ''}
+                            onChange={e =>
+                              setTaskForm({
+                                ...taskForm,
+                                secondaryProvider: e.target.value || undefined,
+                                secondaryModel: undefined,
+                              })
+                            }
+                          >
+                            <option value="">{t('harness.page.editor.useProject')}</option>
+                            {providerChoices.map(name => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">{t('harness.page.editor.fallbackModel')}</label>
+                          <input
+                            type="text"
+                            list="task-fallback-model-options"
+                            className="form-input"
+                            value={taskForm.secondaryModel || ''}
+                            onChange={e =>
+                              setTaskForm({
+                                ...taskForm,
+                                secondaryModel: e.target.value || undefined,
+                              })
+                            }
+                            placeholder={t('harness.page.editor.modelPlaceholder')}
+                          />
+                          <datalist id="task-fallback-model-options">
+                            {modelChoicesFor(
+                              taskForm.secondaryProvider ||
+                                config?.policy?.secondaryProvider ||
+                                providerCatalog?.globalSecondaryProvider,
+                              taskForm.secondaryModel,
+                            ).map(model => (
+                              <option key={model} value={model} />
+                            ))}
+                          </datalist>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -3254,6 +3419,19 @@ export function ProjectHarnessTab({
                         <div className="task-card-prompt-preview">{task.promptPreview}</div>
                       )}
 
+                      {(() => {
+                        const providers = taskProviderLines(task)
+                        if (!providers.primary && !providers.fallback) return null
+                        return (
+                          <div className="task-card-providers">
+                            {providers.primary && <span>{providers.primary}</span>}
+                            {providers.fallback && (
+                              <span>{t('harness.page.tasks.fallback', { name: providers.fallback })}</span>
+                            )}
+                          </div>
+                        )
+                      })()}
+
                       <div className="task-card-status">
                         {lastRunPres.kind === 'loading' && (
                           <div className="task-card-status-skeleton" aria-label={t('harness.page.tasks.loadingStatus')} />
@@ -3585,8 +3763,7 @@ export function ProjectHarnessTab({
             <div className="form-row-2">
               <div className="form-group">
                 <label className="form-label">{t('harness.page.config.provider')}</label>
-                <input
-                  type="text"
+                <select
                   className="form-input"
                   value={config.policy?.provider || ''}
                   onChange={e =>
@@ -3595,13 +3772,20 @@ export function ProjectHarnessTab({
                       policy: { ...(config.policy || {}), provider: e.target.value || undefined },
                     })
                   }
-                  placeholder={t('harness.page.config.providerPlaceholder')}
-                />
+                >
+                  <option value="">{t('harness.page.config.useGlobal')}</option>
+                  {providerChoices.map(name => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="form-group">
                 <label className="form-label">{t('harness.page.config.model')}</label>
                 <input
                   type="text"
+                  list="harness-major-model-options"
                   className="form-input"
                   value={config.policy?.model || ''}
                   onChange={e =>
@@ -3612,6 +3796,61 @@ export function ProjectHarnessTab({
                   }
                   placeholder={t('harness.page.config.modelPlaceholder')}
                 />
+                <datalist id="harness-major-model-options">
+                  {modelChoicesFor(
+                    config.policy?.provider || providerCatalog?.globalMajorProvider,
+                    config.policy?.model,
+                  ).map(model => (
+                    <option key={model} value={model} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
+
+            <div className="form-row-2">
+              <div className="form-group">
+                <label className="form-label">{t('harness.page.config.secondaryProvider')}</label>
+                <select
+                  className="form-input"
+                  value={config.policy?.secondaryProvider || ''}
+                  onChange={e =>
+                    setConfig({
+                      ...config,
+                      policy: { ...(config.policy || {}), secondaryProvider: e.target.value || undefined },
+                    })
+                  }
+                >
+                  <option value="">{t('harness.page.config.noSecondary')}</option>
+                  {providerChoices.map(name => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">{t('harness.page.config.secondaryModel')}</label>
+                <input
+                  type="text"
+                  list="harness-secondary-model-options"
+                  className="form-input"
+                  value={config.policy?.secondaryModel || ''}
+                  onChange={e =>
+                    setConfig({
+                      ...config,
+                      policy: { ...(config.policy || {}), secondaryModel: e.target.value || undefined },
+                    })
+                  }
+                  placeholder={t('harness.page.config.secondaryModelPlaceholder')}
+                />
+                <datalist id="harness-secondary-model-options">
+                  {modelChoicesFor(
+                    config.policy?.secondaryProvider || providerCatalog?.globalSecondaryProvider,
+                    config.policy?.secondaryModel,
+                  ).map(model => (
+                    <option key={model} value={model} />
+                  ))}
+                </datalist>
               </div>
             </div>
 
