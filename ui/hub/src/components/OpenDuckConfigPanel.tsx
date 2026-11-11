@@ -916,7 +916,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
 
   if (!isConnected) {
     return (
-      <div className="panel openduck-config-panel">
+      <div
+        id="settings-openduck"
+        data-settings-section="settings-openduck"
+        className="panel openduck-config-panel"
+      >
         <h3>{t('config.panel.title')}</h3>
         <p className="muted">{t('config.panel.connectHint')}</p>
       </div>
@@ -924,7 +928,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
   }
 
   return (
-    <div className="panel openduck-config-panel">
+    <div id="settings-openduck" className="panel openduck-config-panel">
       <h3>{t('config.panel.title')}</h3>
       <p className="muted">{t('config.panel.description')}</p>
       {error && <div className="error config-banner">{renderMessage(error)}</div>}
@@ -933,7 +937,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
         <p className="muted">{t('config.panel.loading')}</p>
       ) : drafts && doc && providersDraft ? (
         <>
-          <section className="config-section">
+          <section
+            id="settings-providers"
+            data-settings-section="settings-providers"
+            className="config-section"
+          >
             <h4>{t('config.panel.providers')}</h4>
             <p className="form-hint">{t('config.panel.providersHint')}</p>
             {providersDraft.selectionVersion !== 2 && (
@@ -1109,7 +1117,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
             </div>
           </section>
 
-          <section className="config-section">
+          <section
+            id="settings-proxies"
+            data-settings-section="settings-proxies"
+            className="config-section"
+          >
             <h4>{t('config.panel.networkProxies')}</h4>
             <p className="form-hint">{t('config.panel.proxiesHint')}</p>
 
@@ -1359,7 +1371,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
             </div>
           </section>
 
-          <section className="config-section">
+          <section
+            id="settings-tool-mode"
+            data-settings-section="settings-tool-mode"
+            className="config-section"
+          >
             <h4>{t('config.panel.toolMode')}</h4>
             <div className="config-form-grid">
               <label>
@@ -1396,7 +1412,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
             </div>
           </section>
 
-          <section className="config-section">
+          <section
+            id="settings-harness"
+            data-settings-section="settings-harness"
+            className="config-section"
+          >
             <h4>{t('config.panel.harness')}</h4>
             <p className="form-hint">{t('config.panel.harnessHint')}</p>
             <div className="config-form-grid">
@@ -1511,7 +1531,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
             </div>
           </section>
 
-          <section className="config-section">
+          <section
+            id="settings-tui-proxies"
+            data-settings-section="settings-tui-proxies"
+            className="config-section"
+          >
             <h4>{t('config.panel.tuiAgentProxies')}</h4>
             <p className="form-hint">{t('config.panel.tuiAgentProxiesHint')}</p>
             {tuiProxyUnavailable && (
@@ -1569,7 +1593,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
             </div>
           </section>
 
-          <section className="config-section">
+          <section
+            id="settings-judge"
+            data-settings-section="settings-judge"
+            className="config-section"
+          >
             <h4>{t('config.panel.judge')}</h4>
             <p className="form-hint">
               {doc.judge.configured
@@ -1725,7 +1753,11 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
             </div>
           </section>
 
-          <section className="config-section">
+          <section
+            id="settings-other"
+            data-settings-section="settings-other"
+            className="config-section"
+          >
             <h4>{t('config.panel.otherSettings')}</h4>
             <p className="form-hint">{t('config.panel.scalarSettingsHint')}</p>
             {doc.entries.length === 0 ? (

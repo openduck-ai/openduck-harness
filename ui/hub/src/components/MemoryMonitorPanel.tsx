@@ -86,7 +86,12 @@ export function MemoryMonitorPanel({ api, isConnected }: Props) {
   const entries = log ? [...log.entries].reverse() : []
 
   return (
-    <section className="panel memory-log-panel" aria-labelledby="memory-log-title">
+    <section
+      id="settings-memory"
+      data-settings-section="settings-memory"
+      className="panel memory-log-panel"
+      aria-labelledby="memory-log-title"
+    >
       <div className="network-panel-heading">
         <h3 id="memory-log-title"><ScrollText size={18} /> {t('memory.panel.title')}</h3>
         <button

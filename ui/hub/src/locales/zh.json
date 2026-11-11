@@ -1558,6 +1558,26 @@
     }
   },
   "settings": {
+    "nav": {
+      "about": "关于",
+      "appearance": "外观",
+      "configuration": "配置",
+      "connection": "连接",
+      "diagnostics": "诊断",
+      "harness": "Harness",
+      "judge": "评判",
+      "label": "设置分区",
+      "memory": "内存",
+      "monitoring": "监控",
+      "network": "网络",
+      "other": "其他",
+      "providers": "提供商",
+      "proxies": "代理",
+      "roots": "项目根目录",
+      "server": "服务器",
+      "toolMode": "工具模式",
+      "tuiProxies": "TUI 代理"
+    },
     "server": {
       "about": "关于 OpenDuck Hub",
       "aboutDescription": "OpenDuck Hub 是面向 Goose、以项目为中心的企业智能体管理界面。它支持管理项目、监控定时自动化配方、执行 shell 命令以及协调并行智能体会话。",

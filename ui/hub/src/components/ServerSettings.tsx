@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { createApi } from '@aaif/goose-hub-core'
 import { Sun, Moon, Laptop } from 'lucide-react'
 import { useTheme } from '../contexts/ThemeContext'
@@ -8,6 +8,10 @@ import { ProjectRootsEditor } from './ProjectRootsEditor'
 import { useProjectRoots } from './useProjectRoots'
 import { MemoryMonitorPanel } from './MemoryMonitorPanel'
 import { NetworkStatusPanel } from './NetworkStatusPanel'
+import {
+  resolveSettingsSectionTarget,
+  settingsNavGroups,
+} from '../settingsNav.ts'
 
 interface ServerSettingsProps {
   baseUrl: string
@@ -57,6 +61,77 @@ export function ServerSettings({
   const [pingLatency, setPingLatency] = useState<number | null>(null)
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null)
   const [savedSuccess, setSavedSuccess] = useState(false)
+  const [visibleSection, setVisibleSection] = useState('settings-connection')
+  const [pinnedSection, setPinnedSection] = useState<string | null>(null)
+  const pinnedRef = useRef<string | null>(null)
+  const sectionsRef = useRef<HTMLDivElement>(null)
+  const activeSection = pinnedSection ?? visibleSection
+
+  useEffect(() => {
+    const root = sectionsRef.current
+    if (!root) return
+    let frame = 0
+    const update = () => {
+      frame = 0
+      const nodes = [...root.querySelectorAll<HTMLElement>('[data-settings-section]')]
+      if (nodes.length === 0) return
+      const marker = 96
+      let current = nodes[0]
+      for (const node of nodes) {
+        if (node.getBoundingClientRect().top <= marker) current = node
+      }
+      const id = current.dataset.settingsSection
+      if (!id) return
+      setVisibleSection(id)
+      if (pinnedRef.current === id) {
+        pinnedRef.current = null
+        setPinnedSection(null)
+      }
+    }
+    const onScroll = () => {
+      if (frame) return
+      frame = requestAnimationFrame(update)
+    }
+    const releasePin = (event: Event) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('.settings-section-nav')) return
+      pinnedRef.current = null
+      setPinnedSection(null)
+    }
+    update()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onScroll)
+    window.addEventListener('wheel', releasePin, { passive: true })
+    window.addEventListener('touchmove', releasePin, { passive: true })
+    window.addEventListener('pointerdown', releasePin)
+    const mutations = new MutationObserver(onScroll)
+    mutations.observe(root, { childList: true, subtree: true })
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onScroll)
+      window.removeEventListener('wheel', releasePin)
+      window.removeEventListener('touchmove', releasePin)
+      window.removeEventListener('pointerdown', releasePin)
+      mutations.disconnect()
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [])
+
+  const scrollToSection = (id: string) => {
+    const root = sectionsRef.current
+    const available = new Set(
+      [...(root?.querySelectorAll<HTMLElement>('[data-settings-section]') ?? [])]
+        .map((node) => node.dataset.settingsSection)
+        .filter((sectionId): sectionId is string => Boolean(sectionId)),
+    )
+    const targetId = resolveSettingsSectionTarget(id, available)
+    const target = document.getElementById(targetId)
+    if (!target) return
+    pinnedRef.current = id
+    setPinnedSection(id)
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    target.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' })
+  }
 
   const handleSave = () => {
     onSaveConnection(inputUrl, inputSecret)
@@ -102,9 +177,33 @@ export function ServerSettings({
         </div>
       </div>
 
-      <div className="columns settings-layout">
-        <div className="panel-column">
-          <div className="panel form-panel">
+      <div className="settings-page-shell">
+        <nav className="settings-section-nav" aria-label={t('settings.nav.label')}>
+          {settingsNavGroups.map((group) => (
+            <div key={group.labelKey} className="settings-section-nav-group">
+              <p className="settings-section-nav-label">{t(group.labelKey)}</p>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={activeSection === item.id ? 'active' : ''}
+                  aria-current={activeSection === item.id ? 'true' : undefined}
+                  onClick={() => scrollToSection(item.id)}
+                >
+                  {t(item.labelKey)}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+
+        <div className="settings-page-main" ref={sectionsRef}>
+          <div className="settings-section-stack">
+          <div
+            id="settings-connection"
+            data-settings-section="settings-connection"
+            className="panel form-panel"
+          >
             <h3>{t('settings.server.connectionTitle')}</h3>
             <p className="muted">
               {t('settings.server.connectionHint')}
@@ -184,7 +283,11 @@ export function ServerSettings({
             </div>
           </div>
 
-          <div className="panel">
+          <div
+            id="settings-roots"
+            data-settings-section="settings-roots"
+            className="panel"
+          >
             <h3>{t('settings.server.rootsTitle')}</h3>
             <p className="muted">
               {t('settings.server.rootsHint')}
@@ -199,7 +302,11 @@ export function ServerSettings({
             />
           </div>
 
-          <div className="panel">
+          <div
+            id="settings-appearance"
+            data-settings-section="settings-appearance"
+            className="panel"
+          >
             <h3>{t('settings.server.appearance')}</h3>
             <p className="muted text-sm">
               {t('settings.server.appearanceHint')}
@@ -240,10 +347,11 @@ export function ServerSettings({
               </button>
             </div>
           </div>
-        </div>
-
-        <div className="panel-column">
-          <div className="panel">
+          <div
+            id="settings-diagnostics"
+            data-settings-section="settings-diagnostics"
+            className="panel"
+          >
             <h3>{t('settings.server.diagnostics')}</h3>
             <div className="diagnostics-grid">
               <div className="diagnostic-item">
@@ -277,7 +385,11 @@ export function ServerSettings({
             </div>
           </div>
 
-          <div className="panel">
+          <div
+            id="settings-about"
+            data-settings-section="settings-about"
+            className="panel"
+          >
             <h3>{t('settings.server.about')}</h3>
             <div className="about-details">
               <p className="muted text-sm">
@@ -290,12 +402,13 @@ export function ServerSettings({
               </div>
             </div>
           </div>
+          </div>
+
+          <NetworkStatusPanel api={api} isConnected={isConnected} />
+          <MemoryMonitorPanel api={api} isConnected={isConnected} />
+          <OpenDuckConfigPanel api={api} isConnected={isConnected} />
         </div>
       </div>
-
-      <NetworkStatusPanel api={api} isConnected={isConnected} />
-      <MemoryMonitorPanel api={api} isConnected={isConnected} />
-      <OpenDuckConfigPanel api={api} isConnected={isConnected} />
     </div>
   )
 }

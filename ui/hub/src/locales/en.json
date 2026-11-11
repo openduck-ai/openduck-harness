@@ -1558,6 +1558,26 @@
     }
   },
   "settings": {
+    "nav": {
+      "about": "About",
+      "appearance": "Appearance",
+      "configuration": "Configuration",
+      "connection": "Connection",
+      "diagnostics": "Diagnostics",
+      "harness": "Harness",
+      "judge": "Judge",
+      "label": "Settings sections",
+      "memory": "Memory",
+      "monitoring": "Monitoring",
+      "network": "Network",
+      "other": "Other",
+      "providers": "Providers",
+      "proxies": "Proxies",
+      "roots": "Project roots",
+      "server": "Server",
+      "toolMode": "Tool mode",
+      "tuiProxies": "TUI proxies"
+    },
     "server": {
       "about": "About OpenDuck Hub",
       "aboutDescription": "OpenDuck Hub is a project-first enterprise agent management interface for Goose. It enables managing projects, monitoring scheduled automation recipes, executing shell commands, and coordinating parallel agent sessions.",

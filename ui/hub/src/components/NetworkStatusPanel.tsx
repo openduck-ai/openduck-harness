@@ -116,7 +116,12 @@ export function NetworkStatusPanel({ api, isConnected }: Props) {
   const healthy = report?.endpoints.filter(endpoint => endpoint.providerHttp.status === 'reachable').length ?? 0
 
   return (
-    <section className="panel network-panel" aria-labelledby="network-status-title">
+    <section
+      id="settings-network"
+      data-settings-section="settings-network"
+      className="panel network-panel"
+      aria-labelledby="network-status-title"
+    >
       <div className="network-panel-heading">
         <h3 id="network-status-title"><Activity size={18} /> {t('network.panel.title')}</h3>
         <button
