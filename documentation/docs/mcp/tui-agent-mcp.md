@@ -82,6 +82,10 @@ harness:
       idle_timeout_mins: 30
 ```
 
+:::note
+`harness.tui_sessions.<agent>.https_proxy` injects proxy env vars (`HTTPS_PROXY`/`https_proxy`) into the spawned CLI subprocess environment, whereas the top-level `proxy` key in `config.yaml` configures OpenDuck's own provider HTTP transport; see [Outbound HTTP Proxy (`proxy`)](../guides/config-files.md#outbound-http-proxy-proxy) for `proxy` semantics (http/https only, optional credentials redacted from logs, unset/empty/null falls back to proxy env vars).
+:::
+
 ---
 
 ## Tool Reference

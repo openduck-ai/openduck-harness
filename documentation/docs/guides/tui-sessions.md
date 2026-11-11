@@ -116,6 +116,10 @@ harness:
 | `idle_timeout_mins` | Inactivity limit in minutes. If a session stays in `IdlePrompt` with no activity, it is automatically stopped and reclaimed. | `None` (unlimited) |
 | `exited_retention_mins` | Grace period in minutes to keep an exited or terminated session in the registry and UI list before memory eviction. | `10` minutes |
 
+:::note
+`harness.tui_sessions.<agent>.https_proxy` injects proxy env vars (`HTTPS_PROXY`/`https_proxy`) into the spawned CLI subprocess environment, whereas the top-level `proxy` key in `config.yaml` configures OpenDuck's own provider HTTP transport; see [Outbound HTTP Proxy (`proxy`)](config-files.md#outbound-http-proxy-proxy) for `proxy` semantics (http/https only, optional credentials redacted from logs, unset/empty/null falls back to proxy env vars).
+:::
+
 An explicit session effort overrides the agent's configured effort, which overrides
 `harness.tui_sessions.default.effort`. Settings are read for each new session;
 existing sessions keep their launch configuration.

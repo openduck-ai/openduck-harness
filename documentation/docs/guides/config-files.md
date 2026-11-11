@@ -50,6 +50,7 @@ Existing Goose config directories are migrated automatically. Override the confi
 
 - **Providers & Models**: Defines active LLM provider, secondary fallback provider, and per-entry models and fast models.
 - **Provider Host Overrides**: Custom host endpoints and base paths for standard providers (e.g. OpenAI proxies, Anthropic proxies, local Ollama).
+- **Outbound HTTP Proxy**: Global `proxy` setting that routes the agent's model/provider HTTP requests through an HTTP or HTTPS proxy; credentialed URLs are supported and redacted from logs.
 - **Execution Mode**: `auto` (autonomous tool use), `chat` (conversational only, no tools), or `approve` (prompt before running tools).
 - **Extensions / MCP Servers**: Declares platform, builtin, and external stdio/SSE Model Context Protocol (MCP) servers.
 - **Advisors & Proxy Routing**: Per-advisor HTTP/SOCKS5 proxy settings for routing outbound requests (e.g. for `agy`, `grok`, or `openduck`).
@@ -98,6 +99,29 @@ launch configuration. Reaping sweeps run automatically during `list_sessions`
 and `start_session`.
 
 For full details, see the [Interactive Agent CLI TUI & Tmux Sessions Guide](tui-sessions.md) and the [TUI Driver Extension Reference](../mcp/tui-agent-mcp.md).
+
+### Outbound HTTP Proxy (`proxy`)
+
+The top-level `proxy` key applies one proxy to every outbound HTTP request the agent's provider clients make; it is optional, and existing configurations continue working unaffected.
+
+```yaml
+proxy: "http://127.0.0.1:3128"          # explicit HTTP proxy
+# proxy: "https://user:pass@proxy.internal:8443"   # HTTPS proxy with credentials
+# proxy: ""        # disable (no explicit proxy)
+# proxy: null      # disable (no explicit proxy)
+```
+
+| Value | Behavior |
+| --- | --- |
+| `"http://host:port"` | Explicit HTTP proxy for all outbound requests. |
+| `"https://user:pass@host:port"` | HTTPS proxy with basic credentials; credentials never appear in logs or error messages. |
+| Unset / `""` / `null` / whitespace | No explicit proxy; per-provider `proxy` settings and then `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` env vars apply as fallback. |
+| Malformed value (bad scheme, missing host, invalid port, `socks5://`, extra path or query) | Config load fails with an error naming the key `proxy` (message begins: `Invalid config key proxy value ...`); the offending value is shown with credentials redacted. |
+
+- `proxy` overrides per-provider `proxy` keys and entries in the named `proxies` registry.
+- Leaving it unset preserves today's env-var behavior exactly (it does not force direct connections).
+
+This key configures the agent's own HTTP transport, unlike `harness.tui_sessions.<agent>.https_proxy` (proxy env vars injected into spawned TUI CLI subprocesses) and `advisors.*.https_proxy` (per-advisor env for external CLIs).
 
 ### Example: Comprehensive `config.yaml`
 
@@ -178,6 +202,9 @@ extensions:
 # ------------------------------------------------------------------
 # 4. Outbound Network & Advisor Proxies
 # ------------------------------------------------------------------
+# Global outbound HTTP/HTTPS proxy for provider requests (optional; absent falls back to env vars)
+# proxy: "http://127.0.0.1:3128"
+
 advisors:
   agy:
     https_proxy: "socks5://127.0.0.1:1088"
