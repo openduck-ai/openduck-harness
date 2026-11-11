@@ -59,6 +59,13 @@ export function useProjectSession(options: ProjectSessionOptions) {
     await instance.hydrate()
   }, [instance])
 
+  const setConfigOption = useCallback(
+    async (configId: string, value: string) => {
+      await instance.setConfigOption(configId, value)
+    },
+    [instance],
+  )
+
   return {
     ...state,
     sendPrompt,
@@ -67,6 +74,7 @@ export function useProjectSession(options: ProjectSessionOptions) {
     reset,
     loadSession,
     hydrate,
+    setConfigOption,
   }
 }
 

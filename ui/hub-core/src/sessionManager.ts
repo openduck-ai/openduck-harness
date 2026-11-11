@@ -7,6 +7,8 @@ import {
 import { permissionKey, permissionResponseForAction } from './permissions.ts'
 import { absoluteServerBase } from './url.ts'
 import { applyAcpSessionUpdate, finalizeStreaming, newMessageId } from './transcript.ts'
+import { configOptionsFromSessionResponse, configOptionsFromSessionUpdate } from './sessionConfig.ts'
+import type { SessionConfigOption } from '@agentclientprotocol/sdk'
 import type { ChatMessage, PendingPermission, PermissionAction } from './types.ts'
 
 export interface ProjectSessionOptions {
@@ -29,6 +31,8 @@ export interface ProjectSessionState {
   statusLine: string | null
   pendingPermission: PendingPermission | null
   error: string | null
+  /** Provider and model menus from the live ACP session. Null before session/load or session/new. */
+  configOptions: SessionConfigOption[] | null
 }
 
 type Listener = () => void
@@ -61,8 +65,10 @@ export class ProjectSessionInstance {
   statusLine: string | null = null
   pendingPermission: PendingPermission | null = null
   error: string | null = null
+  configOptions: SessionConfigOption[] | null = null
   permissionResolvers = new Map<string, (response: RequestPermissionResponse) => void>()
   private connectingPromise: Promise<GooseClient> | null = null
+  private configWrite: Promise<void> = Promise.resolve()
   private cachedState: ProjectSessionState | null = null
   private readonly onChange: () => void
 
@@ -92,6 +98,7 @@ export class ProjectSessionInstance {
         statusLine: this.statusLine,
         pendingPermission: this.pendingPermission,
         error: this.error,
+        configOptions: this.configOptions,
       }
     }
     return this.cachedState
@@ -126,6 +133,13 @@ export class ProjectSessionInstance {
         const callbacks: GooseClientCallbacks = {
           sessionUpdate: async notification => {
             if (this.sessionId && String(notification.sessionId) !== this.sessionId) return
+            const nextOptions = configOptionsFromSessionUpdate(notification.update)
+            if (nextOptions && this.sessionId && String(notification.sessionId) === this.sessionId) {
+              this.configOptions = nextOptions
+              this.notify()
+              return
+            }
+            if (nextOptions) return
             const update = notification.update as any
             if (update?.sessionUpdate === 'status_message' && update?.status?.type === 'progress') {
               this.statusLine = update.status.message
@@ -163,13 +177,14 @@ export class ProjectSessionInstance {
 
         if (targetSessionId) {
           try {
-            await client.loadSession({
+            const loaded = await client.loadSession({
               sessionId: targetSessionId,
               cwd: this.options.cwd,
               mcpServers: [],
             })
             this.sessionId = targetSessionId
             setStoredSessionId(this.options.projectId, targetSessionId)
+            this.rememberConfigOptions(loaded)
             sessionCreated = true
           } catch (cause) {
             if (!createIfMissing) throw cause
@@ -187,6 +202,7 @@ export class ProjectSessionInstance {
           })
           this.sessionId = session.sessionId
           setStoredSessionId(this.options.projectId, session.sessionId)
+          this.rememberConfigOptions(session)
         }
 
         this.messages = finalizeStreaming(this.messages)
@@ -242,6 +258,40 @@ export class ProjectSessionInstance {
     }
   }
 
+  /**
+   * Switch the provider or model for this chat. Creates the session when the
+   * project does not have one yet. Provider and model changes run in order.
+   */
+  setConfigOption(configId: string, value: string): Promise<void> {
+    const run = this.configWrite.catch(() => undefined).then(() => this.writeConfigOption(configId, value))
+    this.configWrite = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async writeConfigOption(configId: string, value: string): Promise<void> {
+    try {
+      const client = await this.ensureClient()
+      const sessionId = this.sessionId
+      if (!sessionId) throw new Error('Session was not created')
+      const response = await client.setSessionConfigOption({ sessionId, configId, value })
+      this.rememberConfigOptions(response)
+      this.error = null
+    } catch (cause) {
+      this.error = cause instanceof Error ? cause.message : String(cause)
+      throw cause
+    } finally {
+      this.notify()
+    }
+  }
+
+  private rememberConfigOptions(response: { configOptions?: SessionConfigOption[] | null } | null | undefined) {
+    const options = configOptionsFromSessionResponse(response)
+    if (options) this.configOptions = options
+  }
+
   async cancelPrompt(): Promise<void> {
     if (!this.sessionId || !this.isPrompting) return
     this.statusLine = 'Stopping…'
@@ -273,6 +323,7 @@ export class ProjectSessionInstance {
     this.clearPermissions()
     this.client = null
     this.sessionId = null
+    this.configOptions = null
     setStoredSessionId(this.options.projectId, null)
     this.messages = []
     this.historyLoaded = true
@@ -314,6 +365,7 @@ export class ProjectSessionInstance {
     this.clearPermissions()
     this.client = null
     this.sessionId = sessionId
+    this.configOptions = null
     setStoredSessionId(this.options.projectId, sessionId)
     this.messages = []
     this.historyLoaded = false

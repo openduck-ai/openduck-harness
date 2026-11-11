@@ -146,3 +146,85 @@ test('projectSessionRegistry.cancelPrompt delegates to target session', async ()
   assert.equal(cancelled, true)
   assert.equal(session.statusLine, 'Stopping…')
 })
+
+test('setConfigOption applies provider then model in order and stores the returned menu', async () => {
+  const calls: Array<{ configId: string; value: string }> = []
+  let releaseFirst = () => {}
+  const session = projectSessionRegistry.getOrCreate({
+    baseUrl: 'http://localhost:3000',
+    secretKey: 'test',
+    projectId: 'project-config-option',
+    cwd: '/path/to/config',
+    client: 'goose-hub',
+    sessionId: 'sess-config',
+  })
+  session.sessionId = 'sess-config'
+  session.client = {
+    setSessionConfigOption: async (params: { configId: string; value: string }) => {
+      calls.push({ configId: params.configId, value: params.value })
+      if (calls.length === 1) {
+        await new Promise<void>(resolve => {
+          releaseFirst = resolve
+        })
+      }
+      return {
+        configOptions: [
+          {
+            id: 'provider',
+            name: 'Provider',
+            type: 'select',
+            currentValue: params.configId === 'provider' ? params.value : 'gemini',
+            options: [],
+          },
+          {
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: params.configId === 'model' ? params.value : 'gemini-pro',
+            options: [],
+          },
+        ],
+      }
+    },
+  } as any
+
+  const first = session.setConfigOption('provider', 'gemini')
+  const second = session.setConfigOption('model', 'gemini-pro')
+  for (let attempt = 0; attempt < 20 && calls.length === 0; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+  assert.deepEqual(calls, [{ configId: 'provider', value: 'gemini' }])
+  releaseFirst()
+  await first
+  await second
+  assert.deepEqual(calls, [
+    { configId: 'provider', value: 'gemini' },
+    { configId: 'model', value: 'gemini-pro' },
+  ])
+  const appliedModel = session.getState().configOptions?.[1]
+  assert.equal(appliedModel?.type, 'select')
+  if (appliedModel?.type === 'select') assert.equal(appliedModel.currentValue, 'gemini-pro')
+  assert.equal(session.error, null)
+})
+
+test('setConfigOption keeps the previous menu and surfaces the server error', async () => {
+  const session = projectSessionRegistry.getOrCreate({
+    baseUrl: 'http://localhost:3000',
+    secretKey: 'test',
+    projectId: 'project-config-option-error',
+    cwd: '/path/to/config',
+    client: 'goose-hub',
+    sessionId: 'sess-config-error',
+  })
+  session.sessionId = 'sess-config-error'
+  session.configOptions = [{ id: 'model', name: 'Model', type: 'select', currentValue: 'old', options: [] }]
+  session.client = {
+    setSessionConfigOption: async () => {
+      throw new Error('Invalid model config')
+    },
+  } as any
+
+  await assert.rejects(() => session.setConfigOption('model', 'missing'), /Invalid model config/)
+  assert.equal(session.error, 'Invalid model config')
+  assert.equal(session.configOptions[0]?.id, 'model')
+})

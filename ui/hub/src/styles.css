@@ -1549,6 +1549,59 @@ textarea {
   font-weight: 600;
 }
 
+.chat-model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+}
+
+.chat-model-picker .chat-model-icon {
+  color: var(--accent-sky);
+  flex-shrink: 0;
+}
+
+.chat-model-picker .chat-model-provider {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.chat-model-picker .chat-model-separator {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.chat-model-picker .chat-model-name {
+  font-family: var(--font-mono);
+  color: var(--accent-sky);
+  font-weight: 600;
+}
+
+.chat-model-picker .chat-model-select {
+  max-width: 12rem;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+  padding: 0.1rem 0.15rem;
+}
+
+.chat-model-picker .chat-model-select:focus {
+  outline: none;
+}
+
+.chat-model-picker .chat-model-select:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
 .project-subtabs {
   display: flex;
   align-items: center;

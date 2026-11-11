@@ -8,6 +8,8 @@ import {
   type ProjectDetail,
   type SessionSummary,
   type ProjectTaskSummary,
+  type ProjectProvidersConfigResponse,
+  type ProvidersConfigResponse,
 } from '@aaif/goose-hub-core'
 import {
   Send,
@@ -50,6 +52,8 @@ import {
   type DismissedMention,
 } from '../mention.ts'
 import { ProjectChatTasksDrawer } from './ProjectChatTasksDrawer.tsx'
+import { ChatProviderModelPicker } from './ChatProviderModelPicker.tsx'
+import { chatProviderModelView } from '../chatProviderModel.ts'
 
 interface ProjectChatProps {
   detail: ProjectDetail
@@ -81,6 +85,10 @@ export function ProjectChat({
   const inputContainerRef = useRef<HTMLDivElement | null>(null)
 
   const [showTasksDrawer, setShowTasksDrawer] = useState(false)
+  const [providerCatalog, setProviderCatalog] = useState<ProjectProvidersConfigResponse | null>(null)
+  const [globalProviders, setGlobalProviders] = useState<ProvidersConfigResponse | null>(null)
+  const [switchingModel, setSwitchingModel] = useState(false)
+  const [pendingChoice, setPendingChoice] = useState<{ configId: 'provider' | 'model'; value: string } | null>(null)
   const [projectTasks, setProjectTasks] = useState<ProjectTaskSummary[]>([])
   const [loadingTasks, setLoadingTasks] = useState(false)
   const [activeTaskNotification, setActiveTaskNotification] = useState<{
@@ -147,6 +155,62 @@ export function ProjectChat({
   useEffect(() => {
     void loadTasks()
   }, [loadTasks])
+
+  useEffect(() => {
+    let cancelled = false
+    const apiInstance = api ?? createApi(baseUrl, secret)
+    void Promise.all([
+      apiInstance.getProjectProvidersConfig(detail.project.slug).catch(() => null),
+      apiInstance.getProvidersConfig().catch(() => null),
+    ]).then(([catalog, providers]) => {
+      if (cancelled) return
+      setProviderCatalog(catalog)
+      setGlobalProviders(providers)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [api, baseUrl, secret, detail.project.slug])
+
+  const providerModelView = useMemo(() => {
+    const fallbackProvider = currentProviderModel?.provider === 'Unknown' ? '' : currentProviderModel?.provider
+    const fallbackModel = currentProviderModel?.model === 'Default' ? '' : currentProviderModel?.model
+    const current = chatProviderModelView({
+      configOptions: session.configOptions,
+      availableProviders: providerCatalog?.availableProviders,
+      providerModels: providerCatalog?.providerModels,
+      globalProviders: globalProviders?.providers,
+      fallbackProvider,
+      fallbackModel,
+      providerOverride: pendingChoice?.configId === 'provider' ? pendingChoice.value : null,
+    })
+    if (pendingChoice?.configId !== 'model') return current
+    const model = pendingChoice.value
+    const models = current.models.some(choice => choice.value === model)
+      ? current.models
+      : [{ value: model, label: model }, ...current.models]
+    return { ...current, model, models }
+  }, [
+    currentProviderModel?.model,
+    currentProviderModel?.provider,
+    globalProviders,
+    pendingChoice,
+    providerCatalog,
+    session.configOptions,
+  ])
+
+  const changeProviderModel = async (configId: 'provider' | 'model', value: string) => {
+    setPendingChoice({ configId, value })
+    setSwitchingModel(true)
+    try {
+      await session.setConfigOption(configId, value)
+    } catch (err) {
+      console.debug('Failed to change chat provider or model:', err)
+    } finally {
+      setPendingChoice(null)
+      setSwitchingModel(false)
+    }
+  }
 
   const loadMentionSources = useCallback(async () => {
     setLoadingMentions(true)
@@ -412,7 +476,15 @@ export function ProjectChat({
             <span>{detail.project.slug}</span>
           </div>
 
-          {currentProviderModel && (currentProviderModel.provider || currentProviderModel.model) && (
+          <ChatProviderModelPicker
+            view={providerModelView}
+            disabled={session.isPrompting || switchingModel || !session.historyLoaded}
+            onChange={(configId, value) => void changeProviderModel(configId, value)}
+          />
+          {providerModelView.providers.length < 2 &&
+            providerModelView.models.length < 2 &&
+            currentProviderModel &&
+            (currentProviderModel.provider || currentProviderModel.model) && (
             <div
               className="chat-model-badge"
               title={t('chat.page.activeModel', { provider: currentProviderModel.provider, model: currentProviderModel.model })}

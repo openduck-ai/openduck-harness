@@ -30,6 +30,10 @@
   "chat": {
     "page": {
       "activeModel": "当前模型：{{provider}} / {{model}}",
+      "changeModel": "切换此对话的模型",
+      "changeProvider": "切换此对话的提供商",
+      "model": "模型",
+      "provider": "提供商",
       "agent": "OpenDuck 智能体",
       "allowOnce": "允许一次",
       "allowSession": "在此会话中始终允许",

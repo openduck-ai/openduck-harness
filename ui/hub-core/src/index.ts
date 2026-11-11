@@ -6,6 +6,7 @@ export * from './cron.ts'
 export * from './schedule.ts'
 export * from './permissions.ts'
 export * from './transcript.ts'
+export * from './sessionConfig.ts'
 export * from './sessionManager.ts'
 export * from './useProjectSession.ts'
 

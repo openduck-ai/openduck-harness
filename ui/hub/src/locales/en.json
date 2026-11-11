@@ -30,6 +30,10 @@
   "chat": {
     "page": {
       "activeModel": "Active Model: {{provider}} / {{model}}",
+      "changeModel": "Change model for this chat",
+      "changeProvider": "Change provider for this chat",
+      "model": "Model",
+      "provider": "Provider",
       "agent": "OpenDuck Agent",
       "allowOnce": "Allow Once",
       "allowSession": "Always Allow for Session",
