@@ -376,6 +376,20 @@ pub fn register_declarative_providers(
     Ok(())
 }
 
+fn apply_proxy_precedence(
+    config: &mut DeclarativeProviderConfig,
+    global_config: &Config,
+) -> Result<()> {
+    if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(global_config)? {
+        config.proxy = Some(proxy);
+    } else if config.proxy.is_none() {
+        if let Some(p) = crate::config::providers::get_provider_proxy(global_config, &config.name) {
+            config.proxy = Some(p);
+        }
+    }
+    Ok(())
+}
+
 /// Resolve `${VAR}` placeholders in the config's `base_url` and apply
 /// runtime overrides from env_vars. Called lazily (at provider instantiation)
 /// so values configured through the UI after startup are picked up.
@@ -407,11 +421,7 @@ fn resolve_config(config: &mut DeclarativeProviderConfig) -> Result<()> {
         }
     }
 
-    if config.proxy.is_none() {
-        if let Some(p) = crate::config::providers::get_provider_proxy(global_config, &config.name) {
-            config.proxy = Some(p);
-        }
-    }
+    apply_proxy_precedence(config, global_config)?;
 
     Ok(())
 }
@@ -972,5 +982,46 @@ mod tests {
         assert_eq!(model.context_limit, 262144);
         assert_eq!(model.input_token_cost, Some(0.000002));
         assert_eq!(model.output_token_cost, Some(0.000006));
+    }
+
+    fn yaml_config(yaml: &str) -> (Config, tempfile::NamedTempFile, tempfile::NamedTempFile) {
+        let config_file = tempfile::NamedTempFile::new().unwrap();
+        let secrets_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(config_file.path(), yaml).unwrap();
+        let config =
+            Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap();
+        (config, config_file, secrets_file)
+    }
+
+    fn lock_testdecl_proxy_env() -> env_lock::EnvGuard<'static> {
+        env_lock::lock_env([
+            ("OPENDUCK_PROVIDER_TESTDECL_PROXY", None::<&str>),
+            ("GOOSE_PROVIDER_TESTDECL_PROXY", None::<&str>),
+            ("OPENDUCK_TESTDECL_PROXY", None::<&str>),
+            ("GOOSE_TESTDECL_PROXY", None::<&str>),
+            ("TESTDECL_PROXY", None::<&str>),
+        ])
+    }
+
+    #[test]
+    fn global_proxy_beats_declarative_proxy() {
+        let _guard = lock_testdecl_proxy_env();
+        let (global, _f1, _f2) = yaml_config("proxy: \"http://global.example:9\"\n");
+        let mut cfg = test_huggingface_config();
+        cfg.name = "testdecl".to_string();
+        cfg.proxy = Some("http://declarative.example:9".to_string());
+        apply_proxy_precedence(&mut cfg, &global).unwrap();
+        assert_eq!(cfg.proxy.as_deref(), Some("http://global.example:9/"));
+    }
+
+    #[test]
+    fn absent_global_preserves_declarative_proxy() {
+        let _guard = lock_testdecl_proxy_env();
+        let (global, _f1, _f2) = yaml_config("");
+        let mut cfg = test_huggingface_config();
+        cfg.name = "testdecl".to_string();
+        cfg.proxy = Some("http://declarative.example:9".to_string());
+        apply_proxy_precedence(&mut cfg, &global).unwrap();
+        assert_eq!(cfg.proxy.as_deref(), Some("http://declarative.example:9"));
     }
 }

@@ -264,9 +264,13 @@ impl GithubCopilotProvider {
             endpoint,
             AuthMethod::BearerToken(token),
             self.tls_config.clone(),
-        )?
-        .with_request_builder(crate::session_context::session_id_request_builder())
-        .with_headers(headers)?;
+        )?;
+        if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(Config::global())? {
+            client = client.with_proxy(Some(proxy))?;
+        }
+        let mut client = client
+            .with_request_builder(crate::session_context::session_id_request_builder())
+            .with_headers(headers)?;
         if https_only {
             client = client.with_https_only()?;
         } else {
@@ -289,9 +293,11 @@ impl GithubCopilotProvider {
             .unwrap_or_else(|_| DEFAULT_GITHUB_COPILOT_CLIENT_ID.to_string());
         let copilot_token_url: Option<String> = config.get_param("GITHUB_COPILOT_TOKEN_URL").ok();
         let urls = GithubCopilotUrls::new(&host, copilot_token_url.as_deref());
-        let client = Client::builder()
-            .timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS))
-            .build()?;
+        let proxy = crate::providers::proxy::resolve_global_proxy(config)?;
+        let mut builder =
+            Client::builder().timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS));
+        builder = crate::providers::proxy::apply_proxy(builder, proxy.as_deref())?;
+        let client = builder.build()?;
         let cache = DiskCache::new(&host);
         let mu = tokio::sync::Mutex::new(RefCell::new(None));
         Ok(Self {

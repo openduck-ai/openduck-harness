@@ -111,6 +111,11 @@ impl DatabricksV2Provider {
         })
     }
 
+    pub fn with_proxy(mut self, proxy: Option<String>) -> Result<Self> {
+        self.api_client = self.api_client.with_proxy(proxy)?;
+        Ok(self)
+    }
+
     pub fn load_retry_config(get_param: impl Fn(&str) -> Option<String>) -> RetryConfig {
         let max_retries = get_param("DATABRICKS_MAX_RETRIES")
             .and_then(|v| v.parse::<usize>().ok())

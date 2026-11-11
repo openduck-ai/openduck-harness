@@ -80,9 +80,13 @@ impl ProviderDef for XaiProvider {
                 .get_param("XAI_HOST")
                 .unwrap_or_else(|_| XAI_API_HOST.to_string());
 
-            let api_client =
-                ApiClient::new_with_tls(host, AuthMethod::BearerToken(api_key), tls_config)?
-                    .with_request_builder(crate::session_context::session_id_request_builder());
+            let mut api_client =
+                ApiClient::new_with_tls(host, AuthMethod::BearerToken(api_key), tls_config)?;
+            if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(config)? {
+                api_client = api_client.with_proxy(Some(proxy))?;
+            }
+            let api_client = api_client
+                .with_request_builder(crate::session_context::session_id_request_builder());
 
             Ok(OpenAiCompatibleProvider::new(
                 XAI_PROVIDER_NAME.to_string(),

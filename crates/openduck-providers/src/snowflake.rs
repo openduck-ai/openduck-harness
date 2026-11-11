@@ -91,6 +91,11 @@ impl SnowflakeProvider {
         })
     }
 
+    pub fn with_proxy(mut self, proxy: Option<String>) -> Result<Self> {
+        self.api_client = self.api_client.with_proxy(proxy)?;
+        Ok(self)
+    }
+
     async fn post(
         &self,
         model_config: &ModelConfig,

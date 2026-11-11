@@ -71,8 +71,12 @@ impl LiteLLMProvider {
             auth,
             std::time::Duration::from_secs(timeout_secs),
             tls_config,
-        )?
-        .with_request_builder(crate::session_context::session_id_request_builder());
+        )?;
+        if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(config)? {
+            api_client = api_client.with_proxy(Some(proxy))?;
+        }
+        let mut api_client =
+            api_client.with_request_builder(crate::session_context::session_id_request_builder());
 
         if let Some(headers) = custom_headers {
             let mut header_map = reqwest::header::HeaderMap::new();

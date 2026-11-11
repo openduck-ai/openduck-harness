@@ -924,11 +924,16 @@ impl ChatGptCodexProvider {
             );
         }
 
-        let client = reqwest::Client::builder()
+        let proxy = crate::providers::proxy::resolve_global_proxy(crate::config::Config::global())
+            .map_err(|e| ProviderError::ExecutionError(e.to_string()))?;
+        let mut builder = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
             .read_timeout(std::time::Duration::from_secs(
                 DEFAULT_PROVIDER_TIMEOUT_SECS,
-            ))
+            ));
+        builder = crate::providers::proxy::apply_proxy(builder, proxy.as_deref())
+            .map_err(|e| ProviderError::ExecutionError(e.to_string()))?;
+        let client = builder
             .build()
             .map_err(|e| ProviderError::ExecutionError(e.to_string()))?;
         let request = client

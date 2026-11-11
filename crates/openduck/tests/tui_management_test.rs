@@ -218,7 +218,7 @@ async fn test_lifecycle_run_ended_and_sweeper() {
             .expect("open memory db"),
     );
     let session_mgr = Arc::new(TuiSessionManager::default());
-    let _service = TuiManagementService::new(store.clone(), session_mgr);
+    let service = TuiManagementService::new(store.clone(), session_mgr);
 
     let now = Utc::now();
     let rec = TuiSessionRecord {

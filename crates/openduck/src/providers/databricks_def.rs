@@ -60,7 +60,8 @@ pub async fn from_env(tls_config: Option<TlsConfig>) -> Result<DatabricksProvide
         DatabricksAuth::oauth(host.clone())
     };
 
-    DatabricksProvider::new(
+    let proxy = crate::providers::proxy::resolve_global_proxy(config)?;
+    let mut provider = DatabricksProvider::new(
         host,
         auth,
         retry_config,
@@ -71,7 +72,11 @@ pub async fn from_env(tls_config: Option<TlsConfig>) -> Result<DatabricksProvide
         resolve_instance_id(),
         Some(refresh_hook()),
         Some(session_id_provider()),
-    )
+    )?;
+    if let Some(p) = proxy {
+        provider = provider.with_proxy(Some(p))?;
+    }
+    Ok(provider)
 }
 
 pub async fn cleanup() -> Result<()> {

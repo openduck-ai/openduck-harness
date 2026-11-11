@@ -173,10 +173,12 @@ impl KimiCodeProvider {
     pub async fn from_env(
         _tls_config: Option<crate::providers::api_client::TlsConfig>,
     ) -> Result<Self> {
-        let client = Client::builder()
+        let proxy = crate::providers::proxy::resolve_global_proxy(crate::config::Config::global())?;
+        let mut builder = Client::builder()
             .connect_timeout(StdDuration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
-            .read_timeout(StdDuration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS))
-            .build()?;
+            .read_timeout(StdDuration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS));
+        builder = crate::providers::proxy::apply_proxy(builder, proxy.as_deref())?;
+        let client = builder.build()?;
         let device_id = Self::get_or_create_device_id().await?;
         Ok(Self {
             client,

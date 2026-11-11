@@ -96,9 +96,13 @@ impl HuggingFaceProvider {
             auth_method,
             std::time::Duration::from_secs(timeout_secs),
             tls_config,
-        )?
-        .with_request_builder(crate::session_context::session_id_request_builder())
-        .with_query(query_params);
+        )?;
+        if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(Config::global())? {
+            api_client = api_client.with_proxy(Some(proxy))?;
+        }
+        let mut api_client = api_client
+            .with_request_builder(crate::session_context::session_id_request_builder())
+            .with_query(query_params);
 
         if let Some(headers) = &config.headers {
             let mut header_map = reqwest::header::HeaderMap::new();
@@ -213,7 +217,11 @@ impl ProviderDef for HuggingFaceProvider {
             let host: String = config
                 .get_param("HF_HOST")
                 .unwrap_or_else(|_| HUGGINGFACE_API_HOST.to_string());
-            let api_client = ApiClient::new_with_tls(host, auth_method, tls_config)?
+            let mut api_client = ApiClient::new_with_tls(host, auth_method, tls_config)?;
+            if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(config)? {
+                api_client = api_client.with_proxy(Some(proxy))?;
+            }
+            let api_client = api_client
                 .with_request_builder(crate::session_context::session_id_request_builder());
 
             Ok(Self {

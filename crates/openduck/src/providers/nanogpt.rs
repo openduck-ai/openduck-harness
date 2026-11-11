@@ -34,12 +34,17 @@ impl NanoGptProvider {
         api_key: &str,
         tls_config: Option<crate::providers::api_client::TlsConfig>,
     ) -> Result<ApiClient> {
-        ApiClient::new_with_tls(
+        let mut api_client = ApiClient::new_with_tls(
             host.to_string(),
             AuthMethod::BearerToken(api_key.to_string()),
             tls_config,
-        )?
-        .with_header("x-client", "goose")
+        )?;
+        if let Some(proxy) =
+            crate::providers::proxy::resolve_global_proxy(crate::config::Config::global())?
+        {
+            api_client = api_client.with_proxy(Some(proxy))?;
+        }
+        api_client.with_header("x-client", "goose")
     }
 
     async fn check_subscription(

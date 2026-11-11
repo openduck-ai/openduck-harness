@@ -180,10 +180,12 @@ impl GcpVertexAIProvider {
         let location = Self::determine_location(config)?;
         let host = Self::build_host_url(&location);
 
-        let client = Client::builder()
+        let proxy = crate::providers::proxy::resolve_global_proxy(config)?;
+        let mut builder = Client::builder()
             .connect_timeout(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
-            .read_timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS))
-            .build()?;
+            .read_timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS));
+        builder = crate::providers::proxy::apply_proxy(builder, proxy.as_deref())?;
+        let client = builder.build()?;
 
         let auth = GcpAuth::new().await?;
 

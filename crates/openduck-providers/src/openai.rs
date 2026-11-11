@@ -392,6 +392,11 @@ impl OpenAiProvider {
         }
     }
 
+    pub fn with_proxy(mut self, proxy: Option<String>) -> Result<Self> {
+        self.api_client = self.api_client.with_proxy(proxy)?;
+        Ok(self)
+    }
+
     fn normalize_base_path(base_path: &str) -> String {
         if let Some(path) = base_path.strip_prefix('/') {
             format!("/{}", path.trim_end_matches('/'))

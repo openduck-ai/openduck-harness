@@ -601,10 +601,13 @@ impl LocalInterpreter {
 
 impl OllamaInterpreter {
     pub fn new() -> Result<Self, ProviderError> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS))
-            .build()
-            .expect("Failed to create HTTP client");
+        let proxy = crate::providers::proxy::resolve_global_proxy(crate::config::Config::global())
+            .map_err(|e| ProviderError::ExecutionError(e.to_string()))?;
+        let mut builder =
+            Client::builder().timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS));
+        builder = crate::providers::proxy::apply_proxy(builder, proxy.as_deref())
+            .map_err(|e| ProviderError::ExecutionError(e.to_string()))?;
+        let client = builder.build().expect("Failed to create HTTP client");
 
         let base_url = Self::get_ollama_base_url()?;
 

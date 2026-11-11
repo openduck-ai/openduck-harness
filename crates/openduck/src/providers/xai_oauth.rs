@@ -815,12 +815,16 @@ impl ProviderDef for XaiOAuthProvider {
 
             let auth_provider = Arc::new(XaiOAuthAuthProvider::new(XaiAuthState::instance()));
             let auth_for_client = Arc::clone(&auth_provider);
-            let api_client = ApiClient::new_with_tls(
+            let mut api_client = ApiClient::new_with_tls(
                 host,
                 AuthMethod::Custom(Box::new(SharedAuthProvider(auth_for_client))),
                 tls_config,
-            )?
-            .with_request_builder(crate::session_context::session_id_request_builder());
+            )?;
+            if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(config)? {
+                api_client = api_client.with_proxy(Some(proxy))?;
+            }
+            let api_client = api_client
+                .with_request_builder(crate::session_context::session_id_request_builder());
 
             let inner = OpenAiCompatibleProvider::new(
                 XAI_OAUTH_PROVIDER_NAME.to_string(),

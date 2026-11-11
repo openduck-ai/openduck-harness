@@ -119,7 +119,9 @@ pub async fn from_env(tls_config: Option<TlsConfig>) -> Result<AzureFoundryProvi
         _ => api_key_auth_header(),
     };
 
-    AzureFoundryProvider::create(
+    let proxy = crate::providers::proxy::resolve_global_proxy(config)?;
+
+    AzureFoundryProvider::create_with_proxy(
         endpoint,
         api_version,
         maas_model,
@@ -129,6 +131,7 @@ pub async fn from_env(tls_config: Option<TlsConfig>) -> Result<AzureFoundryProvi
         auth_method(&auth, api_key_auth_header()),
         tls_config,
         Some(crate::session_context::session_id_request_builder()),
+        proxy,
     )
 }
 

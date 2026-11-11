@@ -75,6 +75,7 @@ pub(crate) mod private_file;
 pub mod provider_registry;
 pub mod provider_secrets;
 pub mod provider_test;
+pub mod proxy;
 mod retry {
     pub use openduck_providers::retry::*;
 }

@@ -78,7 +78,7 @@ pub async fn from_env(
             .map_err(|_| anyhow::anyhow!("Failed to set default port"))?;
     }
 
-    let proxy = crate::config::providers::get_provider_proxy(config, "ollama");
+    let proxy = crate::providers::proxy::resolve_outbound_proxy(config, "ollama")?;
     let api_client = ApiClient::with_timeout_tls_and_proxy(
         base_url.to_string(),
         AuthMethod::NoAuth,

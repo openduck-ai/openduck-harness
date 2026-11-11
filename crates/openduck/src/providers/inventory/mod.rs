@@ -1414,7 +1414,7 @@ fn apply_canonical_costs(provider_family: &str, models: &mut [InventoryModel]) {
         return;
     };
     for model in models.iter_mut() {
-        let Some(canonical_id) = map_to_canonical_model(provider_family, &model.id, &registry)
+        let Some(canonical_id) = map_to_canonical_model(provider_family, &model.id, registry)
         else {
             model.input_cost = None;
             model.output_cost = None;

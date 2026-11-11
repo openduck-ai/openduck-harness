@@ -53,7 +53,7 @@ async fn from_env(
         key: api_key,
     };
 
-    let proxy = crate::config::providers::get_provider_proxy(config, "anthropic");
+    let proxy = crate::providers::proxy::resolve_outbound_proxy(config, "anthropic")?;
     let api_client = ApiClient::with_timeout_tls_and_proxy(
         host,
         auth,

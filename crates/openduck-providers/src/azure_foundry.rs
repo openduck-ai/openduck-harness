@@ -159,7 +159,7 @@ impl ProviderDescriptor for AzureFoundryProvider {
 
 impl AzureFoundryProvider {
     #[allow(clippy::too_many_arguments)]
-    pub fn create(
+    pub fn create_with_proxy(
         endpoint: String,
         api_version: Option<String>,
         maas_model: Option<String>,
@@ -169,6 +169,7 @@ impl AzureFoundryProvider {
         deployments_auth: AuthMethod,
         tls_config: Option<TlsConfig>,
         request_builder: Option<RequestBuilderDecorator>,
+        proxy: Option<String>,
     ) -> Result<Self> {
         let endpoint = endpoint.trim_end_matches('/').to_string();
         let endpoint_kind = endpoint_kind(&endpoint);
@@ -197,6 +198,7 @@ impl AzureFoundryProvider {
             chat_auth,
             tls_config.clone(),
             request_builder.clone(),
+            proxy.as_deref(),
         )?;
         let chat = OpenAiCompatibleProvider::new(
             AZURE_FOUNDRY_PROVIDER_NAME.to_string(),
@@ -210,6 +212,7 @@ impl AzureFoundryProvider {
                 responses_auth,
                 tls_config.clone(),
                 request_builder.clone(),
+                proxy.as_deref(),
             )?;
             let responses = OpenAiProviderBuilder::new(responses_client)
                 .name(AZURE_FOUNDRY_PROVIDER_NAME)
@@ -223,6 +226,7 @@ impl AzureFoundryProvider {
                 anthropic_auth,
                 tls_config.clone(),
                 request_builder.clone(),
+                proxy.as_deref(),
             )?
             .with_header("anthropic-version", ANTHROPIC_API_VERSION)?;
             let anthropic = AnthropicProviderBuilder::new(anthropic_client)
@@ -239,6 +243,7 @@ impl AzureFoundryProvider {
             deployments_auth,
             tls_config,
             request_builder,
+            proxy.as_deref(),
         )?;
 
         Ok(Self {
@@ -251,6 +256,44 @@ impl AzureFoundryProvider {
             maas_model,
             deployments: Mutex::new(HashMap::new()),
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        endpoint: String,
+        api_version: Option<String>,
+        maas_model: Option<String>,
+        chat_auth: AuthMethod,
+        responses_auth: AuthMethod,
+        anthropic_auth: AuthMethod,
+        deployments_auth: AuthMethod,
+        tls_config: Option<TlsConfig>,
+        request_builder: Option<RequestBuilderDecorator>,
+    ) -> Result<Self> {
+        Self::create_with_proxy(
+            endpoint,
+            api_version,
+            maas_model,
+            chat_auth,
+            responses_auth,
+            anthropic_auth,
+            deployments_auth,
+            tls_config,
+            request_builder,
+            None,
+        )
+    }
+
+    pub fn with_proxy(mut self, proxy: Option<String>) -> Result<Self> {
+        self.chat = self.chat.with_proxy(proxy.clone())?;
+        if let Some(responses) = self.responses {
+            self.responses = Some(responses.with_proxy(proxy.clone())?);
+        }
+        if let Some(anthropic) = self.anthropic {
+            self.anthropic = Some(anthropic.with_proxy(proxy.clone())?);
+        }
+        self.deployments_client = self.deployments_client.with_proxy(proxy)?;
+        Ok(self)
     }
 
     async fn fetch_deployments(
@@ -373,9 +416,13 @@ fn configured_client(
     auth: AuthMethod,
     tls_config: Option<TlsConfig>,
     request_builder: Option<RequestBuilderDecorator>,
+    proxy: Option<&str>,
 ) -> Result<ApiClient> {
     let restrict_redirects = matches!(&auth, AuthMethod::ApiKey { .. });
     let mut client = ApiClient::new_with_tls(host, auth, tls_config)?;
+    if let Some(proxy_str) = proxy {
+        client = client.with_proxy(Some(proxy_str.to_string()))?;
+    }
     if restrict_redirects {
         client = client.with_same_origin_redirects()?;
     }
@@ -767,6 +814,7 @@ mod tests {
                 },
                 None,
                 None,
+                None,
             )
             .unwrap();
 
@@ -799,6 +847,7 @@ mod tests {
                     header_name: header_name.to_string(),
                     key: "foundry-secret".to_string(),
                 },
+                None,
                 None,
                 None,
             )
@@ -838,6 +887,7 @@ mod tests {
         let client = configured_client(
             source.uri(),
             AuthMethod::BearerToken("foundry-token".to_string()),
+            None,
             None,
             None,
         )
@@ -1294,5 +1344,112 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn configured_proxy_applies_to_all_foundry_clients() {
+        let proxy_url = "http://127.0.0.1:3128";
+        let project_ep = "https://example.cognitiveservices.azure.com/api/projects/test";
+
+        let provider = AzureFoundryProvider::create_with_proxy(
+            project_ep.to_string(),
+            None,
+            None,
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            None,
+            None,
+            Some(proxy_url.to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(provider.deployments_client.proxy(), Some(proxy_url));
+        assert!(provider.responses.is_some());
+        assert!(provider.anthropic.is_some());
+
+        for host in [
+            project_ep.to_string(),
+            "https://example.cognitiveservices.azure.com/anthropic".to_string(),
+        ] {
+            let client =
+                configured_client(host, AuthMethod::NoAuth, None, None, Some(proxy_url)).unwrap();
+            assert_eq!(client.proxy(), Some(proxy_url));
+        }
+
+        let maas_ep = "https://deployment.eastus.models.ai.azure.com";
+        let maas_provider = AzureFoundryProvider::create_with_proxy(
+            maas_ep.to_string(),
+            None,
+            Some("meta-llama-3-8b-instruct".to_string()),
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            None,
+            None,
+            Some(proxy_url.to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(maas_provider.deployments_client.proxy(), Some(proxy_url));
+        assert!(maas_provider.responses.is_none());
+        assert!(maas_provider.anthropic.is_none());
+
+        let default_provider = AzureFoundryProvider::create(
+            project_ep.to_string(),
+            None,
+            None,
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(default_provider.deployments_client.proxy(), None);
+        assert!(default_provider.responses.is_some());
+        assert!(default_provider.anthropic.is_some());
+
+        let default_client =
+            configured_client(project_ep.to_string(), AuthMethod::NoAuth, None, None, None)
+                .unwrap();
+        assert_eq!(default_client.proxy(), None);
+
+        let mutated_provider = default_provider
+            .with_proxy(Some(proxy_url.to_string()))
+            .unwrap();
+        assert_eq!(mutated_provider.deployments_client.proxy(), Some(proxy_url));
+        assert!(mutated_provider.responses.is_some());
+        assert!(mutated_provider.anthropic.is_some());
+
+        let cleared_provider = mutated_provider.with_proxy(None).unwrap();
+        assert_eq!(cleared_provider.deployments_client.proxy(), None);
+
+        let default_maas = AzureFoundryProvider::create(
+            maas_ep.to_string(),
+            None,
+            Some("meta-llama-3-8b-instruct".to_string()),
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            AuthMethod::NoAuth,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(default_maas.deployments_client.proxy(), None);
+        assert!(default_maas.responses.is_none());
+        assert!(default_maas.anthropic.is_none());
+
+        let mutated_maas = default_maas
+            .with_proxy(Some(proxy_url.to_string()))
+            .unwrap();
+        assert_eq!(mutated_maas.deployments_client.proxy(), Some(proxy_url));
+        assert!(mutated_maas.responses.is_none());
+        assert!(mutated_maas.anthropic.is_none());
     }
 }

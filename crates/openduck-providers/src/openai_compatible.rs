@@ -1,6 +1,6 @@
 use crate::conversation::token_usage::{CostSource, ProviderUsage};
 use crate::images::ImageFormat;
-use anyhow::Error;
+use anyhow::{Error, Result};
 use async_stream::try_stream;
 use futures::TryStreamExt;
 use reqwest::Response;
@@ -48,6 +48,11 @@ impl OpenAiCompatibleProvider {
     pub fn with_supports_streaming(mut self, supports_streaming: bool) -> Self {
         self.supports_streaming = supports_streaming;
         self
+    }
+
+    pub fn with_proxy(mut self, proxy: Option<String>) -> Result<Self> {
+        self.api_client = self.api_client.with_proxy(proxy)?;
+        Ok(self)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -45,6 +45,16 @@ pub fn google_api_key_is_configured(config: &Config) -> bool {
     resolve_google_api_key(config).is_ok()
 }
 
+fn resolve_proxy(config: &Config) -> Result<Option<String>> {
+    let proxy = crate::providers::proxy::resolve_global_proxy(config)?.or_else(|| {
+        crate::config::providers::get_provider_proxy(config, "google")
+            .or_else(|| crate::config::providers::get_provider_proxy(config, "gemini"))
+            .or_else(|| config.get_param("GOOGLE_PROXY").ok())
+            .or_else(|| config.get_param("GEMINI_PROXY").ok())
+    });
+    Ok(proxy)
+}
+
 pub async fn from_env(tls_config: Option<TlsConfig>) -> Result<GoogleProvider> {
     let config = Config::global();
     let api_key = resolve_google_api_key(config)?;
@@ -54,10 +64,7 @@ pub async fn from_env(tls_config: Option<TlsConfig>) -> Result<GoogleProvider> {
 
     let thinking_budget = config.get_param("GEMINI25_THINKING_BUDGET").ok();
 
-    let proxy = crate::config::providers::get_provider_proxy(config, "google")
-        .or_else(|| crate::config::providers::get_provider_proxy(config, "gemini"))
-        .or_else(|| config.get_param("GOOGLE_PROXY").ok())
-        .or_else(|| config.get_param("GEMINI_PROXY").ok());
+    let proxy = resolve_proxy(config)?;
 
     let mut provider = GoogleProvider::new(
         host,
@@ -117,5 +124,47 @@ mod tests {
         assert!(err.to_string().contains(GOOGLE_API_KEY_ENV));
         assert!(err.to_string().contains(GEMINI_API_KEY_ENV));
         assert!(!google_api_key_is_configured(&config));
+    }
+
+    fn yaml_config(yaml: &str) -> (Config, tempfile::NamedTempFile, tempfile::NamedTempFile) {
+        let config_file = NamedTempFile::new().unwrap();
+        let secrets_file = NamedTempFile::new().unwrap();
+        std::fs::write(config_file.path(), yaml).unwrap();
+        let config =
+            Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap();
+        (config, config_file, secrets_file)
+    }
+
+    #[test]
+    fn global_proxy_beats_google_and_gemini_env() {
+        let _guard = env_lock::lock_env([
+            (
+                "OPENDUCK_PROVIDER_GOOGLE_PROXY",
+                Some("http://provider-env.example:9"),
+            ),
+            ("GOOGLE_PROXY", Some("http://legacy-env.example:9")),
+        ]);
+        let (config, _config_file, _secrets_file) =
+            yaml_config("proxy: \"http://global.example:9\"\n");
+        assert_eq!(
+            resolve_proxy(&config).unwrap().as_deref(),
+            Some("http://global.example:9/")
+        );
+    }
+
+    #[test]
+    fn absent_global_proxy_falls_back_to_google_env() {
+        let _guard = env_lock::lock_env([
+            (
+                "OPENDUCK_PROVIDER_GOOGLE_PROXY",
+                Some("http://provider-env.example:9"),
+            ),
+            ("GOOGLE_PROXY", Some("http://legacy-env.example:9")),
+        ]);
+        let (config, _config_file, _secrets_file) = yaml_config("");
+        assert_eq!(
+            resolve_proxy(&config).unwrap().as_deref(),
+            Some("http://provider-env.example:9")
+        );
     }
 }

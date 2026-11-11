@@ -49,12 +49,17 @@ pub async fn from_env(tls_config: Option<TlsConfig>) -> Result<SnowflakeProvider
     let host = get_config_or_secret(config, "SNOWFLAKE_HOST")?;
     let token = get_config_or_secret(config, "SNOWFLAKE_TOKEN")?;
 
-    SnowflakeProvider::new(
+    let proxy = crate::providers::proxy::resolve_global_proxy(config)?;
+    let mut provider = SnowflakeProvider::new(
         host,
         token,
         tls_config,
         Some(crate::session_context::session_id_request_builder()),
-    )
+    )?;
+    if let Some(p) = proxy {
+        provider = provider.with_proxy(Some(p))?;
+    }
+    Ok(provider)
 }
 
 fn get_config_or_secret(config: &Config, key: &str) -> Result<String> {

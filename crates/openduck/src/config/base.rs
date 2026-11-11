@@ -535,6 +535,28 @@ impl Config {
         self.write_path().to_string_lossy().to_string()
     }
 
+    /// Returns the configured `proxy` URL, accepting `http://` or `https://`
+    /// schemes with optional userinfo and port. An empty string or `null`
+    /// disables the proxy. Environment proxy variables are not consulted.
+    pub fn get_proxy(&self) -> Result<Option<crate::config::proxy::ProxyUrl>, ConfigError> {
+        let mapping = self.load().map_err(|_| {
+            ConfigError::DeserializeError(
+                "Unable to read config key `proxy`: configuration could not be loaded".to_string(),
+            )
+        })?;
+
+        match mapping.get("proxy") {
+            None | Some(serde_yaml::Value::Null) => Ok(None),
+            Some(serde_yaml::Value::String(value)) => {
+                crate::config::proxy::parse_proxy_url("proxy", value)
+            }
+            Some(_) => Err(ConfigError::DeserializeError(
+                "Invalid config key `proxy` value `<redacted>`: expected a string proxy URL or null"
+                    .to_string(),
+            )),
+        }
+    }
+
     /// Validate that all existing configuration files can be successfully loaded and parsed.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.load().map(|_| ())

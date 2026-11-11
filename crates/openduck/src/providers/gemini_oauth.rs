@@ -39,11 +39,25 @@ use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::io::StreamReader;
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
-        .read_timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS))
-        .build()
-        .expect("failed to build HTTP client")
+        .read_timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS));
+
+    // why: Static HTTP_CLIENT cannot return an error; fall back to a builder
+    // with no explicit proxy if proxy resolution or application fails,
+    // avoiding panics or logging sensitive proxy details.
+    match crate::providers::proxy::resolve_global_proxy(crate::config::Config::global())
+        .and_then(|proxy| crate::providers::proxy::apply_proxy(builder, proxy.as_deref()))
+    {
+        Ok(proxied_builder) => builder = proxied_builder,
+        Err(_) => {
+            builder = reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
+                .read_timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS));
+        }
+    }
+
+    builder.build().expect("failed to build HTTP client")
 });
 
 // Google OAuth credentials for installed-app flow.

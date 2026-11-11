@@ -62,7 +62,11 @@ impl OpenRouterProvider {
         let configured_parameters = configured_openrouter_parameters()?;
 
         let auth = AuthMethod::BearerToken(api_key);
-        let api_client = ApiClient::new_with_tls(host, auth, tls_config)?
+        let mut api_client = ApiClient::new_with_tls(host, auth, tls_config)?;
+        if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(config)? {
+            api_client = api_client.with_proxy(Some(proxy))?;
+        }
+        let api_client = api_client
             .with_request_builder(crate::session_context::session_id_request_builder())
             .with_header("HTTP-Referer", "https://goose-docs.ai")?
             .with_header("X-Title", "goose")?

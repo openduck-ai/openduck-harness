@@ -296,6 +296,9 @@ fn build_api_client(provider: DictationProvider) -> Result<(ApiClient, String)> 
             tracing::error!("Failed to create API client: {}", e);
             e
         })?;
+    if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(config)? {
+        client = client.with_proxy(Some(proxy))?;
+    }
     if !query_params.is_empty() {
         client = client.with_query(query_params);
     }
@@ -410,6 +413,9 @@ pub async fn transcribe_with_model(audio_bytes: Vec<u8>, audio_format: &str) -> 
     };
 
     let mut client = ApiClient::with_timeout_and_tls(host, auth, MODEL_TRANSCRIPTION_TIMEOUT, tls)?;
+    if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(config)? {
+        client = client.with_proxy(Some(proxy))?;
+    }
     if !query_params.is_empty() {
         client = client.with_query(query_params);
     }

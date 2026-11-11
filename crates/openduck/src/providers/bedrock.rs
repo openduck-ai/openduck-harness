@@ -283,6 +283,15 @@ impl BedrockProvider {
         };
 
         let retry_config = Self::load_retry_config(config);
+        let proxy = crate::providers::proxy::resolve_global_proxy(config)?;
+        let mut http_client_builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
+            .read_timeout(std::time::Duration::from_secs(
+                DEFAULT_PROVIDER_TIMEOUT_SECS,
+            ));
+        http_client_builder =
+            crate::providers::proxy::apply_proxy(http_client_builder, proxy.as_deref())?;
+        let http_client = http_client_builder.build()?;
 
         Ok(Self {
             client,
@@ -290,12 +299,7 @@ impl BedrockProvider {
             name: BEDROCK_PROVIDER_NAME.to_string(),
             region: resolved_region,
             bearer_token,
-            http_client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
-                .read_timeout(std::time::Duration::from_secs(
-                    DEFAULT_PROVIDER_TIMEOUT_SECS,
-                ))
-                .build()?,
+            http_client,
             mantle_base_url: None,
         })
     }

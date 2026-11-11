@@ -140,6 +140,9 @@ fn build_ollama_api_client(
         std::time::Duration::from_secs(timeout_secs),
         tls_config,
     )?;
+    if let Some(proxy) = crate::providers::proxy::resolve_global_proxy(Config::global())? {
+        api_client = api_client.with_proxy(Some(proxy))?;
+    }
 
     if let Some(query) = url.query() {
         let query_params = url::form_urlencoded::parse(query.as_bytes())
