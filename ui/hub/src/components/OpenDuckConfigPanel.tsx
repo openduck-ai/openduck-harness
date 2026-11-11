@@ -2,7 +2,7 @@ import { ConfigValidationError, type ConfigMessageDescriptor } from '../configEd
 import type { translate } from '../i18n/index.ts'
 import { useTranslation } from 'react-i18next'
 import { useEffect, useRef, useState } from 'react'
-import type { AppConfigDocument, ProxyItem, createApi } from '@aaif/goose-hub-core'
+import type { AppConfigDocument, ProxyItem, TuiAgentProxyDocument, createApi } from '@aaif/goose-hub-core'
 import { Check, Edit2, Trash2, X } from 'lucide-react'
 import {
   CUSTOM_MODEL_OPTION,
@@ -49,6 +49,7 @@ import {
   validateNewConfigKey,
   type ConfigDrafts,
 } from '../configEditor'
+import { validateProxyUrlMessage } from '../providerConfig'
 
 type ConfigApi = Pick<
   ReturnType<typeof createApi>,
@@ -63,7 +64,31 @@ type ConfigApi = Pick<
   | 'refreshProviderModels'
   | 'getProxiesConfig'
   | 'updateProxiesConfig'
+  | 'getTuiAgentProxies'
+  | 'updateTuiAgentProxies'
 >
+
+type TuiProxyMode = 'inherit' | 'direct' | 'url'
+
+interface TuiProxyDraftRow {
+  agent: string
+  mode: TuiProxyMode
+  url: string
+}
+
+const DEFAULT_TUI_PROXY_AGENTS = ['default', 'agy', 'grok', 'codex', 'claude']
+
+function draftsFromTuiProxies(doc: TuiAgentProxyDocument | null): TuiProxyDraftRow[] {
+  const agents = doc?.agents?.length
+    ? doc.agents
+    : DEFAULT_TUI_PROXY_AGENTS.map((agent) => ({ agent, httpsProxy: null }))
+  return agents.map((row) => {
+    const value = row.httpsProxy?.trim() ?? ''
+    if (!value) return { agent: row.agent, mode: 'inherit', url: '' }
+    if (value === 'direct') return { agent: row.agent, mode: 'direct', url: '' }
+    return { agent: row.agent, mode: 'url', url: value }
+  })
+}
 
 interface OpenDuckConfigPanelProps {
   api: ConfigApi
@@ -495,6 +520,10 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
   const [drafts, setDrafts] = useState<ConfigDrafts | null>(null)
   const [providersDraft, setProvidersDraft] = useState<ProviderConfigDraft | null>(null)
   const [proxiesDraft, setProxiesDraft] = useState<ProxyItem[]>([])
+  const [tuiProxyDraft, setTuiProxyDraft] = useState<TuiProxyDraftRow[]>(() =>
+    draftsFromTuiProxies(null),
+  )
+  const [tuiProxyUnavailable, setTuiProxyUnavailable] = useState(false)
   const [newProxyId, setNewProxyId] = useState('')
   const [newProxyUrl, setNewProxyUrl] = useState('')
   const [newProxyDesc, setNewProxyDesc] = useState('')
@@ -529,6 +558,8 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       setDrafts(null)
       setProvidersDraft(null)
       setProxiesDraft([])
+      setTuiProxyDraft(draftsFromTuiProxies(null))
+      setTuiProxyUnavailable(false)
       return
     }
     let cancelled = false
@@ -538,14 +569,17 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       api.getAppConfig(),
       api.getProvidersConfig(),
       api.getProxiesConfig ? api.getProxiesConfig() : Promise.resolve(null),
+      api.getTuiAgentProxies().catch(() => null),
     ])
-      .then(([nextConfig, nextProviders, nextProxies]) => {
+      .then(([nextConfig, nextProviders, nextProxies, nextTuiProxies]) => {
         if (cancelled) return
         applyDocument(nextConfig)
         setProvidersDraft(draftFromResponse(nextProviders))
         const loadedProxies =
           nextProxies && nextProxies.proxies ? nextProxies.proxies : (nextProviders.proxies ?? [])
         setProxiesDraft(loadedProxies)
+        setTuiProxyUnavailable(nextTuiProxies == null)
+        setTuiProxyDraft(draftsFromTuiProxies(nextTuiProxies))
         if (nextProviders.availableProviders.length > 0) {
           setNewProviderSelect(nextProviders.availableProviders[0] ?? '')
         }
@@ -739,6 +773,36 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
       setNotice({ key: 'config.panel.harnessSaved' })
     } catch (cause) {
       setError(messageFrom(cause, { key: 'config.panel.saveHarnessFailed' }))
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  const saveTuiProxies = async () => {
+    setSaving('tui-proxies')
+    setError('')
+    setNotice('')
+    for (const row of tuiProxyDraft) {
+      if (row.mode !== 'url') continue
+      const invalid = validateProxyUrlMessage(row.url)
+      if (invalid) {
+        setError(invalid)
+        setSaving(null)
+        return
+      }
+    }
+    try {
+      const saved = await api.updateTuiAgentProxies({
+        agents: tuiProxyDraft.map((row) => ({
+          agent: row.agent,
+          httpsProxy: row.mode === 'direct' ? 'direct' : row.mode === 'url' ? row.url.trim() : null,
+        })),
+      })
+      setTuiProxyUnavailable(false)
+      setTuiProxyDraft(draftsFromTuiProxies(saved))
+      setNotice({ key: 'config.panel.tuiAgentProxiesSaved' })
+    } catch (cause) {
+      setError(messageFrom(cause, { key: 'config.panel.saveTuiAgentProxiesFailed' }))
     } finally {
       setSaving(null)
     }
@@ -1443,6 +1507,64 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
                 onClick={() => void saveHarness()}
               >
                 {saving === 'harness' ? t('config.panel.saving') : t('config.panel.saveHarness')}
+              </button>
+            </div>
+          </section>
+
+          <section className="config-section">
+            <h4>{t('config.panel.tuiAgentProxies')}</h4>
+            <p className="form-hint">{t('config.panel.tuiAgentProxiesHint')}</p>
+            {tuiProxyUnavailable && (
+              <p className="form-hint">{t('config.panel.tuiAgentProxiesUnavailable')}</p>
+            )}
+            <div className="config-form-grid">
+              {tuiProxyDraft.map((row, index) => (
+                <label key={row.agent}>
+                  {row.agent}
+                  <select
+                    value={row.mode}
+                    disabled={saving === 'tui-proxies'}
+                    onChange={(event) => {
+                      const mode = event.target.value as TuiProxyMode
+                      setTuiProxyDraft((current) =>
+                        current.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, mode } : item,
+                        ),
+                      )
+                    }}
+                  >
+                    <option value="inherit">{t('config.panel.tuiAgentProxyInherit')}</option>
+                    <option value="direct">{t('config.panel.tuiAgentProxyDirect')}</option>
+                    <option value="url">{t('config.panel.tuiAgentProxyUrl')}</option>
+                  </select>
+                  {row.mode === 'url' && (
+                    <input
+                      value={row.url}
+                      disabled={saving === 'tui-proxies'}
+                      placeholder={t('config.panel.tuiAgentProxyUrlPlaceholder')}
+                      onChange={(event) => {
+                        const url = event.target.value
+                        setTuiProxyDraft((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, url } : item,
+                          ),
+                        )
+                      }}
+                    />
+                  )}
+                </label>
+              ))}
+            </div>
+            <div className="settings-actions-row">
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={saving === 'tui-proxies'}
+                onClick={() => void saveTuiProxies()}
+              >
+                {saving === 'tui-proxies'
+                  ? t('config.panel.saving')
+                  : t('config.panel.saveTuiAgentProxies')}
               </button>
             </div>
           </section>

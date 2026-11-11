@@ -639,6 +639,10 @@ test('REST client reads and updates OpenDuck config', async () => {
       ],
     })
     await api.getProxiesConfig()
+    await api.getTuiAgentProxies()
+    await api.updateTuiAgentProxies({
+      agents: [{ agent: 'grok', httpsProxy: 'http://127.0.0.1:2087' }],
+    })
     await api.updateProxiesConfig({
       proxies: [
         { id: 'clash', url: 'http://127.0.0.1:7890', description: 'Clash proxy' },
@@ -678,6 +682,8 @@ test('REST client reads and updates OpenDuck config', async () => {
         'GET http://host/api/v1/config/providers',
         'PUT http://host/api/v1/config/providers',
         'GET http://host/api/v1/config/proxies',
+        'GET http://host/api/v1/config/tui-sessions',
+        'PUT http://host/api/v1/config/tui-sessions',
         'PUT http://host/api/v1/config/proxies',
         'PUT http://host/api/v1/config',
         'PUT http://host/api/v1/config/harness',
@@ -689,11 +695,12 @@ test('REST client reads and updates OpenDuck config', async () => {
       ],
     )
     assert.equal(JSON.parse(calls[2]?.body ?? '{}').majorProvider, 'openai')
-    assert.equal(JSON.parse(calls[4]?.body ?? '{}').proxies[0].id, 'clash')
-    assert.equal(calls[5]?.body, JSON.stringify({ key: 'OLLAMA_HOST', value: 'http://127.0.0.1:11434' }))
-    assert.equal(JSON.parse(calls[6]?.body ?? '{}').maxTurns, 40)
-    assert.equal(JSON.parse(calls[11]?.body ?? '{}').majorProvider, 'openai')
-    assert.equal(JSON.parse(calls[11]?.body ?? '{}').secondaryProvider, 'anthropic')
+    assert.equal(JSON.parse(calls[5]?.body ?? '{}').agents[0].httpsProxy, 'http://127.0.0.1:2087')
+    assert.equal(JSON.parse(calls[6]?.body ?? '{}').proxies[0].id, 'clash')
+    assert.equal(calls[7]?.body, JSON.stringify({ key: 'OLLAMA_HOST', value: 'http://127.0.0.1:11434' }))
+    assert.equal(JSON.parse(calls[8]?.body ?? '{}').maxTurns, 40)
+    assert.equal(JSON.parse(calls[13]?.body ?? '{}').majorProvider, 'openai')
+    assert.equal(JSON.parse(calls[13]?.body ?? '{}').secondaryProvider, 'anthropic')
   } finally {
     globalThis.fetch = originalFetch
   }

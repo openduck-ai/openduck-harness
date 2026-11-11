@@ -1725,6 +1725,205 @@ pub fn get_proxies_config(config: &Config) -> Result<ProxiesConfigResponse, AppC
     Ok(ProxiesConfigResponse { proxies })
 }
 
+const TUI_AGENT_PROXY_KEYS: &[&str] = &["default", "agy", "grok", "codex", "claude"];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TuiAgentProxyRow {
+    pub agent: String,
+    pub https_proxy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TuiAgentProxyDocument {
+    pub agents: Vec<TuiAgentProxyRow>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TuiAgentProxyUpdate {
+    pub agents: Vec<TuiAgentProxyRow>,
+}
+
+pub fn read_tui_agent_proxies(config: &Config) -> Result<TuiAgentProxyDocument, AppConfigError> {
+    let harness = load_harness_map(config)?;
+    let sessions = harness
+        .as_ref()
+        .map(|map| tui_sessions_from_harness(map))
+        .unwrap_or_default();
+    Ok(TuiAgentProxyDocument {
+        agents: tui_proxy_rows(&sessions),
+    })
+}
+
+pub fn update_tui_agent_proxies(
+    config: &Config,
+    update: TuiAgentProxyUpdate,
+) -> Result<TuiAgentProxyDocument, AppConfigError> {
+    let existing = load_harness_map(config)?;
+    let had_harness = existing.is_some();
+    let mut harness = existing.unwrap_or_default();
+    let mut sessions = tui_sessions_from_harness(&harness);
+    harness.remove("tui_sessions");
+    harness.remove("tuiSessions");
+
+    let mut seen = std::collections::HashSet::new();
+    for row in update.agents {
+        let agent = normalize_tui_agent_key(&row.agent)?;
+        if !seen.insert(agent.clone()) {
+            return Err(AppConfigError::invalid(format!(
+                "Duplicate TUI agent '{agent}'"
+            )));
+        }
+        let proxy = normalize_tui_https_proxy(&agent, row.https_proxy.as_deref())?;
+        let mut entry = sessions
+            .remove(&agent)
+            .and_then(|value| match value {
+                Value::Object(map) => Some(map),
+                _ => None,
+            })
+            .unwrap_or_default();
+        entry.remove("https_proxy");
+        entry.remove("httpsProxy");
+        if let Some(proxy) = proxy {
+            entry.insert("https_proxy".to_string(), Value::String(proxy));
+        }
+        if !entry.is_empty() {
+            sessions.insert(agent, Value::Object(entry));
+        }
+    }
+
+    if !sessions.is_empty() {
+        harness.insert("tui_sessions".to_string(), Value::Object(sessions));
+    }
+    if harness.is_empty() {
+        if had_harness {
+            config.delete("harness")?;
+        }
+    } else {
+        config.set_param("harness", Value::Object(harness))?;
+    }
+    read_tui_agent_proxies(config)
+}
+
+fn tui_sessions_from_harness(harness: &Map<String, Value>) -> Map<String, Value> {
+    let mut sessions = Map::new();
+    for key in ["tui_sessions", "tuiSessions"] {
+        let Some(Value::Object(raw)) = harness.get(key) else {
+            continue;
+        };
+        for (agent, value) in raw {
+            let agent = agent.trim().to_ascii_lowercase();
+            if agent.is_empty() {
+                continue;
+            }
+            sessions.entry(agent).or_insert_with(|| value.clone());
+        }
+    }
+    sessions
+}
+
+fn tui_proxy_rows(sessions: &Map<String, Value>) -> Vec<TuiAgentProxyRow> {
+    let mut rows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for agent in TUI_AGENT_PROXY_KEYS {
+        seen.insert((*agent).to_string());
+        rows.push(TuiAgentProxyRow {
+            agent: (*agent).to_string(),
+            https_proxy: proxy_from_session_entry(sessions.get(*agent)),
+        });
+    }
+    let mut extras: Vec<&String> = sessions
+        .keys()
+        .filter(|agent| !seen.contains(*agent))
+        .collect();
+    extras.sort();
+    for agent in extras {
+        rows.push(TuiAgentProxyRow {
+            agent: agent.clone(),
+            https_proxy: proxy_from_session_entry(sessions.get(agent)),
+        });
+    }
+    rows
+}
+
+fn proxy_from_session_entry(entry: Option<&Value>) -> Option<String> {
+    let Value::Object(map) = entry? else {
+        return None;
+    };
+    map.get("https_proxy")
+        .or_else(|| map.get("httpsProxy"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if value.eq_ignore_ascii_case("direct") {
+                "direct".to_string()
+            } else {
+                value.to_string()
+            }
+        })
+}
+
+fn normalize_tui_agent_key(raw: &str) -> Result<String, AppConfigError> {
+    let agent = raw.trim().to_ascii_lowercase();
+    let valid = !agent.is_empty()
+        && agent.len() <= 32
+        && agent
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-');
+    if !valid {
+        return Err(AppConfigError::invalid(format!(
+            "Invalid TUI agent name '{raw}'"
+        )));
+    }
+    Ok(agent)
+}
+
+fn normalize_tui_https_proxy(
+    agent: &str,
+    raw: Option<&str>,
+) -> Result<Option<String>, AppConfigError> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.eq_ignore_ascii_case("direct") {
+        return Ok(Some("direct".to_string()));
+    }
+    if value.len() > 512
+        || value
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err(AppConfigError::invalid(format!(
+            "TUI agent '{agent}' proxy URL is invalid"
+        )));
+    }
+    if !value.starts_with("http://")
+        && !value.starts_with("https://")
+        && !value.starts_with("socks5://")
+        && !value.starts_with("socks5h://")
+    {
+        return Err(AppConfigError::invalid(format!(
+            "TUI agent '{agent}' proxy URL must start with http://, https://, or socks5://"
+        )));
+    }
+    let host = value
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("");
+    if host.is_empty() || host.starts_with('/') {
+        return Err(AppConfigError::invalid(format!(
+            "TUI agent '{agent}' proxy URL is missing a host"
+        )));
+    }
+    Ok(Some(value.to_string()))
+}
+
 pub fn update_proxies_config(
     config: &Config,
     raw_body: Value,
@@ -2642,6 +2841,109 @@ harness:
             yaml["harness"]["advisors"]["grok"]["https_proxy"].as_str(),
             Some("http://127.0.0.1:2087")
         );
+    }
+
+    #[test]
+    fn tui_agent_proxy_update_preserves_other_harness_fields() {
+        let _guard = quiet_env();
+        let fixture = fixture_with(
+            r#"
+harness:
+  max_turns: 40
+  advisors:
+    grok:
+      https_proxy: http://127.0.0.1:1
+  tuiSessions:
+    grok:
+      effort: high
+      httpsProxy: http://127.0.0.1:2087
+      idle_timeout_mins: 30
+    agy:
+      effort: medium
+"#,
+        );
+        let updated = update_tui_agent_proxies(
+            &fixture.config,
+            TuiAgentProxyUpdate {
+                agents: vec![
+                    TuiAgentProxyRow {
+                        agent: "Grok".to_string(),
+                        https_proxy: None,
+                    },
+                    TuiAgentProxyRow {
+                        agent: "claude".to_string(),
+                        https_proxy: Some("socks5://127.0.0.1:1080".to_string()),
+                    },
+                    TuiAgentProxyRow {
+                        agent: "default".to_string(),
+                        https_proxy: Some("direct".to_string()),
+                    },
+                ],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            updated
+                .agents
+                .iter()
+                .find(|row| row.agent == "grok")
+                .and_then(|row| row.https_proxy.as_deref()),
+            None
+        );
+        assert_eq!(
+            updated
+                .agents
+                .iter()
+                .find(|row| row.agent == "claude")
+                .and_then(|row| row.https_proxy.as_deref()),
+            Some("socks5://127.0.0.1:1080")
+        );
+        assert_eq!(
+            updated
+                .agents
+                .iter()
+                .find(|row| row.agent == "default")
+                .and_then(|row| row.https_proxy.as_deref()),
+            Some("direct")
+        );
+        let yaml = saved_yaml(&fixture);
+        assert_eq!(yaml["harness"]["max_turns"].as_u64(), Some(40));
+        assert_eq!(
+            yaml["harness"]["advisors"]["grok"]["https_proxy"].as_str(),
+            Some("http://127.0.0.1:1")
+        );
+        assert!(yaml["harness"].get("tuiSessions").is_none());
+        assert_eq!(
+            yaml["harness"]["tui_sessions"]["grok"]["effort"].as_str(),
+            Some("high")
+        );
+        assert_eq!(
+            yaml["harness"]["tui_sessions"]["grok"]["idle_timeout_mins"].as_u64(),
+            Some(30)
+        );
+        assert!(yaml["harness"]["tui_sessions"]["grok"]
+            .get("https_proxy")
+            .is_none());
+        assert_eq!(
+            yaml["harness"]["tui_sessions"]["agy"]["effort"].as_str(),
+            Some("medium")
+        );
+        assert_eq!(
+            yaml["harness"]["tui_sessions"]["default"]["https_proxy"].as_str(),
+            Some("direct")
+        );
+        assert!(update_tui_agent_proxies(
+            &fixture.config,
+            TuiAgentProxyUpdate {
+                agents: vec![TuiAgentProxyRow {
+                    agent: "codex".to_string(),
+                    https_proxy: Some("ftp://127.0.0.1:21".to_string()),
+                }],
+            },
+        )
+        .is_err());
+        let yaml = saved_yaml(&fixture);
+        assert!(yaml["harness"]["tui_sessions"].get("codex").is_none());
     }
 
     #[test]

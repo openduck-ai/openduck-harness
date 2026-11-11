@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import type { createApi, ManagedTuiSession, SessionOperation, AgentProfile, TuiAccount, QuotaSnapshot, ProxyItem } from '../api'
 import { formatDateTime, formatTime, formatNumber } from '../i18n/format.ts'
+import { validateProxyUrlMessage } from '../providerConfig'
 import {
   Terminal,
   Activity,
@@ -37,6 +38,9 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
   const [accounts, setAccounts] = useState<TuiAccount[]>([])
   const [quotas, setQuotas] = useState<Record<string, QuotaSnapshot[]>>({})
   const [proxies, setProxies] = useState<ProxyItem[]>([])
+  const [fileProxies, setFileProxies] = useState<Record<string, string>>({})
+  const [editFileProxyMode, setEditFileProxyMode] = useState<'inherit' | 'direct' | 'url'>('inherit')
+  const [editFileProxyUrl, setEditFileProxyUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<ErrorText | null>(null)
 
@@ -73,7 +77,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
     setLoading(true)
     setError(null)
     try {
-      const [sessRes, opsRes, agRes, accRes, proxiesRes] = await Promise.all([
+      const [sessRes, opsRes, agRes, accRes, proxiesRes, fileProxyRes] = await Promise.all([
         api.listManagedTuiSessions({ limit: 200 }),
         api.listManagedTuiOperations({ limit: 100 }),
         api.listTuiAgents(),
@@ -81,12 +85,20 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
         typeof (api as any).getProxiesConfig === 'function'
           ? (api as any).getProxiesConfig().catch(() => ({ proxies: [] }))
           : Promise.resolve({ proxies: [] }),
+        typeof (api as any).getTuiAgentProxies === 'function'
+          ? (api as any).getTuiAgentProxies().catch(() => ({ agents: [] }))
+          : Promise.resolve({ agents: [] }),
       ])
       setSessions(sessRes.sessions || [])
       setOperations(opsRes.operations || [])
       setAgents(agRes.agents || [])
       setAccounts(accRes.accounts || [])
       setProxies(proxiesRes.proxies || [])
+      const nextFileProxies: Record<string, string> = {}
+      for (const row of fileProxyRes.agents || []) {
+        if (row?.agent && row.httpsProxy) nextFileProxies[row.agent] = row.httpsProxy
+      }
+      setFileProxies(nextFileProxies)
 
       // Load quotas for accounts
       const quotasMap: Record<string, QuotaSnapshot[]> = {}
@@ -231,9 +243,45 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
     }
   }
 
+  const openProfileEditor = (profile: AgentProfile) => {
+    const stored = fileProxies[profile.agentKind]
+    if (!stored) {
+      setEditFileProxyMode('inherit')
+      setEditFileProxyUrl('')
+    } else if (stored === 'direct') {
+      setEditFileProxyMode('direct')
+      setEditFileProxyUrl('')
+    } else {
+      setEditFileProxyMode('url')
+      setEditFileProxyUrl(stored)
+    }
+    setEditProfileModal(profile)
+  }
+
+  const fileProxyLabel = (agentKind: string) => {
+    const stored = fileProxies[agentKind]
+    if (!stored) return t('config.panel.tuiAgentProxyInherit')
+    if (stored === 'direct') return t('config.panel.tuiAgentProxyDirect')
+    return stored
+  }
+
   const handleSaveProfile = async (profile: AgentProfile) => {
+    const httpsProxy =
+      editFileProxyMode === 'direct' ? 'direct' : editFileProxyMode === 'url' ? editFileProxyUrl.trim() : null
+    if (editFileProxyMode === 'url') {
+      const invalid = validateProxyUrlMessage(httpsProxy || '')
+      if (invalid) {
+        alert(t(invalid.key))
+        return
+      }
+    }
     try {
       await api.upsertTuiAgent(profile)
+      if (typeof (api as any).updateTuiAgentProxies === 'function') {
+        await (api as any).updateTuiAgentProxies({
+          agents: [{ agent: profile.agentKind, httpsProxy }],
+        })
+      }
       setEditProfileModal(null)
       loadData()
     } catch (e: any) {
@@ -770,7 +818,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                     <button
                       type="button"
                       onClick={() =>
-                        setEditProfileModal(
+                        openProfileEditor(
                           profile || {
                             id: '',
                             agentKind: kind,
@@ -792,6 +840,10 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                   <div style={{ fontSize: '13px', lineHeight: '1.8' }}>
                     <div><strong>{t('tuiAgents.page.labelDefaultModel')}</strong> {profile?.defaultModel || t('tuiAgents.page.cliDefault')}</div>
                     <div><strong>{t('tuiAgents.page.labelDefaultEffort')}</strong> {profile?.defaultEffort || t('tuiAgents.page.default')}</div>
+                    <div>
+                      <strong>{t('tuiAgents.page.labelFileProxy')}</strong>{' '}
+                      <span style={{ fontFamily: 'monospace' }}>{fileProxyLabel(kind)}</span>
+                    </div>
                     <div>
                       <strong>{t('tuiAgents.page.labelNetworkProxy')}</strong>{' '}
                       <span style={{ fontFamily: 'monospace' }}>
@@ -1142,6 +1194,34 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                   placeholder={t('tuiAgents.page.effortPlaceholder')}
                   style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                 />
+              </div>
+              <div>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formFileProxy')}</label>
+                <select
+                  value={editFileProxyMode}
+                  onChange={e => {
+                    const mode = e.target.value as 'inherit' | 'direct' | 'url'
+                    setEditFileProxyMode(mode)
+                    if (mode !== 'url') setEditFileProxyUrl('')
+                  }}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                >
+                  <option value="inherit">{t('config.panel.tuiAgentProxyInherit')}</option>
+                  <option value="direct">{t('config.panel.tuiAgentProxyDirect')}</option>
+                  <option value="url">{t('config.panel.tuiAgentProxyUrl')}</option>
+                </select>
+                {editFileProxyMode === 'url' && (
+                  <input
+                    type="text"
+                    value={editFileProxyUrl}
+                    onChange={e => setEditFileProxyUrl(e.target.value)}
+                    placeholder={t('config.panel.tuiAgentProxyUrlPlaceholder')}
+                    style={{ width: '100%', marginTop: '8px', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                  />
+                )}
+                <small style={{ color: 'var(--text-muted, #888)', display: 'block', marginTop: '4px' }}>
+                  {t('tuiAgents.page.fileProxyHint')}
+                </small>
               </div>
               <div>
                 <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formProxyMode')}</label>

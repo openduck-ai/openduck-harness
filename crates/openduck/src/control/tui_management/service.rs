@@ -50,6 +50,24 @@ pub struct StartManagedSessionRequest {
     pub creation_source: Option<String>,
 }
 
+fn inherited_tui_proxy(kind: &str, cwd: &Path) -> Option<String> {
+    let settings = openduck_harness::types::discover_global_harness_settings(Some(cwd));
+    let from_file = |key: &str| {
+        settings
+            .tui_sessions
+            .get(key)
+            .and_then(|defaults| defaults.https_proxy.clone())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    from_file(kind)
+        .or_else(|| from_file("default"))
+        .or_else(|| {
+            crate::config::proxies::get_proxy_entry(crate::config::Config::global(), "default")
+                .map(|entry| entry.url)
+        })
+}
+
 impl TuiManagementService {
     pub fn new(store: Arc<SqliteTuiStore>, session_manager: Arc<TuiSessionManager>) -> Self {
         let (event_tx, _) = broadcast::channel(100);
@@ -290,6 +308,7 @@ impl TuiManagementService {
                         if pid.starts_with("http://")
                             || pid.starts_with("https://")
                             || pid.starts_with("socks5://")
+                            || pid.starts_with("socks5h://")
                         {
                             Some(pid.clone())
                         } else {
@@ -300,8 +319,7 @@ impl TuiManagementService {
                 None
             }
         } else {
-            let config = crate::config::Config::global();
-            crate::config::proxies::get_proxy_entry(config, "default").map(|e| e.url)
+            inherited_tui_proxy(&kind.to_string(), &req.cwd)
         };
 
         let op_id = format!("op_{}", uuid::Uuid::new_v4());

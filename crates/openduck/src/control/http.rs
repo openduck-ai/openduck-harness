@@ -1658,6 +1658,21 @@ async fn update_proxies_config(
         .map_err(config_error)
 }
 
+async fn get_tui_agent_proxies(
+) -> Result<Json<app_config::TuiAgentProxyDocument>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::read_tui_agent_proxies(crate::config::Config::global())
+        .map(Json)
+        .map_err(config_error)
+}
+
+async fn update_tui_agent_proxies(
+    Json(update): Json<app_config::TuiAgentProxyUpdate>,
+) -> Result<Json<app_config::TuiAgentProxyDocument>, (StatusCode, Json<serde_json::Value>)> {
+    app_config::update_tui_agent_proxies(crate::config::Config::global(), update)
+        .map(Json)
+        .map_err(config_error)
+}
+
 pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
     let tui_data_dir = server.data_dir().to_path_buf();
     tokio::spawn(async move {
@@ -1698,6 +1713,10 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
         .route(
             "/api/v1/config/proxies",
             get(get_proxies_config).put(update_proxies_config),
+        )
+        .route(
+            "/api/v1/config/tui-sessions",
+            get(get_tui_agent_proxies).put(update_tui_agent_proxies),
         )
         .route("/api/v1/config/harness", put(update_harness_config))
         .route(

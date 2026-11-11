@@ -32,6 +32,7 @@ import type {
   ConfigScalar,
   HarnessSettingsUpdate,
   JudgeSettingsUpdate,
+  TuiAgentProxyDocument,
   MemoryLog,
   NetworkStatus,
   Project,
@@ -292,6 +293,12 @@ export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}
     getProxiesConfig: () => request<ProxiesConfigResponse>('/api/v1/config/proxies'),
     updateProxiesConfig: (body: ProxiesConfigPutBody) =>
       request<ProxiesConfigResponse>('/api/v1/config/proxies', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    getTuiAgentProxies: () => request<TuiAgentProxyDocument>('/api/v1/config/tui-sessions'),
+    updateTuiAgentProxies: (body: TuiAgentProxyDocument) =>
+      request<TuiAgentProxyDocument>('/api/v1/config/tui-sessions', {
         method: 'PUT',
         body: JSON.stringify(body),
       }),

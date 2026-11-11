@@ -142,6 +142,15 @@ export interface HarnessSettingsUpdate {
   circuitBreakerEnabled: boolean | null
 }
 
+export interface TuiAgentProxyRow {
+  agent: string
+  httpsProxy: string | null
+}
+
+export interface TuiAgentProxyDocument {
+  agents: TuiAgentProxyRow[]
+}
+
 export interface JudgePoint {
   id: string
   mode: string
