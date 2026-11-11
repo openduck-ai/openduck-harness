@@ -31,7 +31,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, delegation, reasoning, acp-effort, advanced"
+    description: "Which test phases to run: all, basic, extensions, delegation, reasoning, acp-effort, tui-model-catalog, advanced"
 
   - key: test_depth
     input_type: string
@@ -88,6 +88,17 @@ instructions: |
   notes file even while a subtask runs. An updated notes file should suppress the reminder.
   Exhausting the turn budget must still report an incomplete run, never forced success.
   Confirm that Continue does not replay injected harness notices as new user follow-ups.
+
+  ## TUI Agent Model Catalog Validation
+  Run `cargo test -p openduck-mcp --test model_catalog_test` and
+  `cargo test -p openduck-mcp --lib tui_session::catalog::tests`.
+  With the control plane running, request `GET /api/v1/tui-agents/agy/models`
+  twice and verify the cached timestamp is unchanged. Request
+  `POST /api/v1/tui-agents/agy/models/refresh` and verify discovery runs again.
+  Repeat for Grok. If either CLI is unavailable, verify a nonempty static fallback
+  with `isFallback: true`. Codex and Claude use static fallback in this catalog.
+  A failed or empty refresh must preserve a previously discovered catalog.
+  Record unavailable control-plane or CLI prerequisites as SKIPPED.
 
   ## TUI Agent Startup Confirmation Validation
   Start a TUI agent in a fresh workspace with auto_approve enabled and an initial
@@ -234,6 +245,15 @@ prompt: |
   - [ ] Initialize test workspace
   - [ ] Set up logging infrastructure
   - [ ] Begin Phase 1 testing
+
+  {% if test_phases == "all" or "tui-model-catalog" in test_phases %}
+  ## TUI Agent Model Catalog
+  Perform the TUI Agent Model Catalog Validation from the instructions. Run shell
+  checks from the repository root, not the report workspace. Report each check's
+  result and skip unavailable control-plane prerequisites. For the standalone
+  `tui-model-catalog` phase, limit work to catalog checks and the final report;
+  do not change settings or start or switch an interactive agent session.
+  {% endif %}
 
   {% if test_phases == "all" or "basic" in test_phases %}
   ## 📝 PHASE 1: Basic Tool Validation

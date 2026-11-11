@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 
 use super::backend::{MultiplexerBackend, TmuxBackend};
+use super::catalog::AgentModelCatalog;
 use super::profiles::{
-    profile_for_kind, suggested_approval_keys, AgentCliKind, AgentTuiProfile, TuiPaneState,
-    TuiSessionConfig, TuiSessionSummary, TuiTurnResult,
+    is_safe_model_token, profile_for_kind, suggested_approval_keys, AgentCliKind, AgentTuiProfile,
+    TuiPaneState, TuiSessionConfig, TuiSessionSummary, TuiTurnResult,
 };
 use super::screen::{strip_ansi_codes, QuiescenceDetector};
 
@@ -24,9 +25,106 @@ pub struct TuiSessionHandle {
     pub transcript_offset: Mutex<u64>,
     pub last_screen: Mutex<String>,
     pub last_state: Mutex<TuiPaneState>,
+    pub active_model: Mutex<Option<String>>,
+    pub interaction: Mutex<()>,
 }
 
 impl TuiSessionHandle {
+    pub async fn switch_model(&self, new_model: &str) -> Result<String> {
+        let _interaction = self.interaction.lock().await;
+        if !self.backend.is_alive(&self.config.session_id).await? {
+            let mut exited = self.exited_at_unix_secs.lock().await;
+            if exited.is_none() {
+                *exited = Some(chrono::Utc::now().timestamp() as u64);
+            }
+            return Err(anyhow!(
+                "Session '{}' is not running",
+                self.config.session_id
+            ));
+        }
+
+        let canonical = canonicalize_runtime_model(self.config.kind, new_model).await?;
+        let previous = self.active_model.lock().await.clone();
+
+        if !self.profile.supports_runtime_model_switch() {
+            return Err(anyhow!(
+                "Live process for agent '{}' does not support runtime model switching without restart",
+                self.config.kind
+            ));
+        }
+
+        let screen = self
+            .backend
+            .capture_screen(&self.config.session_id, false, Some(100))
+            .await?;
+        let state = self.profile.classify_screen(&screen);
+        *self.last_screen.lock().await = screen;
+        *self.last_state.lock().await = state.clone();
+        match state {
+            TuiPaneState::IdlePrompt => {}
+            TuiPaneState::WaitingApproval { prompt_snippet } => {
+                return Err(anyhow!(
+                    "Session '{}' is waiting for approval ({prompt_snippet}); cannot switch model. Previous model retained{}.",
+                    self.config.session_id,
+                    previous
+                        .as_deref()
+                        .map(|m| format!(" ({m})"))
+                        .unwrap_or_default()
+                ));
+            }
+            TuiPaneState::Working { status_line } => {
+                return Err(anyhow!(
+                    "Session '{}' is busy{}; cannot switch model. Previous model retained{}.",
+                    self.config.session_id,
+                    status_line
+                        .as_deref()
+                        .map(|s| format!(" ({s})"))
+                        .unwrap_or_default(),
+                    previous
+                        .as_deref()
+                        .map(|m| format!(" ({m})"))
+                        .unwrap_or_default()
+                ));
+            }
+            other => {
+                return Err(anyhow!(
+                    "Session '{}' is not idle ({}); cannot switch model. Previous model retained{}.",
+                    self.config.session_id,
+                    other.label(),
+                    previous
+                        .as_deref()
+                        .map(|m| format!(" ({m})"))
+                        .unwrap_or_default()
+                ));
+            }
+        }
+
+        match self
+            .profile
+            .switch_runtime_model(self.backend.as_ref(), &self.config.session_id, &canonical)
+            .await
+        {
+            Ok(switched) => {
+                *self.active_model.lock().await = Some(switched.clone());
+                self.last_activity_unix_secs
+                    .store(chrono::Utc::now().timestamp() as u64, Ordering::Relaxed);
+                Ok(switched)
+            }
+            Err(err) => Err(err.context(format!(
+                "Failed to switch session '{}' to '{canonical}'; previous model retained{}",
+                self.config.session_id,
+                previous
+                    .as_deref()
+                    .map(|m| format!(" ({m})"))
+                    .unwrap_or_default()
+            ))),
+        }
+    }
+
+    pub async fn active_model(&self) -> Option<String> {
+        self.active_model.lock().await.clone()
+    }
+
     pub async fn settle_startup(&self, timeout: Duration) -> Result<TuiPaneState> {
         let deadline = Instant::now() + timeout;
         let poll_interval = Duration::from_millis(200);
@@ -90,6 +188,7 @@ impl TuiSessionHandle {
         wait: bool,
         timeout: Duration,
     ) -> Result<TuiTurnResult> {
+        let _interaction = self.interaction.lock().await;
         if !self.backend.is_alive(&self.config.session_id).await? {
             let mut exited = self.exited_at_unix_secs.lock().await;
             if exited.is_none() {
@@ -105,9 +204,7 @@ impl TuiSessionHandle {
             .store(chrono::Utc::now().timestamp() as u64, Ordering::Relaxed);
         let start_time = Instant::now();
 
-        let state = self
-            .settle_startup(timeout.min(Duration::from_secs(10)))
-            .await?;
+        let state = self.settle_startup(timeout).await?;
         match state {
             TuiPaneState::IdlePrompt => {}
             TuiPaneState::WaitingApproval { prompt_snippet } => {
@@ -129,13 +226,8 @@ impl TuiSessionHandle {
             if prompt.trim().is_empty() {
                 return Err(anyhow!("agy prompt must not be empty"));
             }
-            self.wait_for_agy_composer(
-                true,
-                timeout
-                    .saturating_sub(start_time.elapsed())
-                    .min(Duration::from_secs(15)),
-            )
-            .await?;
+            self.wait_for_agy_composer(true, timeout.saturating_sub(start_time.elapsed()))
+                .await?;
         }
 
         // Inject prompt using bracketed paste mode to prevent early submission on newlines
@@ -279,16 +371,18 @@ impl TuiSessionHandle {
                 .capture_screen(&self.config.session_id, false, Some(100))
                 .await?;
             if self.profile.classify_screen(&screen) == TuiPaneState::IdlePrompt {
-                if let Some(text) = self.profile.composer_text(&screen) {
-                    if text.is_empty() == expect_empty {
-                        if previous.as_ref() != Some(&text) {
-                            stable_since = Instant::now();
-                            previous = Some(text.clone());
-                        } else if stable_since.elapsed() >= Duration::from_millis(500) {
-                            return Ok(text);
-                        }
-                    } else {
-                        previous = None;
+                let text = self.profile.composer_text(&screen);
+                let ready = match &text {
+                    Some(value) => value.is_empty() == expect_empty,
+                    None => expect_empty,
+                };
+                if ready {
+                    let marker = text.unwrap_or_default();
+                    if previous.as_ref() != Some(&marker) {
+                        stable_since = Instant::now();
+                        previous = Some(marker);
+                    } else if stable_since.elapsed() >= Duration::from_millis(500) {
+                        return Ok(previous.take().unwrap_or_default());
                     }
                 } else {
                     previous = None;
@@ -348,6 +442,7 @@ impl TuiSessionHandle {
     }
 
     pub async fn send_keys(&self, keys: &[String]) -> Result<()> {
+        let _interaction = self.interaction.lock().await;
         self.last_activity_unix_secs
             .store(chrono::Utc::now().timestamp() as u64, Ordering::Relaxed);
         self.backend.send_keys(&self.config.session_id, keys).await
@@ -455,11 +550,17 @@ impl TuiSessionManager {
         mut config: TuiSessionConfig,
     ) -> Result<Arc<TuiSessionHandle>> {
         let _ = self.reclaim_stale_sessions().await;
+        config.model = config
+            .model
+            .take()
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty());
 
         if config.effort.is_none()
             || config.https_proxy.is_none()
             || config.idle_timeout_mins.is_none()
             || config.exited_retention_mins.is_none()
+            || config.model.is_none()
         {
             let settings = discover_global_harness_settings(Some(&config.cwd));
             if config.effort.is_none() {
@@ -510,7 +611,21 @@ impl TuiSessionManager {
                             .and_then(|defaults| defaults.exited_retention_mins)
                     });
             }
+            if config.model.is_none() {
+                config.model = settings
+                    .tui_sessions
+                    .get(&config.kind.to_string())
+                    .and_then(|defaults| defaults.resolved_model().map(ToOwned::to_owned))
+                    .or_else(|| {
+                        settings
+                            .tui_sessions
+                            .get("default")
+                            .and_then(|defaults| defaults.resolved_model().map(ToOwned::to_owned))
+                    })
+                    .and_then(|model| is_safe_model_token(&model).then_some(model));
+            }
         }
+        config.model = resolve_startup_model(config.kind, config.model.take()).await?;
         let profile = profile_for_kind(config.kind);
         let cmd = profile
             .build_launch_command(&config)
@@ -577,6 +692,8 @@ impl TuiSessionManager {
             transcript_offset: Mutex::new(initial_offset),
             last_screen: Mutex::new(String::new()),
             last_state: Mutex::new(TuiPaneState::Initializing),
+            active_model: Mutex::new(config.model.clone()),
+            interaction: Mutex::new(()),
         });
 
         self.sessions
@@ -603,6 +720,16 @@ impl TuiSessionManager {
             .get(id)
             .cloned()
             .ok_or_else(|| anyhow!("TUI session '{}' not found", id))
+    }
+
+    pub async fn switch_model(&self, id: &str, new_model: &str) -> Result<String> {
+        let handle = self.get_session(id).await?;
+        handle.switch_model(new_model).await
+    }
+
+    pub async fn active_model(&self, id: &str) -> Result<Option<String>> {
+        let handle = self.get_session(id).await?;
+        Ok(handle.active_model().await)
     }
 
     pub async fn list_sessions(&self, include_screen_preview: bool) -> Vec<TuiSessionSummary> {
@@ -633,11 +760,15 @@ impl TuiSessionManager {
                 None
             };
 
+            let active = handle.active_model().await;
             summaries.push(TuiSessionSummary {
                 session_id: id.clone(),
                 kind: handle.config.kind,
                 pid: Some(handle.pid),
                 cwd: handle.config.cwd.to_string_lossy().to_string(),
+                model: handle.config.model.clone(),
+                active_model: active.clone(),
+                current_model: active,
                 state,
                 attach_command: handle.backend.attach_command(id),
                 created_at_unix_secs: handle.created_at_unix_secs,
@@ -702,4 +833,54 @@ impl TuiSessionManager {
         self.sessions.write().await.remove(id);
         Ok(())
     }
+}
+
+async fn resolve_startup_model(
+    kind: AgentCliKind,
+    requested: Option<String>,
+) -> Result<Option<String>> {
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    if !is_safe_model_token(&requested) {
+        return Err(anyhow!(
+            "Invalid model '{requested}': rejected unsafe characters"
+        ));
+    }
+    Ok(Some(canonicalize_known_model(kind, &requested).await))
+}
+
+async fn canonicalize_runtime_model(kind: AgentCliKind, requested: &str) -> Result<String> {
+    let trimmed = requested.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("Model must not be empty"));
+    }
+    if !is_safe_model_token(trimmed) {
+        return Err(anyhow!(
+            "Invalid model '{trimmed}': rejected unsafe characters"
+        ));
+    }
+    let canonical = canonicalize_known_model(kind, trimmed).await;
+    let entry = AgentModelCatalog::new().get_models(kind).await;
+    let listed = entry.models.iter().any(|model| model.id == canonical);
+    if listed || entry.supports_free_text {
+        Ok(canonical)
+    } else {
+        Err(anyhow!(
+            "Invalid model '{trimmed}' for agent '{kind}': not in catalog"
+        ))
+    }
+}
+
+async fn canonicalize_known_model(kind: AgentCliKind, requested: &str) -> String {
+    let entry = AgentModelCatalog::new().get_models(kind).await;
+    entry
+        .models
+        .iter()
+        .find(|model| {
+            model.id.eq_ignore_ascii_case(requested)
+                || model.display_name.eq_ignore_ascii_case(requested)
+        })
+        .map(|model| model.id.clone())
+        .unwrap_or_else(|| requested.to_string())
 }

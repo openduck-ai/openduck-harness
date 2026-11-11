@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex, OnceCell};
 use tracing::{error, warn};
@@ -9,7 +9,8 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use etcetera::base_strategy::BaseStrategy;
 use openduck_mcp::tui_session::{
-    AgentCliKind, TuiPaneState, TuiSessionConfig, TuiSessionManager, TuiTurnResult,
+    AgentCliKind, AgentModelCatalog, TuiPaneState, TuiSessionConfig, TuiSessionManager,
+    TuiTurnResult,
 };
 
 use super::models::{
@@ -18,10 +19,13 @@ use super::models::{
 use super::store::SqliteTuiStore;
 
 static GLOBAL_TUI_SERVICE: OnceCell<Arc<TuiManagementService>> = OnceCell::const_new();
+static SHARED_SESSION_MANAGER: OnceLock<Arc<TuiSessionManager>> = OnceLock::new();
+static SHARED_CATALOG: OnceLock<Arc<AgentModelCatalog>> = OnceLock::new();
 
 pub struct TuiManagementService {
     pub store: Arc<SqliteTuiStore>,
     pub session_manager: Arc<TuiSessionManager>,
+    pub catalog: Arc<AgentModelCatalog>,
     pub event_tx: broadcast::Sender<TuiManagementEvent>,
     sweeper_started: Mutex<bool>,
 }
@@ -68,20 +72,84 @@ fn inherited_tui_proxy(kind: &str, cwd: &Path) -> Option<String> {
         })
 }
 
+fn inherited_tui_model_for_kind(kind: &str, cwd: &Path) -> Option<String> {
+    let settings = openduck_harness::types::discover_global_harness_settings(Some(cwd));
+    settings
+        .tui_sessions
+        .get(kind)
+        .and_then(|defaults| defaults.resolved_model().map(ToOwned::to_owned))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn inherited_tui_model_default(cwd: &Path) -> Option<String> {
+    let settings = openduck_harness::types::discover_global_harness_settings(Some(cwd));
+    settings
+        .tui_sessions
+        .get("default")
+        .and_then(|defaults| defaults.resolved_model().map(ToOwned::to_owned))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub fn validate_model_name(model: &str) -> Result<String> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("Model name cannot be empty"));
+    }
+    if trimmed.len() > 128
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('-')
+        || trimmed.chars().any(|c| {
+            c.is_control()
+                || matches!(
+                    c,
+                    ';' | '|' | '&' | '`' | '$' | '\n' | '\r' | '\0' | '"' | '\'' | '\\'
+                )
+        })
+    {
+        return Err(anyhow!(
+            "Invalid model '{trimmed}': rejected unsafe characters"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
 impl TuiManagementService {
     pub fn new(store: Arc<SqliteTuiStore>, session_manager: Arc<TuiSessionManager>) -> Self {
+        Self::with_catalog(store, session_manager, Self::shared_catalog())
+    }
+
+    pub fn with_catalog(
+        store: Arc<SqliteTuiStore>,
+        session_manager: Arc<TuiSessionManager>,
+        catalog: Arc<AgentModelCatalog>,
+    ) -> Self {
         let (event_tx, _) = broadcast::channel(100);
         Self {
             store,
             session_manager,
+            catalog,
             event_tx,
             sweeper_started: Mutex::new(false),
         }
     }
 
+    pub fn shared_catalog() -> Arc<AgentModelCatalog> {
+        SHARED_CATALOG
+            .get_or_init(|| Arc::new(AgentModelCatalog::default_discovery()))
+            .clone()
+    }
+
+    pub fn shared_session_manager() -> Arc<TuiSessionManager> {
+        SHARED_SESSION_MANAGER
+            .get_or_init(|| Arc::new(TuiSessionManager::default()))
+            .clone()
+    }
+
     pub async fn init_global(db_path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let store = Arc::new(SqliteTuiStore::open(db_path).await?);
-        let session_manager = Arc::new(TuiSessionManager::default());
+        let session_manager = Self::shared_session_manager();
         let service = Arc::new(Self::new(store, session_manager));
         let _ = GLOBAL_TUI_SERVICE.set(service.clone());
         service.ensure_background_tasks().await;
@@ -99,8 +167,7 @@ impl TuiManagementService {
             let rt = tokio::runtime::Handle::current();
             let store =
                 rt.block_on(async { Arc::new(SqliteTuiStore::open(":memory:").await.unwrap()) });
-            let session_manager = Arc::new(TuiSessionManager::default());
-            Arc::new(Self::new(store, session_manager))
+            Arc::new(Self::new(store, Self::shared_session_manager()))
         })
     }
 
@@ -275,10 +342,46 @@ impl TuiManagementService {
             .await
             .ok()
             .flatten();
-        let resolved_model = req
+        let mut working_dir = req.cwd.clone();
+        if let Some(ref slug) = req.project_slug {
+            if let Ok(entry) = crate::sources::read_project(slug) {
+                if let Some(proj_dir) = entry
+                    .properties
+                    .get("workingDirs")
+                    .and_then(|dirs| dirs.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.as_str())
+                {
+                    let p = Path::new(proj_dir);
+                    if working_dir == Path::new(".") || !working_dir.is_absolute() {
+                        working_dir = p.to_path_buf();
+                    }
+                }
+            }
+        }
+
+        let explicit_model = req
             .model
-            .clone()
-            .or_else(|| profile.as_ref().and_then(|p| p.default_model.clone()));
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(validate_model_name)
+            .transpose()?;
+
+        let resolved_model = explicit_model
+            .or_else(|| inherited_tui_model_for_kind(&kind.to_string(), &working_dir))
+            .or_else(|| {
+                profile
+                    .as_ref()
+                    .and_then(|p| p.default_model.clone())
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty())
+            })
+            .or_else(|| inherited_tui_model_default(&working_dir));
+
+        if let Some(ref m) = resolved_model {
+            validate_model_name(m)?;
+        }
         let resolved_effort = req
             .effort
             .clone()
@@ -319,7 +422,7 @@ impl TuiManagementService {
                 None
             }
         } else {
-            inherited_tui_proxy(&kind.to_string(), &req.cwd)
+            inherited_tui_proxy(&kind.to_string(), &working_dir)
         };
 
         let op_id = format!("op_{}", uuid::Uuid::new_v4());
@@ -349,12 +452,14 @@ impl TuiManagementService {
             })
             .await;
 
-        let record = TuiSessionRecord {
+        let mut record = TuiSessionRecord {
             id: internal_id.clone(),
             session_name: session_name.clone(),
             agent_kind: kind.to_string(),
-            cwd: req.cwd.to_string_lossy().to_string(),
+            cwd: working_dir.to_string_lossy().to_string(),
             model: resolved_model.clone(),
+            active_model: resolved_model.clone(),
+            current_model: resolved_model.clone(),
             effort: resolved_effort.clone(),
             auto_approve: req.auto_approve.unwrap_or(true),
             proxy_mode: resolved_proxy_mode.clone(),
@@ -421,7 +526,7 @@ impl TuiManagementService {
         let config = TuiSessionConfig {
             session_id: session_name.clone(),
             kind,
-            cwd: req.cwd,
+            cwd: working_dir,
             model: resolved_model,
             effort: resolved_effort,
             auto_approve: req.auto_approve.unwrap_or(true),
@@ -458,6 +563,15 @@ impl TuiManagementService {
             .store
             .complete_operation(&op_id, "succeeded", None, dur, &Utc::now().to_rfc3339())
             .await;
+
+        let active = handle.active_model().await;
+        let launch_model = handle.config.model.clone();
+        record.active_model = active.clone();
+        record.current_model = active;
+        if record.model.is_none() {
+            record.model = launch_model;
+        }
+        let _ = self.store.update_session(&record).await;
 
         let mut initial_turn = None;
         if let Some(prompt) = req.initial_prompt {
@@ -950,6 +1064,109 @@ impl TuiManagementService {
             serde_json::to_value(&sess).unwrap_or_default(),
         );
         Ok(sess)
+    }
+
+    pub async fn switch_session_model(
+        &self,
+        session_id_or_name: &str,
+        new_model: &str,
+    ) -> Result<(TuiSessionRecord, String)> {
+        let trimmed_model = validate_model_name(new_model)?;
+
+        let mut sess_rec = self
+            .get_session_record(session_id_or_name)
+            .await?
+            .ok_or_else(|| anyhow!("Session '{}' not found", session_id_or_name))?;
+
+        if sess_rec.lifecycle_state == "stopping"
+            || sess_rec.lifecycle_state == "reclaimed"
+            || sess_rec.lifecycle_state == "stopped"
+        {
+            return Err(anyhow!(
+                "Session '{}' is not running",
+                sess_rec.session_name
+            ));
+        }
+
+        let handle = self
+            .session_manager
+            .get_session(&sess_rec.session_name)
+            .await
+            .map_err(|_| anyhow!("Live session '{}' not found", sess_rec.session_name))?;
+
+        let op_id = format!("op_{}", uuid::Uuid::new_v4());
+        let start_time = Instant::now();
+        let now_str = Utc::now().to_rfc3339();
+
+        let _ = self
+            .store
+            .insert_operation(&SessionOperationRecord {
+                id: op_id.clone(),
+                session_id: sess_rec.id.clone(),
+                session_name: sess_rec.session_name.clone(),
+                operation_type: "switch_model".to_string(),
+                operator: "manual".to_string(),
+                project_id: sess_rec.created_by_project_id.clone(),
+                task_id: sess_rec.created_by_task_id.clone(),
+                run_id: sess_rec.owner_run_id.clone(),
+                subtask_id: sess_rec.created_by_subtask_id.clone(),
+                summary: Some(format!("Request model switch to '{}'", trimmed_model)),
+                content_ref: None,
+                status: "running".to_string(),
+                error: None,
+                duration_ms: None,
+                started_at: now_str.clone(),
+                finished_at: None,
+            })
+            .await;
+
+        match handle.switch_model(&trimmed_model).await {
+            Ok(switched) => {
+                let dur = start_time.elapsed().as_millis() as u64;
+                let _ = self
+                    .store
+                    .complete_operation(&op_id, "succeeded", None, dur, &Utc::now().to_rfc3339())
+                    .await;
+
+                // Preserve sess_rec.model (the original configured model)
+                sess_rec.active_model = Some(switched.clone());
+                sess_rec.current_model = Some(switched.clone());
+                sess_rec.last_operation_at = Some(Utc::now().to_rfc3339());
+                self.store
+                    .update_session(&sess_rec)
+                    .await
+                    .map_err(|e| anyhow!("Failed to persist switched session model: {e}"))?;
+
+                self.emit_event(
+                    "session_model_switched",
+                    Some(sess_rec.id.clone()),
+                    Some(sess_rec.session_name.clone()),
+                    serde_json::json!({
+                        "model": sess_rec.model,
+                        "activeModel": switched,
+                        "currentModel": switched,
+                    }),
+                );
+
+                Ok((sess_rec, switched))
+            }
+            Err(e) => {
+                let dur = start_time.elapsed().as_millis() as u64;
+                let err_msg = e.to_string();
+                let _ = self
+                    .store
+                    .complete_operation(
+                        &op_id,
+                        "failed",
+                        Some(&err_msg),
+                        dur,
+                        &Utc::now().to_rfc3339(),
+                    )
+                    .await;
+
+                Err(e)
+            }
+        }
     }
 
     pub async fn on_task_run_ended(

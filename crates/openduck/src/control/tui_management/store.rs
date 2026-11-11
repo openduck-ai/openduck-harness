@@ -242,12 +242,15 @@ impl SqliteTuiStore {
     fn row_to_session(row: SqliteRow) -> TuiSessionRecord {
         let auto_approve_int: i64 = row.get("auto_approve");
         let generation_int: i64 = row.get("generation");
+        let model: Option<String> = row.get("model");
         TuiSessionRecord {
             id: row.get("id"),
             session_name: row.get("session_name"),
             agent_kind: row.get("agent_kind"),
             cwd: row.get("cwd"),
-            model: row.get("model"),
+            model: model.clone(),
+            active_model: model.clone(),
+            current_model: model,
             effort: row.get("effort"),
             auto_approve: auto_approve_int != 0,
             proxy_mode: row.get("proxy_mode"),

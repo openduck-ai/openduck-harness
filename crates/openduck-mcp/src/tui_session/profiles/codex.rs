@@ -7,14 +7,16 @@ use std::path::{Path, PathBuf};
 
 use super::AgentTuiProfile;
 use super::{
-    detect_approval_modal, detect_composer_idle_prompt, AgentCliKind, TuiPaneState,
-    TuiSessionConfig,
+    detect_approval_modal, detect_common_working_status, detect_composer_idle_prompt, AgentCliKind,
+    TuiPaneState, TuiSessionConfig,
 };
 use crate::tui_session::screen::{contains_braille_spinner, ScreenSnapshot};
+use async_trait::async_trait;
 
 #[derive(Debug, Default, Clone)]
 pub struct CodexTuiProfile;
 
+#[async_trait]
 impl AgentTuiProfile for CodexTuiProfile {
     fn kind(&self) -> AgentCliKind {
         AgentCliKind::Codex
@@ -62,24 +64,13 @@ impl AgentTuiProfile for CodexTuiProfile {
             };
         }
 
-        let text = screen_text.trim();
-        let has_spinner = contains_braille_spinner(text)
-            || text.contains("Thinking...")
-            || text.contains("Running...");
-
-        if has_spinner {
-            let status_line = text
-                .lines()
-                .find(|l| l.contains("Thinking") || l.contains("Running"))
-                .map(|l| l.trim().to_string());
-            return TuiPaneState::Working { status_line };
+        if let Some(status_line) = codex_activity_line(&bottom) {
+            return TuiPaneState::Working {
+                status_line: Some(status_line),
+            };
         }
 
-        if detect_composer_idle_prompt(&bottom)
-            || text.contains("\n>")
-            || text.starts_with('>')
-            || text.ends_with('>')
-        {
+        if detect_composer_idle_prompt(&bottom) {
             return TuiPaneState::IdlePrompt;
         }
 
@@ -160,6 +151,23 @@ impl AgentTuiProfile for CodexTuiProfile {
             Some(responses.join("\n\n"))
         }
     }
+}
+
+fn codex_activity_line(bottom: &[&str]) -> Option<String> {
+    if let Some(status) = detect_common_working_status(bottom) {
+        return Some(status);
+    }
+    bottom.iter().rev().find_map(|line| {
+        let trimmed = line.trim();
+        if contains_braille_spinner(trimmed)
+            || trimmed.contains("Thinking...")
+            || trimmed.contains("Running...")
+        {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn user_home() -> Option<PathBuf> {

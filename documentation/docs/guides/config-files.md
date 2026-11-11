@@ -57,7 +57,7 @@ Existing Goose config directories are migrated automatically. Override the confi
 - **Harness Settings**: Circuit breaker thresholds, stagnation limits, review intervals, and turn bounds.
 - **Judge Configuration**: Evaluator service endpoints, timeouts, and scoring drift/completion detection.
 
-### TUI Agent Sessions (Effort, Proxies, Idle Timeout & Lifecycle Reclamation)
+### TUI Agent Sessions (Model, Effort, Proxies, Idle Timeout & Lifecycle Reclamation)
 
 Configure persistent TUI agents in the `harness.tui_sessions` section of your
 project's `.openduck/config.yaml` or `~/.config/openduck/config.yaml`:
@@ -66,14 +66,20 @@ project's `.openduck/config.yaml` or `~/.config/openduck/config.yaml`:
 harness:
   tui_sessions:
     default:
+      model: gemini-2.5-pro
       effort: medium
       https_proxy: http://127.0.0.1:8080
       idle_timeout_mins: 45
       exited_retention_mins: 10
     grok:
+      model: grok-4
+      fallback_models:
+        - grok-3
+        - grok-2
       https_proxy: http://127.0.0.1:2087
       idle_timeout_mins: 30
     agy:
+      model: gemini-2.5-pro
       effort: medium
 ```
 
@@ -81,6 +87,8 @@ Agent keys are `agy`, `grok`, `codex`, `claude`, and `custom`. The optional
 `default` entry supplies fallback settings for agents without their own entry.
 
 Supported properties:
+- **`model`**: Default model slug for the agent CLI (aliases: `default_model`, `defaultModel`, `default_tui_model`, `defaultTuiModel`). When omitted or blank, external CLI default behavior is preserved.
+- **`fallback_models`**: Configurable list of static fallback model slugs (aliases: `fallbackModels`, `static_fallback_models`, `staticFallbackModels`, `fallback_model_list`, `fallbackModelList`, `fallback_candidates`, `fallbackCandidates`, `static_fallback_candidates`, `staticFallbackCandidates`). Used when live CLI discovery is unavailable or unconfigured; unset defaults preserve built-in fallback behavior. Both YAML string arrays and comma-delimited strings are accepted; invalid or malformed entries are ignored gracefully without failing configuration parsing.
 - **`effort`**: Reasoning effort passed to the agent CLI, such as `low`, `medium`, or `high`. Supported values depend on the CLI. If omitted, the CLI uses its own default.
 - **`https_proxy`**: Outbound HTTPS proxy URL passed as both `HTTPS_PROXY` and `https_proxy` to the CLI environment.
 - **`idle_timeout_mins`**: Inactivity timeout in minutes. When an active session remains in `IdlePrompt` without prompts or keystrokes for this duration, it is automatically terminated and reclaimed to free memory. If omitted, idle sessions remain open indefinitely until stopped manually. Recommended value: `30` to `60` minutes.

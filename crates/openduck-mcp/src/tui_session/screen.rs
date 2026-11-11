@@ -12,6 +12,10 @@ const BRAILLE_SPINNERS: &[char] = &[
     '◓', '◑', '◒',
 ];
 
+fn is_braille_pattern(c: char) -> bool {
+    matches!(c, '\u{2800}'..='\u{28FF}')
+}
+
 pub fn strip_ansi_codes(input: &str) -> String {
     let normalized = input.replace("\r\n", "\n").replace('\r', "");
     ANSI_REGEX.replace_all(&normalized, "").into_owned()
@@ -21,6 +25,22 @@ pub use strip_ansi_codes as strip_ansi;
 
 pub fn contains_braille_spinner(text: &str) -> bool {
     text.chars().any(|c| BRAILLE_SPINNERS.contains(&c))
+}
+
+/// True when a line uses a spinner glyph as an activity indicator.
+///
+/// Grok's startup logo is dense braille art and reuses glyphs such as `⣾`.
+/// Those lines must not be treated as a working spinner.
+pub fn is_spinner_activity_line(line: &str) -> bool {
+    let trimmed = line.trim().trim_start_matches(['│', '|', '┃', '▌', ' ']);
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !BRAILLE_SPINNERS.contains(&first) {
+        return false;
+    }
+    !matches!(chars.next(), Some(c) if is_braille_pattern(c))
 }
 
 pub fn is_horizontal_rule_line(line: &str) -> bool {
@@ -212,6 +232,17 @@ mod tests {
         assert!(contains_braille_spinner("⣷  Running command..."));
         assert!(contains_braille_spinner("⠋ Thinking"));
         assert!(!contains_braille_spinner("> Ready for input"));
+        assert!(contains_braille_spinner("│  ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀"));
+
+        assert!(is_spinner_activity_line("⣷  Running command..."));
+        assert!(is_spinner_activity_line("⠋ Thinking"));
+        assert!(is_spinner_activity_line("│ ⣾ Running tool"));
+        assert!(!is_spinner_activity_line("> Ready for input"));
+        assert!(!is_spinner_activity_line(
+            "│  ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄   Grok Build  1.0.77"
+        ));
+        assert!(!is_spinner_activity_line("│  ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀"));
+        assert!(!is_spinner_activity_line("⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀"));
 
         assert!(is_horizontal_rule_line(
             "────────────────────────────────────────"

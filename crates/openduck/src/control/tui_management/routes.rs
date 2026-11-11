@@ -15,6 +15,7 @@ use tokio_stream::StreamExt;
 
 use super::models::{AccountRecord, AgentProfileRecord, QuotaSnapshotRecord};
 use super::service::TuiManagementService;
+use openduck_mcp::tui_session::{AgentCliKind, AgentModelCatalogEntry};
 
 fn bad(err: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
     (
@@ -172,6 +173,75 @@ pub async fn patch_tui_agent(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAgentModelsQuery {
+    pub refresh: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchSessionModelBody {
+    pub model: String,
+}
+
+async fn resolve_agent_kind(
+    service: &TuiManagementService,
+    agent_or_id: &str,
+) -> Result<AgentCliKind, (StatusCode, Json<serde_json::Value>)> {
+    match agent_or_id.parse::<AgentCliKind>() {
+        Ok(k) => Ok(k),
+        Err(_) => {
+            if let Ok(Some(profile)) = service.store.get_profile_by_agent(agent_or_id).await {
+                profile.agent_kind.parse::<AgentCliKind>().map_err(bad)
+            } else {
+                Err(bad(format!(
+                    "Unsupported agent CLI kind or profile '{agent_or_id}'"
+                )))
+            }
+        }
+    }
+}
+
+fn catalog_to_json(entry: &AgentModelCatalogEntry) -> serde_json::Value {
+    serde_json::json!({
+        "agent": entry.agent.to_string(),
+        "models": entry.models,
+        "defaultModel": entry.default_model,
+        "default_model": entry.default_model,
+        "supportsFreeText": entry.supports_free_text,
+        "supports_free_text": entry.supports_free_text,
+        "isFallback": entry.is_fallback,
+        "is_fallback": entry.is_fallback,
+        "cachedAtUnixSecs": entry.cached_at_unix_secs,
+        "cached_at_unix_secs": entry.cached_at_unix_secs,
+        "catalog": entry,
+    })
+}
+
+pub async fn get_tui_agent_models(
+    AxumPath(agent): AxumPath<String>,
+    Query(query): Query<GetAgentModelsQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let service = TuiManagementService::global().await;
+    let kind = resolve_agent_kind(&service, &agent).await?;
+    let entry = if query.refresh.unwrap_or(false) {
+        service.catalog.refresh(kind).await
+    } else {
+        service.catalog.get_models(kind).await
+    };
+    Ok(Json(catalog_to_json(&entry)))
+}
+
+pub async fn refresh_tui_agent_models(
+    AxumPath(agent): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let service = TuiManagementService::global().await;
+    let kind = resolve_agent_kind(&service, &agent).await?;
+    let entry = service.catalog.refresh(kind).await;
+    Ok(Json(catalog_to_json(&entry)))
+}
+
 pub async fn list_tui_sessions(
     Query(query): Query<ListSessionsQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
@@ -193,20 +263,39 @@ pub async fn list_tui_sessions(
             .map_err(bad)?
     };
 
-    Ok(Json(serde_json::json!({ "sessions": sessions })))
+    let mut enriched = Vec::with_capacity(sessions.len());
+    for mut s in sessions {
+        if let Ok(handle) = service.session_manager.get_session(&s.session_name).await {
+            if let Some(active) = handle.active_model().await {
+                s.active_model = Some(active.clone());
+                s.current_model = Some(active);
+            }
+        }
+        if s.active_model.is_none() {
+            s.active_model = s.model.clone();
+            s.current_model = s.model.clone();
+        }
+        enriched.push(s);
+    }
+
+    Ok(Json(serde_json::json!({ "sessions": enriched })))
 }
 
 pub async fn get_tui_session(
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let service = TuiManagementService::global().await;
-    let rec = service
+    let mut rec = service
         .get_session_record(&id)
         .await
         .map_err(bad)?
         .ok_or_else(|| not_found(format!("Session '{id}' not found")))?;
 
     let screen = if let Ok(handle) = service.session_manager.get_session(&rec.session_name).await {
+        if let Some(active) = handle.active_model().await {
+            rec.active_model = Some(active.clone());
+            rec.current_model = Some(active);
+        }
         handle
             .backend
             .capture_screen(&rec.session_name, false, Some(100))
@@ -215,6 +304,11 @@ pub async fn get_tui_session(
     } else {
         None
     };
+
+    if rec.active_model.is_none() {
+        rec.active_model = rec.model.clone();
+        rec.current_model = rec.model.clone();
+    }
 
     let bindings = service
         .store
@@ -227,6 +321,51 @@ pub async fn get_tui_session(
         "screen": screen,
         "bindings": bindings,
     })))
+}
+
+pub async fn switch_tui_session_model(
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<SwitchSessionModelBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let service = TuiManagementService::global().await;
+    let target_model = body.model.trim();
+    if target_model.is_empty() {
+        return Err(bad("Model name cannot be empty"));
+    }
+
+    let rec_opt = service.get_session_record(&id).await.map_err(bad)?;
+    let rec = rec_opt.ok_or_else(|| not_found(format!("Session '{id}' not found")))?;
+    let current_active =
+        if let Ok(handle) = service.session_manager.get_session(&rec.session_name).await {
+            handle.active_model().await
+        } else {
+            rec.active_model.clone().or_else(|| rec.model.clone())
+        };
+
+    match service.switch_session_model(&id, target_model).await {
+        Ok((updated_rec, active_model)) => {
+            let mut record_val = serde_json::to_value(&updated_rec).unwrap_or_default();
+            if let Some(obj) = record_val.as_object_mut() {
+                obj.insert("activeModel".to_string(), serde_json::json!(active_model));
+                obj.insert("currentModel".to_string(), serde_json::json!(active_model));
+            }
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "activeModel": active_model,
+                "session": record_val,
+                "message": format!("Switched model to {active_model}"),
+            })))
+        }
+        Err(e) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": e.to_string(),
+                "message": e.to_string(),
+                "activeModel": current_active,
+            })),
+        )),
+    }
 }
 
 pub async fn get_tui_session_operations(
@@ -499,11 +638,20 @@ where
             "/api/v1/tui-agents/{id}",
             get(get_tui_agent).patch(patch_tui_agent),
         )
+        .route("/api/v1/tui-agents/{id}/models", get(get_tui_agent_models))
+        .route(
+            "/api/v1/tui-agents/{id}/models/refresh",
+            post(refresh_tui_agent_models),
+        )
         .route(
             "/api/v1/tui-sessions",
             get(list_sessions_route).post(start_managed_session_route),
         )
         .route("/api/v1/tui-sessions/{id}", get(get_tui_session))
+        .route(
+            "/api/v1/tui-sessions/{id}/model",
+            post(switch_tui_session_model),
+        )
         .route(
             "/api/v1/tui-sessions/{id}/operations",
             get(get_tui_session_operations),

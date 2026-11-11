@@ -117,17 +117,13 @@ pub async fn execute_project_command(
     })
 }
 
-use once_cell::sync::Lazy;
 use openduck_mcp::tui_session::{TuiSessionManager, TuiSessionSummary, TuiTurnResult};
 use std::sync::Arc;
 
 use super::tui_management::{StartManagedSessionRequest, TuiManagementService};
 
-static TUI_SESSION_MANAGER: Lazy<Arc<TuiSessionManager>> =
-    Lazy::new(|| Arc::new(TuiSessionManager::default()));
-
 pub fn get_tui_session_manager() -> Arc<TuiSessionManager> {
-    TUI_SESSION_MANAGER.clone()
+    TuiManagementService::shared_session_manager()
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +144,8 @@ pub struct StartTuiSessionRequest {
     pub account_id: Option<String>,
     pub idle_timeout_mins: Option<u64>,
     pub exited_retention_mins: Option<u64>,
+    #[serde(default)]
+    pub project_slug: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -192,7 +190,7 @@ pub async fn start_project_tui_session(
             account_id: req.account_id,
             idle_timeout_mins: req.idle_timeout_mins,
             exited_retention_mins: req.exited_retention_mins,
-            project_slug: None,
+            project_slug: req.project_slug,
             task_id: None,
             run_id: None,
             subtask_id: None,
@@ -210,6 +208,7 @@ pub async fn start_project_tui_session(
         .await
         .unwrap_or_default();
 
+    let active = handle.active_model().await;
     Ok(serde_json::json!({
         "id": rec.id,
         "sessionId": rec.session_name,
@@ -221,6 +220,9 @@ pub async fn start_project_tui_session(
         "state": rec.tui_pane_state,
         "ownershipMode": rec.ownership_mode,
         "lifecycleState": rec.lifecycle_state,
+        "model": rec.model,
+        "activeModel": active.clone(),
+        "currentModel": active,
     }))
 }
 
@@ -273,6 +275,14 @@ pub async fn read_project_tui_session(
 pub async fn stop_project_tui_session(session_id: &str) -> Result<()> {
     let service = TuiManagementService::global().await;
     service.stop_session(session_id, Some("user_stop")).await
+}
+
+pub async fn switch_project_tui_session_model(
+    session_id: &str,
+    new_model: &str,
+) -> Result<(super::tui_management::TuiSessionRecord, String)> {
+    let service = TuiManagementService::global().await;
+    service.switch_session_model(session_id, new_model).await
 }
 
 #[cfg(test)]

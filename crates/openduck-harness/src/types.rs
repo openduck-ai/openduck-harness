@@ -270,6 +270,146 @@ pub struct TuiSessionDefaults {
         alias = "exitedRetentionMins"
     )]
     pub exited_retention_mins: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "default_model",
+        alias = "defaultModel",
+        alias = "default_tui_model",
+        alias = "defaultTuiModel",
+        alias = "tui_model",
+        alias = "tuiModel",
+        deserialize_with = "deserialize_tui_model"
+    )]
+    pub model: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        alias = "fallbackModels",
+        alias = "static_fallback_models",
+        alias = "staticFallbackModels",
+        alias = "fallback_model_list",
+        alias = "fallbackModelList",
+        alias = "fallback_candidates",
+        alias = "fallbackCandidates",
+        alias = "static_fallback_candidates",
+        alias = "staticFallbackCandidates",
+        alias = "fallback_candidate_list",
+        alias = "fallbackCandidateList",
+        alias = "static_fallback_model_list",
+        alias = "staticFallbackModelList",
+        deserialize_with = "deserialize_tui_fallback_models"
+    )]
+    pub fallback_models: Vec<String>,
+}
+
+impl TuiSessionDefaults {
+    pub fn sanitize(&mut self) {
+        if let Some(m) = &self.model {
+            let trimmed = m.trim();
+            if trimmed.is_empty() {
+                self.model = None;
+            } else if trimmed != m {
+                self.model = Some(trimmed.to_string());
+            }
+        }
+        self.fallback_models = self
+            .fallback_models
+            .drain(..)
+            .filter_map(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .collect();
+    }
+
+    pub fn resolved_model(&self) -> Option<&str> {
+        self.model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    pub fn has_model(&self) -> bool {
+        self.resolved_model().is_some()
+    }
+
+    pub fn resolved_fallback_models(&self) -> &[String] {
+        &self.fallback_models
+    }
+
+    pub fn has_fallback_models(&self) -> bool {
+        !self.fallback_models.is_empty()
+    }
+}
+
+fn deserialize_tui_model<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ModelInput {
+        Str(String),
+        Other(#[allow(dead_code)] serde_yaml::Value),
+    }
+
+    let opt: Option<ModelInput> = Option::deserialize(deserializer)?;
+    match opt {
+        Some(ModelInput::Str(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+fn deserialize_tui_fallback_models<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum FallbackInput {
+        List(Vec<serde_yaml::Value>),
+        Single(String),
+        Other(#[allow(dead_code)] serde_yaml::Value),
+    }
+
+    let opt: Option<FallbackInput> = Option::deserialize(deserializer)?;
+    let mut models = Vec::new();
+    match opt {
+        None | Some(FallbackInput::Other(_)) => {}
+        Some(FallbackInput::Single(s)) => {
+            for part in s.split(',') {
+                let trimmed = part.trim();
+                if !trimmed.is_empty() {
+                    models.push(trimmed.to_string());
+                }
+            }
+        }
+        Some(FallbackInput::List(list)) => {
+            for val in list {
+                if let serde_yaml::Value::String(s) = val {
+                    for part in s.split(',') {
+                        let trimmed = part.trim();
+                        if !trimmed.is_empty() {
+                            models.push(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(models)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -401,7 +541,10 @@ pub fn parse_harness_global_settings_str(content: &str) -> HarnessGlobalSettings
                 parsed.tui_sessions = parsed
                     .tui_sessions
                     .into_iter()
-                    .map(|(k, v)| (k.to_lowercase(), v))
+                    .map(|(k, mut v)| {
+                        v.sanitize();
+                        (k.to_lowercase(), v)
+                    })
                     .collect();
                 settings = parsed;
             }
@@ -441,7 +584,8 @@ pub fn parse_harness_global_settings_str(content: &str) -> HarnessGlobalSettings
             for (k, v) in top_parsed.advisors {
                 settings.advisors.entry(k.to_lowercase()).or_insert(v);
             }
-            for (k, v) in top_parsed.tui_sessions {
+            for (k, mut v) in top_parsed.tui_sessions {
+                v.sanitize();
                 settings.tui_sessions.entry(k.to_lowercase()).or_insert(v);
             }
         }
@@ -494,7 +638,8 @@ pub fn discover_global_harness_settings(
             for (k, v) in loaded.advisors {
                 result.advisors.entry(k.to_lowercase()).or_insert(v);
             }
-            for (k, v) in loaded.tui_sessions {
+            for (k, mut v) in loaded.tui_sessions {
+                v.sanitize();
                 result.tui_sessions.entry(k.to_lowercase()).or_insert(v);
             }
         }

@@ -12,12 +12,21 @@ async fn mock_agy_session(
     backend: Arc<MockMultiplexerBackend>,
     cwd: &std::path::Path,
 ) -> openduck_mcp::tui_session::session::TuiSessionHandle {
+    mock_session(backend, cwd, AgentCliKind::Agy, "agy_submit").await
+}
+
+async fn mock_session(
+    backend: Arc<MockMultiplexerBackend>,
+    cwd: &std::path::Path,
+    kind: AgentCliKind,
+    session_id: &str,
+) -> openduck_mcp::tui_session::session::TuiSessionHandle {
     use std::sync::atomic::AtomicU64;
     use tokio::sync::Mutex;
 
     let config = TuiSessionConfig {
-        session_id: "agy_submit".to_string(),
-        kind: AgentCliKind::Agy,
+        session_id: session_id.to_string(),
+        kind,
         cwd: cwd.to_path_buf(),
         ..Default::default()
     };
@@ -28,7 +37,7 @@ async fn mock_agy_session(
     openduck_mcp::tui_session::session::TuiSessionHandle {
         config,
         backend,
-        profile: profile_for_kind(AgentCliKind::Agy),
+        profile: profile_for_kind(kind),
         pid,
         created_at_unix_secs: 0,
         last_activity_unix_secs: AtomicU64::new(0),
@@ -36,6 +45,8 @@ async fn mock_agy_session(
         transcript_offset: Mutex::new(0),
         last_screen: Mutex::new(String::new()),
         last_state: Mutex::new(TuiPaneState::Initializing),
+        active_model: Mutex::new(None),
+        interaction: Mutex::new(()),
     }
 }
 
@@ -119,6 +130,56 @@ async fn test_agy_waits_for_ready_composer_before_pasting() {
     let pane = backend.get_pane("agy_submit").unwrap();
     assert!(pane.pasted.is_empty());
     assert!(pane.keys_sent.is_empty());
+}
+
+#[tokio::test]
+async fn test_send_prompt_waits_for_working_session_to_become_idle() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_session(backend.clone(), dir.path(), AgentCliKind::Grok, "grok_wait").await;
+    backend.set_screen("grok_wait", "Thinking...\nRunning tool");
+
+    let backend_for_idle = backend.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        backend_for_idle.set_screen("grok_wait", ">\nAsk Grok");
+    });
+
+    handle
+        .send_prompt("continue", false, Duration::from_secs(3))
+        .await
+        .unwrap();
+    let pane = backend.get_pane("grok_wait").unwrap();
+    assert_eq!(pane.pasted.len(), 1);
+    assert_eq!(pane.pasted[0].0, "continue");
+}
+
+#[tokio::test]
+async fn test_agy_idle_without_composer_bounds_still_accepts_prompt() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_agy_session(backend.clone(), dir.path()).await;
+    let truncated_idle = "\
+      ▄▀▀▄        Antigravity CLI 1.5.5
+     ▀▀▀▀▀▀▀▀      Gemini 3.8 Flash (High)
+────────────────────────────────────────────────────────────
+>
+";
+    let profile = profile_for_kind(AgentCliKind::Agy);
+    assert_eq!(
+        profile.classify_screen(truncated_idle),
+        TuiPaneState::IdlePrompt
+    );
+    assert_eq!(profile.composer_text(truncated_idle), None);
+    backend.set_screen("agy_submit", truncated_idle);
+
+    handle
+        .send_prompt("implement catalog", false, Duration::from_secs(3))
+        .await
+        .unwrap();
+    let pane = backend.get_pane("agy_submit").unwrap();
+    assert_eq!(pane.pasted.len(), 1);
+    assert_eq!(pane.pasted[0].0, "implement catalog");
 }
 
 #[tokio::test]
@@ -309,6 +370,16 @@ async fn test_https_proxy_is_forwarded_and_scoped_to_session() {
                 "https_proxy".to_string(),
                 "http://127.0.0.1:2087".to_string()
             ),
+            (
+                "HTTP_PROXY".to_string(),
+                "http://127.0.0.1:2087".to_string()
+            ),
+            (
+                "http_proxy".to_string(),
+                "http://127.0.0.1:2087".to_string()
+            ),
+            ("ALL_PROXY".to_string(), "http://127.0.0.1:2087".to_string()),
+            ("all_proxy".to_string(), "http://127.0.0.1:2087".to_string()),
         ]
     );
 
@@ -367,6 +438,39 @@ fn test_profile_classification_grok() {
 
     let idle = "Grok Build ready\n>";
     assert_eq!(profile.classify_screen(idle), TuiPaneState::IdlePrompt);
+
+    let splash = "\
+                    ╭──────────────────────────────────────────────╮
+                    │  ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄   Grok Build  1.0.77
+                    │  ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀
+                    │  ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀   Grok 4.7 is here!
+                    │  ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀   Select 'Grok 4.7' under /model.
+                    │  ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀
+                    │  ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀   Resume session          ctrl+r
+                    │  ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀   New worktree            ctrl+w
+                    │                   Changelog
+                    │                   Quit                    ctrl+q
+                    ╰──────────────────────────────────────────────╯
+  Help improve Grok                                            [Opt out] [Opt in]
+  ╭────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                          │
+  ╰──────────────────────────────── Weekly limit left: 9% · Grok 4.6 (medium) ─╯
+";
+    assert_eq!(
+        profile.classify_screen(splash),
+        TuiPaneState::IdlePrompt,
+        "startup logo braille must not be classified as Working"
+    );
+
+    let splash_without_composer = "\
+Grok Build  1.0.77
+⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀
+Grok 4.7 is here!
+";
+    assert_eq!(
+        profile.classify_screen(splash_without_composer),
+        TuiPaneState::Initializing
+    );
 }
 
 #[test]
@@ -387,6 +491,27 @@ fn test_profile_classification_codex() {
 
     let idle = "OpenAI Codex ready\n>";
     assert_eq!(profile.classify_screen(idle), TuiPaneState::IdlePrompt);
+
+    let finished = "\
+>_ OpenAI Codex (v0.167.0)
+earlier command output that includes 2>/dev/null
+Worked for 35s • 3:39 AM
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol default · /mnt/e/openduck-harness · ← for agents";
+    assert_eq!(profile.classify_screen(finished), TuiPaneState::IdlePrompt);
+
+    let still_running = "\
+>_ OpenAI Codex (v0.167.0)
+
+• Ran rg --files
+
+esc to interrupt";
+    assert!(matches!(
+        profile.classify_screen(still_running),
+        TuiPaneState::Working { .. }
+    ));
 }
 
 #[test]
@@ -843,4 +968,218 @@ async fn test_numbered_startup_confirmation_is_completed_before_task_submission(
     let pane = backend.get_pane("numbered_trust").unwrap();
     assert_eq!(pane.keys_sent, vec!["Up", "Enter", "Enter", "Enter"]);
     assert_eq!(pane.pasted, vec![("fix bug".to_string(), true)]);
+}
+
+#[tokio::test]
+async fn test_startup_resolves_model_from_settings_and_request() {
+    let dir = tempdir().unwrap();
+    let config_dir = dir.path().join(".openduck");
+    std::fs::create_dir(&config_dir).unwrap();
+    let config_path = config_dir.join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "harness:\n  tui_sessions:\n    default:\n      model: default-model\n    custom:\n      model: custom-model\n",
+    )
+    .unwrap();
+
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let manager = TuiSessionManager::with_backend(backend);
+    let config = TuiSessionConfig {
+        session_id: "agent_model".to_string(),
+        kind: AgentCliKind::Custom,
+        cwd: dir.path().to_path_buf(),
+        extra_args: vec!["bash".to_string()],
+        https_proxy: Some("http://request:8080".to_string()),
+        idle_timeout_mins: Some(45),
+        exited_retention_mins: Some(10),
+        ..Default::default()
+    };
+    let handle = manager.start_session(config.clone()).await.unwrap();
+    assert_eq!(handle.config.model.as_deref(), Some("custom-model"));
+    assert_eq!(handle.active_model().await.as_deref(), Some("custom-model"));
+
+    let handle = manager
+        .start_session(TuiSessionConfig {
+            session_id: "request_model".to_string(),
+            model: Some("  Grok 4  ".to_string()),
+            ..config.clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(handle.config.model.as_deref(), Some("Grok 4"));
+    assert_eq!(handle.active_model().await.as_deref(), Some("Grok 4"));
+
+    std::fs::write(
+        &config_path,
+        "harness:\n  tui_sessions:\n    default: {}\n    custom: {}\n",
+    )
+    .unwrap();
+    let handle = manager
+        .start_session(TuiSessionConfig {
+            session_id: "cli_default_model".to_string(),
+            ..config
+        })
+        .await
+        .unwrap();
+    assert_eq!(handle.config.model, None);
+    assert_eq!(handle.active_model().await, None);
+}
+
+#[tokio::test]
+async fn test_startup_canonicalizes_known_catalog_model_for_launch() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let manager = TuiSessionManager::with_backend(backend);
+    let handle = manager
+        .start_session(TuiSessionConfig {
+            session_id: "canon_model".to_string(),
+            kind: AgentCliKind::Custom,
+            cwd: dir.path().to_path_buf(),
+            extra_args: vec!["bash".to_string()],
+            model: Some("Default CLI Model".to_string()),
+            https_proxy: Some("direct".to_string()),
+            idle_timeout_mins: Some(1),
+            exited_retention_mins: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(handle.config.model.as_deref(), Some("default"));
+    assert_eq!(handle.active_model().await.as_deref(), Some("default"));
+
+    let error = match manager
+        .start_session(TuiSessionConfig {
+            session_id: "unsafe_model".to_string(),
+            kind: AgentCliKind::Custom,
+            cwd: dir.path().to_path_buf(),
+            extra_args: vec!["bash".to_string()],
+            model: Some("ok-model; rm -rf /".to_string()),
+            https_proxy: Some("direct".to_string()),
+            idle_timeout_mins: Some(1),
+            exited_retention_mins: Some(1),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(_) => panic!("expected unsafe model to be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("unsafe characters"));
+}
+
+#[tokio::test]
+async fn test_active_model_stays_unknown_without_configured_startup_model() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_session(backend, dir.path(), AgentCliKind::Agy, "agy_unknown").await;
+    assert_eq!(handle.active_model().await, None);
+}
+
+#[tokio::test]
+async fn test_switch_model_grok_confirms_and_updates_active() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    backend.preconfigure_pane(
+        "grok_switch",
+        "Grok Build ready\n>",
+        vec!["Grok Build ready\n>\nWeekly limit left: 9% · grok-4 (medium)".to_string()],
+    );
+    let handle = mock_session(
+        backend.clone(),
+        dir.path(),
+        AgentCliKind::Grok,
+        "grok_switch",
+    )
+    .await;
+    *handle.active_model.lock().await = Some("grok-4.6".to_string());
+
+    let switched = handle.switch_model("Grok 4").await.unwrap();
+    assert_eq!(switched, "grok-4");
+    assert_eq!(handle.active_model().await.as_deref(), Some("grok-4"));
+    let pane = backend.get_pane("grok_switch").unwrap();
+    assert_eq!(pane.pasted, vec![("/model grok-4".to_string(), true)]);
+    assert!(pane.keys_sent.iter().any(|key| key == "Enter"));
+}
+
+#[tokio::test]
+async fn test_switch_model_failure_preserves_previous_active() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    backend.preconfigure_pane(
+        "grok_reject",
+        "Grok Build ready\n>",
+        vec!["Unknown model ID: grok-nope\nAvailable: grok-4.6\n>".to_string()],
+    );
+    let handle = mock_session(
+        backend.clone(),
+        dir.path(),
+        AgentCliKind::Grok,
+        "grok_reject",
+    )
+    .await;
+    *handle.active_model.lock().await = Some("grok-4.6".to_string());
+
+    let error = handle.switch_model("grok-nope").await.unwrap_err();
+    let detail = format!("{error:#}");
+    assert!(
+        detail.contains("Unknown model"),
+        "expected unknown-model rejection, got {detail}"
+    );
+    assert!(detail.contains("previous model retained"));
+    assert_eq!(handle.active_model().await.as_deref(), Some("grok-4.6"));
+}
+
+#[tokio::test]
+async fn test_switch_model_unsupported_and_invalid_preserve_active() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_session(
+        backend.clone(),
+        dir.path(),
+        AgentCliKind::Codex,
+        "codex_switch",
+    )
+    .await;
+    *handle.active_model.lock().await = Some("gpt-5".to_string());
+
+    let unsupported = handle.switch_model("gpt-4o").await.unwrap_err();
+    assert!(unsupported
+        .to_string()
+        .contains("does not support runtime model switching"));
+    assert_eq!(handle.active_model().await.as_deref(), Some("gpt-5"));
+    assert!(backend.get_pane("codex_switch").unwrap().pasted.is_empty());
+
+    let grok = mock_session(backend.clone(), dir.path(), AgentCliKind::Grok, "grok_bad").await;
+    *grok.active_model.lock().await = Some("grok-4.6".to_string());
+    let injected = grok.switch_model("grok-4.7\n/quit").await.unwrap_err();
+    assert!(injected.to_string().contains("unsafe characters"));
+    assert_eq!(grok.active_model().await.as_deref(), Some("grok-4.6"));
+    assert!(backend.get_pane("grok_bad").unwrap().pasted.is_empty());
+
+    let empty = grok.switch_model("   ").await.unwrap_err();
+    assert!(empty.to_string().contains("must not be empty"));
+    assert_eq!(grok.active_model().await.as_deref(), Some("grok-4.6"));
+}
+
+#[tokio::test]
+async fn test_switch_model_rejects_busy_session() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_session(backend.clone(), dir.path(), AgentCliKind::Grok, "grok_busy").await;
+    *handle.active_model.lock().await = Some("grok-4.6".to_string());
+    backend.set_screen("grok_busy", "Thinking...\nRunning tool");
+
+    let error = handle.switch_model("grok-4.7").await.unwrap_err();
+    assert!(error.to_string().contains("busy"));
+    assert_eq!(handle.active_model().await.as_deref(), Some("grok-4.6"));
+    assert!(backend.get_pane("grok_busy").unwrap().pasted.is_empty());
+}
+
+#[test]
+fn test_runtime_model_switch_capability_by_profile() {
+    assert!(profile_for_kind(AgentCliKind::Grok).supports_runtime_model_switch());
+    assert!(profile_for_kind(AgentCliKind::Agy).supports_runtime_model_switch());
+    assert!(profile_for_kind(AgentCliKind::Claude).supports_runtime_model_switch());
+    assert!(!profile_for_kind(AgentCliKind::Codex).supports_runtime_model_switch());
+    assert!(!profile_for_kind(AgentCliKind::Custom).supports_runtime_model_switch());
 }

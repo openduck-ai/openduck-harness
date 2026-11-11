@@ -7,14 +7,17 @@ use std::path::{Path, PathBuf};
 
 use super::AgentTuiProfile;
 use super::{
-    detect_approval_modal, detect_composer_idle_prompt, AgentCliKind, TuiPaneState,
-    TuiSessionConfig,
+    detect_approval_modal, detect_common_working_status, detect_composer_idle_prompt,
+    switch_via_slash_command, AgentCliKind, TuiPaneState, TuiSessionConfig,
 };
-use crate::tui_session::screen::{contains_braille_spinner, ScreenSnapshot};
+use crate::tui_session::backend::MultiplexerBackend;
+use crate::tui_session::screen::{is_spinner_activity_line, ScreenSnapshot};
+use async_trait::async_trait;
 
 #[derive(Debug, Default, Clone)]
 pub struct GrokTuiProfile;
 
+#[async_trait]
 impl AgentTuiProfile for GrokTuiProfile {
     fn kind(&self) -> AgentCliKind {
         AgentCliKind::Grok
@@ -60,33 +63,25 @@ impl AgentTuiProfile for GrokTuiProfile {
             return TuiPaneState::Initializing;
         }
 
-        // 1. Approval modal
         if let Some(snippet) = detect_approval_modal(&bottom) {
             return TuiPaneState::WaitingApproval {
                 prompt_snippet: snippet,
             };
         }
 
-        // 2. Working state
-        let text = screen_text.trim();
-        let has_spinner = contains_braille_spinner(text)
-            || text.contains("Thinking...")
-            || text.contains("Running tool");
-
-        if has_spinner {
-            let status_line = text
-                .lines()
-                .find(|l| l.contains("Thinking") || l.contains("Running tool"))
-                .map(|l| l.trim().to_string());
-            return TuiPaneState::Working { status_line };
+        if let Some(status) = detect_common_working_status(&bottom) {
+            return TuiPaneState::Working {
+                status_line: Some(status),
+            };
         }
 
-        // 3. Idle Composer prompt
-        if detect_composer_idle_prompt(&bottom)
-            || text.contains("\n>")
-            || text.starts_with('>')
-            || text.ends_with('>')
-        {
+        if let Some(status) = grok_working_status_line(snapshot.trimmed_clean().as_str()) {
+            return TuiPaneState::Working {
+                status_line: Some(status),
+            };
+        }
+
+        if detect_composer_idle_prompt(&bottom) {
             return TuiPaneState::IdlePrompt;
         }
 
@@ -170,6 +165,38 @@ impl AgentTuiProfile for GrokTuiProfile {
             Some(responses.join("\n\n"))
         }
     }
+
+    fn supports_runtime_model_switch(&self) -> bool {
+        true
+    }
+
+    async fn switch_runtime_model(
+        &self,
+        backend: &dyn MultiplexerBackend,
+        session_name: &str,
+        new_model: &str,
+    ) -> Result<String> {
+        switch_via_slash_command(backend, session_name, new_model).await
+    }
+}
+
+fn grok_working_status_line(text: &str) -> Option<String> {
+    text.lines().rev().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if is_spinner_activity_line(trimmed)
+            || lower.contains("thinking...")
+            || lower.contains("running tool")
+            || lower.contains("esc to interrupt")
+        {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn user_home() -> Option<PathBuf> {

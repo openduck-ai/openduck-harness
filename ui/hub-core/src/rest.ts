@@ -67,6 +67,8 @@ import type {
   StartTuiSessionInput,
   PromptTuiSessionInput,
   TuiTurnResult,
+  TuiAgentModelCatalog,
+  SwitchTuiSessionModelResult,
 } from './types.ts'
 
 function formatPagingQuery(paging?: TrajectoryPagingOptions): string {
@@ -470,6 +472,25 @@ export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}
       request<{ success: boolean }>(
         `/api/v1/projects/${encodeURIComponent(slug)}/tui-sessions/${encodeURIComponent(id)}`,
         { method: 'DELETE' },
+      ),
+    getTuiAgentModels: (agent: string, refresh = false) =>
+      request<TuiAgentModelCatalog>(
+        `/api/v1/tui-agents/${encodeURIComponent(agent)}/models${refresh ? '?refresh=true' : ''}`,
+      ),
+    refreshTuiAgentModels: (agent: string) =>
+      request<TuiAgentModelCatalog>(
+        `/api/v1/tui-agents/${encodeURIComponent(agent)}/models/refresh`,
+        { method: 'POST' },
+      ),
+    switchTuiSessionModel: (sessionId: string, model: string) =>
+      request<SwitchTuiSessionModelResult>(
+        `/api/v1/tui-sessions/${encodeURIComponent(sessionId)}/model`,
+        { method: 'POST', body: JSON.stringify({ model }) },
+      ),
+    switchProjectTuiSessionModel: (slug: string, id: string, model: string) =>
+      request<SwitchTuiSessionModelResult>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/tui-sessions/${encodeURIComponent(id)}/model`,
+        { method: 'POST', body: JSON.stringify({ model }) },
       ),
     getGitStatus: (slug: string) =>
       request<GitStatusResponse>(

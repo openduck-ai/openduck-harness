@@ -17,6 +17,7 @@
 //! `tui_agent_start`, `tui_agent_prompt`, `tui_agent_read`, `tui_agent_keys`, `tui_agent_list`, and `tui_agent_stop`.
 
 pub mod backend;
+pub mod catalog;
 pub mod profiles;
 pub mod screen;
 pub mod session;
@@ -40,6 +41,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use backend::{MultiplexerBackend, TmuxBackend};
+pub use catalog::{
+    AgentModelCatalog, AgentModelCatalogEntry, CatalogModelEntry, CliModelLoader, ModelLoader,
+    ModelSource,
+};
 pub use profiles::{
     detect_approval_modal, profile_for_kind, suggested_approval_keys, AgentCliKind,
     AgentTuiProfile, TuiPaneState, TuiSessionConfig, TuiSessionSummary, TuiTurnResult,

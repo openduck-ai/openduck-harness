@@ -128,6 +128,10 @@ pub struct TuiSessionRecord {
     pub agent_kind: String,
     pub cwd: String,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_model: Option<String>,
     pub effort: Option<String>,
     pub auto_approve: bool,
     pub proxy_mode: String,

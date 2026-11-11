@@ -1201,10 +1201,13 @@ async fn exec_project_terminal(
 
 async fn start_project_tui_session(
     AxumPath(slug): AxumPath<String>,
-    Json(req): Json<super::terminal::StartTuiSessionRequest>,
+    Json(mut req): Json<super::terminal::StartTuiSessionRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let entry = sources::read_project(&slug).map_err(not_found)?;
     let project = project_dto(&entry).map_err(bad)?;
+    if req.project_slug.is_none() {
+        req.project_slug = Some(slug);
+    }
     let result = super::terminal::start_project_tui_session(Path::new(&project.path), req)
         .await
         .map_err(bad)?;
@@ -1269,6 +1272,80 @@ async fn stop_project_tui_session(
         .await
         .map_err(bad)?;
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SwitchProjectTuiSessionModelRequest {
+    model: String,
+}
+
+async fn switch_project_tui_session_model(
+    AxumPath((slug, id)): AxumPath<(String, String)>,
+    Json(req): Json<SwitchProjectTuiSessionModelRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let project_path = project_dir(&slug)?;
+    let target_model = req.model.trim();
+    if target_model.is_empty() {
+        return Err(bad("Model name cannot be empty"));
+    }
+
+    let service = super::tui_management::TuiManagementService::global().await;
+    let rec_opt = service.get_session_record(&id).await.map_err(bad)?;
+    let rec = rec_opt.ok_or_else(|| not_found(format!("Session '{id}' not found")))?;
+
+    if let Some(ref project_id) = rec.created_by_project_id {
+        if project_id != &slug {
+            return Err(bad(format!(
+                "Session '{id}' does not belong to project '{slug}'"
+            )));
+        }
+    } else {
+        let rec_cwd = Path::new(&rec.cwd);
+        let canonical_project = project_path
+            .canonicalize()
+            .unwrap_or_else(|_| project_path.clone());
+        let canonical_cwd = rec_cwd
+            .canonicalize()
+            .unwrap_or_else(|_| rec_cwd.to_path_buf());
+        if !canonical_cwd.starts_with(&canonical_project) && canonical_cwd != canonical_project {
+            return Err(bad(format!(
+                "Session '{id}' does not belong to project '{slug}'"
+            )));
+        }
+    }
+
+    let current_active =
+        if let Ok(handle) = service.session_manager.get_session(&rec.session_name).await {
+            handle.active_model().await
+        } else {
+            rec.active_model.clone().or_else(|| rec.model.clone())
+        };
+
+    match service.switch_session_model(&id, target_model).await {
+        Ok((updated_rec, active_model)) => {
+            let mut record_val = serde_json::to_value(&updated_rec).unwrap_or_default();
+            if let Some(obj) = record_val.as_object_mut() {
+                obj.insert("activeModel".to_string(), serde_json::json!(active_model));
+                obj.insert("currentModel".to_string(), serde_json::json!(active_model));
+            }
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "activeModel": active_model,
+                "session": record_val,
+                "message": format!("Switched model to {active_model}"),
+            })))
+        }
+        Err(e) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": e.to_string(),
+                "message": e.to_string(),
+                "activeModel": current_active,
+            })),
+        )),
+    }
 }
 
 fn project_dir(slug: &str) -> Result<PathBuf, (StatusCode, Json<serde_json::Value>)> {
@@ -1792,6 +1869,10 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
         .route(
             "/api/v1/projects/{slug}/tui-sessions/{id}/keys",
             post(keys_project_tui_session),
+        )
+        .route(
+            "/api/v1/projects/{slug}/tui-sessions/{id}/model",
+            post(switch_project_tui_session_model),
         )
         .route("/api/v1/projects/{slug}/git/status", get(git_status))
         .route("/api/v1/projects/{slug}/git/log", get(git_log))

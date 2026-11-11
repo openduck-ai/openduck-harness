@@ -7,10 +7,17 @@ import type {
   ApiOptions,
   HarnessJobInspect,
   TrajectoryPagingOptions,
+  TuiAgentModelCatalog,
 } from '@aaif/goose-hub-core'
 
 export { apiUrl, normalizeHistoryResponse } from '@aaif/goose-hub-core/rest'
-export type { ApiOptions, ProxyItem } from '@aaif/goose-hub-core'
+export type {
+  ApiOptions,
+  ProxyItem,
+  TuiAgentModelCatalog,
+  TuiCatalogModelEntry,
+  SwitchTuiSessionModelResult,
+} from '@aaif/goose-hub-core'
 export type { Project, ProjectDetail, ProjectInput, ProjectKind } from '@aaif/goose-hub-core/types'
 
 function formatPagingQuery(paging?: TrajectoryPagingOptions): string {
@@ -98,6 +105,8 @@ export interface ManagedTuiSession {
   agentKind: string
   cwd: string
   model?: string
+  activeModel?: string
+  currentModel?: string
   effort?: string
   autoApprove: boolean
   proxyMode: string
@@ -318,6 +327,44 @@ export function createApi(baseUrl: string, secret = '', options?: ApiOptions) {
       baseUrl,
       secret,
       `/api/v1/tui-accounts/${encodeURIComponent(accountId)}/quotas/refresh`,
+    )
+
+  api.getTuiAgentModels = async (agentKind: string, options?: { refresh?: boolean }): Promise<TuiAgentModelCatalog> => {
+    const qs = options?.refresh ? '?refresh=true' : ''
+    const res = await getJson<any>(
+      baseUrl,
+      secret,
+      `/api/v1/tui-agents/${encodeURIComponent(agentKind)}/models${qs}`,
+    )
+    if (res && typeof res === 'object' && 'catalog' in res && res.catalog) {
+      return res.catalog as TuiAgentModelCatalog
+    }
+    return res as TuiAgentModelCatalog
+  }
+  api.refreshTuiAgentModels = async (agentKind: string): Promise<TuiAgentModelCatalog> => {
+    const res = await postJson<any>(
+      baseUrl,
+      secret,
+      `/api/v1/tui-agents/${encodeURIComponent(agentKind)}/models/refresh`,
+    )
+    if (res && typeof res === 'object' && 'catalog' in res && res.catalog) {
+      return res.catalog as TuiAgentModelCatalog
+    }
+    return res as TuiAgentModelCatalog
+  }
+  api.switchTuiSessionModel = (sessionId: string, model: string) =>
+    postJson<{ success: boolean; activeModel?: string; session?: ManagedTuiSession; message?: string }>(
+      baseUrl,
+      secret,
+      `/api/v1/tui-sessions/${encodeURIComponent(sessionId)}/model`,
+      { model },
+    )
+  api.switchProjectTuiSessionModel = (slug: string, sessionId: string, model: string) =>
+    postJson<{ success: boolean; activeModel?: string; session?: ManagedTuiSession; message?: string }>(
+      baseUrl,
+      secret,
+      `/api/v1/projects/${encodeURIComponent(slug)}/tui-sessions/${encodeURIComponent(sessionId)}/model`,
+      { model },
     )
 
   return api

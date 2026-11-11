@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use openduck::control::tui_management::{
-    AccountRecord, AgentProfileRecord, QuotaSnapshotRecord, SessionOperationRecord,
-    SessionRunBindingRecord, SqliteTuiStore, TuiManagementService, TuiSessionRecord,
+    tui_management_router, AccountRecord, AgentProfileRecord, QuotaSnapshotRecord,
+    SessionOperationRecord, SessionRunBindingRecord, SqliteTuiStore, TuiManagementService,
+    TuiSessionRecord,
 };
 use openduck_mcp::tui_session::TuiSessionManager;
+use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_store_session_crud_and_attribution() {
@@ -20,6 +24,8 @@ async fn test_store_session_crud_and_attribution() {
         agent_kind: "grok".to_string(),
         cwd: "/tmp".to_string(),
         model: Some("grok-beta".to_string()),
+        active_model: Some("grok-beta".to_string()),
+        current_model: Some("grok-beta".to_string()),
         effort: Some("high".to_string()),
         auto_approve: true,
         proxy_mode: "named".to_string(),
@@ -227,6 +233,8 @@ async fn test_lifecycle_run_ended_and_sweeper() {
         agent_kind: "claude".to_string(),
         cwd: "/tmp".to_string(),
         model: None,
+        active_model: None,
+        current_model: None,
         effort: None,
         auto_approve: true,
         proxy_mode: "inherit".to_string(),
@@ -364,4 +372,278 @@ async fn test_proxy_configuration_and_resolution() {
     let agy = store.get_profile_by_agent("agy").await.unwrap().unwrap();
     assert_eq!(agy.proxy_mode, "custom");
     assert_eq!(agy.proxy_id.as_deref(), Some("http://127.0.0.1:2087"));
+}
+
+#[tokio::test]
+async fn test_catalog_routes_get_and_refresh() {
+    let router = tui_management_router();
+
+    // 1. GET /api/v1/tui-agents/agy/models
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/tui-agents/agy/models")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["agent"], "agy");
+    assert!(json["models"].as_array().unwrap().len() > 0);
+    assert!(json["catalog"].is_object());
+
+    // 2. GET /api/v1/tui-agents/grok/models?refresh=true
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/tui-agents/grok/models?refresh=true")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["agent"], "grok");
+
+    // 3. POST /api/v1/tui-agents/codex/models/refresh
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/tui-agents/codex/models/refresh")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["agent"], "codex");
+
+    // 4. Invalid agent kind returns bad request
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/tui-agents/unknown-cli-kind-xyz/models")
+        .body(Body::empty())
+        .unwrap();
+    let res = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_switch_session_model_unsupported_preserves_active_model() {
+    let service = TuiManagementService::global().await;
+    let now = Utc::now().to_rfc3339();
+
+    // Insert a known session into store
+    let sess_id = format!("sess_switch_test_{}", uuid::Uuid::new_v4());
+    let rec = TuiSessionRecord {
+        id: sess_id.clone(),
+        session_name: format!("name_{sess_id}"),
+        agent_kind: "agy".to_string(),
+        cwd: "/tmp".to_string(),
+        model: Some("gemini-2.5-pro".to_string()),
+        active_model: Some("gemini-2.5-pro".to_string()),
+        current_model: Some("gemini-2.5-pro".to_string()),
+        effort: None,
+        auto_approve: true,
+        proxy_mode: "inherit".to_string(),
+        proxy_id: None,
+        effective_proxy: None,
+        account_id: None,
+        created_by_project_id: None,
+        created_by_task_id: None,
+        created_by_run_id: None,
+        created_by_subtask_id: None,
+        creation_source: "test".to_string(),
+        owner_run_id: None,
+        ownership_mode: "manual".to_string(),
+        generation: 1,
+        lifecycle_state: "active".to_string(),
+        process_state: "alive".to_string(),
+        tui_pane_state: "idle_prompt".to_string(),
+        stop_intent: None,
+        cleanup_error: None,
+        created_at: now.clone(),
+        last_operation_at: Some(now.clone()),
+        last_input_at: None,
+        last_progress_at: None,
+        last_observed_at: Some(now.clone()),
+        idle_since: None,
+        owner_terminal_at: None,
+        reclaim_after: None,
+        stopped_at: None,
+        reclaimed_at: None,
+    };
+    service.store.insert_session(&rec).await.unwrap();
+
+    let router = tui_management_router();
+
+    // 1. Verify GET /api/v1/tui-sessions/{id} returns activeModel and currentModel
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/tui-sessions/{sess_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["session"]["activeModel"], "gemini-2.5-pro");
+    assert_eq!(json["session"]["currentModel"], "gemini-2.5-pro");
+
+    // 2. Attempt model switch to "gemini-2.5-flash"
+    // Since tmux session handle is not running (or runtime model switch unsupported),
+    // it MUST return 400 Bad Request without faking success, and preserve activeModel.
+    let switch_body = serde_json::json!({ "model": "gemini-2.5-flash" });
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/tui-sessions/{sess_id}/model"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&switch_body).unwrap()))
+        .unwrap();
+    let res = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    assert_eq!(json["activeModel"], "gemini-2.5-pro");
+    assert!(json["error"].as_str().unwrap().len() > 0);
+
+    // 3. Verify session in store still preserves activeModel
+    let stored = service.get_session_record(&sess_id).await.unwrap().unwrap();
+    assert_eq!(stored.model.as_deref(), Some("gemini-2.5-pro"));
+    assert_eq!(stored.active_model.as_deref(), Some("gemini-2.5-pro"));
+}
+
+#[tokio::test]
+async fn test_switch_session_model_rejects_empty_or_whitespace() {
+    let service = TuiManagementService::global().await;
+    let now = Utc::now().to_rfc3339();
+
+    let sess_id = format!("sess_empty_switch_{}", uuid::Uuid::new_v4());
+    let rec = TuiSessionRecord {
+        id: sess_id.clone(),
+        session_name: format!("name_{sess_id}"),
+        agent_kind: "grok".to_string(),
+        cwd: "/tmp".to_string(),
+        model: Some("grok-beta".to_string()),
+        active_model: Some("grok-beta".to_string()),
+        current_model: Some("grok-beta".to_string()),
+        effort: None,
+        auto_approve: true,
+        proxy_mode: "inherit".to_string(),
+        proxy_id: None,
+        effective_proxy: None,
+        account_id: None,
+        created_by_project_id: None,
+        created_by_task_id: None,
+        created_by_run_id: None,
+        created_by_subtask_id: None,
+        creation_source: "test".to_string(),
+        owner_run_id: None,
+        ownership_mode: "manual".to_string(),
+        generation: 1,
+        lifecycle_state: "active".to_string(),
+        process_state: "alive".to_string(),
+        tui_pane_state: "idle_prompt".to_string(),
+        stop_intent: None,
+        cleanup_error: None,
+        created_at: now.clone(),
+        last_operation_at: Some(now.clone()),
+        last_input_at: None,
+        last_progress_at: None,
+        last_observed_at: Some(now.clone()),
+        idle_since: None,
+        owner_terminal_at: None,
+        reclaim_after: None,
+        stopped_at: None,
+        reclaimed_at: None,
+    };
+    service.store.insert_session(&rec).await.unwrap();
+
+    let router = tui_management_router();
+
+    // Empty model string
+    let switch_body = serde_json::json!({ "model": "" });
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/tui-sessions/{sess_id}/model"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&switch_body).unwrap()))
+        .unwrap();
+    let res = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // Whitespace only model string
+    let switch_body = serde_json::json!({ "model": "   \t  " });
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/tui-sessions/{sess_id}/model"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&switch_body).unwrap()))
+        .unwrap();
+    let res = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // Active model remains grok-beta
+    let stored = service.get_session_record(&sess_id).await.unwrap().unwrap();
+    assert_eq!(stored.active_model.as_deref(), Some("grok-beta"));
+}
+
+#[tokio::test]
+async fn test_startup_resolution_session_settings_precedence() {
+    use tempfile::tempdir;
+
+    let dir = tempdir().unwrap();
+    let openduck_dir = dir.path().join(".openduck");
+    std::fs::create_dir_all(&openduck_dir).unwrap();
+    let config_file = openduck_dir.join("config.yaml");
+    std::fs::write(
+        &config_file,
+        r#"
+harness:
+  tui_sessions:
+    grok:
+      model: grok-custom-from-settings
+    default:
+      model: default-fallback-model
+"#,
+    )
+    .unwrap();
+
+    // Verify discover_global_harness_settings resolves the configured session settings model
+    let settings = openduck_harness::types::discover_global_harness_settings(Some(dir.path()));
+    let grok_defaults = settings.tui_sessions.get("grok").unwrap();
+    assert_eq!(
+        grok_defaults.resolved_model(),
+        Some("grok-custom-from-settings")
+    );
+
+    let default_defaults = settings.tui_sessions.get("default").unwrap();
+    assert_eq!(
+        default_defaults.resolved_model(),
+        Some("default-fallback-model")
+    );
+
+    // Model name validation
+    use openduck::control::tui_management::validate_model_name;
+    assert_eq!(
+        validate_model_name("grok-custom-from-settings").unwrap(),
+        "grok-custom-from-settings"
+    );
+    assert_eq!(
+        validate_model_name("  gemini-2.5-pro  ").unwrap(),
+        "gemini-2.5-pro"
+    );
+    assert!(validate_model_name("").is_err());
+    assert!(validate_model_name("   ").is_err());
+    assert!(validate_model_name("-flag").is_err());
+    assert!(validate_model_name("/bin/sh").is_err());
 }

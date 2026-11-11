@@ -394,6 +394,38 @@ test('TUI start and prompt calls can wait for a turn while screen polling keeps 
   }
 })
 
+test('TUI model catalog and switch methods call expected routes', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Request[] = []
+  globalThis.fetch = async (input, init) => {
+    calls.push(new Request(input, init))
+    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const api = createApi('http://host', 'secret')
+    await api.getTuiAgentModels('codex')
+    await api.getTuiAgentModels('codex', true)
+    await api.refreshTuiAgentModels('codex')
+    await api.switchTuiSessionModel('sess_123', 'gpt-5-codex')
+    await api.switchProjectTuiSessionModel('my-proj', 'sess_123', 'gpt-5-codex')
+
+    assert.equal(calls[0].url, 'http://host/api/v1/tui-agents/codex/models')
+    assert.equal(calls[0].method, 'GET')
+    assert.equal(calls[1].url, 'http://host/api/v1/tui-agents/codex/models?refresh=true')
+    assert.equal(calls[1].method, 'GET')
+    assert.equal(calls[2].url, 'http://host/api/v1/tui-agents/codex/models/refresh')
+    assert.equal(calls[2].method, 'POST')
+    assert.equal(calls[3].url, 'http://host/api/v1/tui-sessions/sess_123/model')
+    assert.equal(calls[3].method, 'POST')
+    assert.deepEqual(await calls[3].json(), { model: 'gpt-5-codex' })
+    assert.equal(calls[4].url, 'http://host/api/v1/projects/my-proj/tui-sessions/sess_123/model')
+    assert.equal(calls[4].method, 'POST')
+    assert.deepEqual(await calls[4].json(), { model: 'gpt-5-codex' })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('ordinary REST calls still use the short timeout', async () => {
   const originalFetch = globalThis.fetch
   let signal: AbortSignal | null | undefined

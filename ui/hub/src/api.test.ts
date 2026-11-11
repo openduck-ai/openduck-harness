@@ -64,3 +64,54 @@ test('createApi always exposes inspect methods for running jobs', async () => {
     globalThis.fetch = originalFetch
   }
 })
+
+test('createApi exposes TUI model catalog and switch methods', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Request[] = []
+  globalThis.fetch = async (input, init) => {
+    calls.push(new Request(input, init))
+    const url = String(input)
+    if (url.includes('/models')) {
+      return new Response(JSON.stringify({ catalog: { agent: 'grok', models: [{ id: 'grok-4', displayName: 'Grok 4' }] } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({ success: true, activeModel: 'grok-4' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    const api = createApi('http://host', 'secret')
+    const cat1 = await api.getTuiAgentModels('grok')
+    assert.equal(cat1.agent, 'grok')
+    assert.equal(cat1.models[0].id, 'grok-4')
+    assert.equal(calls[0].url, 'http://host/api/v1/tui-agents/grok/models')
+    assert.equal(calls[0].method, 'GET')
+    assert.equal(calls[0].headers.get('X-Secret-Key'), 'secret')
+
+    const cat2 = await api.getTuiAgentModels('grok', { refresh: true })
+    assert.equal(calls[1].url, 'http://host/api/v1/tui-agents/grok/models?refresh=true')
+
+    await api.refreshTuiAgentModels('grok')
+    assert.equal(calls[2].url, 'http://host/api/v1/tui-agents/grok/models/refresh')
+    assert.equal(calls[2].method, 'POST')
+
+    const switchRes = await api.switchTuiSessionModel('s1', 'grok-4')
+    assert.equal(calls[3].url, 'http://host/api/v1/tui-sessions/s1/model')
+    assert.equal(calls[3].method, 'POST')
+    assert.deepEqual(await calls[3].json(), { model: 'grok-4' })
+    assert.equal(switchRes.success, true)
+    assert.equal(switchRes.activeModel, 'grok-4')
+
+    const projectSwitchRes = await api.switchProjectTuiSessionModel('my-proj', 's1', 'grok-4')
+    assert.equal(calls[4].url, 'http://host/api/v1/projects/my-proj/tui-sessions/s1/model')
+    assert.equal(calls[4].method, 'POST')
+    assert.deepEqual(await calls[4].json(), { model: 'grok-4' })
+    assert.equal(projectSwitchRes.success, true)
+    assert.equal(projectSwitchRes.activeModel, 'grok-4')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

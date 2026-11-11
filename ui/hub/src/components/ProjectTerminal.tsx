@@ -9,6 +9,8 @@ import type {
 } from '@aaif/goose-hub-core'
 import type { createApi } from '../api'
 import { formatTime } from '../i18n/format.ts'
+import { resolveActiveModel } from '../tuiModelPicker'
+import { TuiModelPickerModal } from './TuiModelPickerModal'
 
 interface ProjectTerminalProps {
   api: ReturnType<typeof createApi>
@@ -52,6 +54,7 @@ export function ProjectTerminal({
   const [tuiBusy, setTuiBusy] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [copiedAttach, setCopiedAttach] = useState(false)
+  const [modelModalSession, setModelModalSession] = useState<TuiSessionSummary | null>(null)
   const [proxies, setProxies] = useState<ProxyItem[]>([])
   const [selectedProxyMode, setSelectedProxyMode] = useState<'profile' | 'direct' | 'named' | 'custom'>('profile')
   const [selectedProxyId, setSelectedProxyId] = useState<string>('')
@@ -501,6 +504,18 @@ export function ProjectTerminal({
 
               {activeSession && (
                 <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    {t('terminal.page.model')}: <strong style={{ color: 'var(--text-default)' }}>{resolveActiveModel(activeSession as any, t('tuiAgents.page.default'))}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    className="preset-chip"
+                    onClick={() => setModelModalSession(activeSession)}
+                    title={t('tuiAgents.page.actionSwitchModel')}
+                    style={{ fontSize: '0.72rem' }}
+                  >
+                    {t('tuiAgents.page.btnSwitchModel')}
+                  </button>
                   <button
                     type="button"
                     className="preset-chip"
@@ -662,6 +677,33 @@ export function ProjectTerminal({
             </form>
           )}
         </div>
+      )}
+
+      {modelModalSession && (
+        <TuiModelPickerModal
+          session={{
+            id: modelModalSession.sessionId,
+            sessionName: modelModalSession.sessionId,
+            agentKind: modelModalSession.kind,
+            model: modelModalSession.model,
+            activeModel: modelModalSession.activeModel,
+            currentModel: modelModalSession.currentModel,
+          }}
+          projectSlug={slug}
+          isOpen={Boolean(modelModalSession)}
+          onClose={() => setModelModalSession(null)}
+          onModelSwitched={(_id, newModel) => {
+            setTuiSessions(prev =>
+              prev.map(s =>
+                s.sessionId === modelModalSession.sessionId
+                  ? { ...s, activeModel: newModel, currentModel: newModel, model: s.model || newModel }
+                  : s,
+              ),
+            )
+            void fetchTuiSessions()
+          }}
+          api={api}
+        />
       )}
     </div>
   )

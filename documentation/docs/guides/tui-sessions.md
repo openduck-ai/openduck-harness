@@ -98,12 +98,18 @@ harness:
       idle_timeout_mins: 45
       exited_retention_mins: 10
     agy:
+      model: gemini-2.5-pro
       effort: medium
       idle_timeout_mins: 60
     grok:
+      model: grok-4
+      fallback_models:
+        - grok-3
+        - grok-2
       https_proxy: http://127.0.0.1:2087
       idle_timeout_mins: 30
     codex:
+      model: o3-mini
       idle_timeout_mins: 45
 ```
 
@@ -111,6 +117,8 @@ harness:
 
 | Property | Description | Default |
 | :--- | :--- | :--- |
+| `model` | Default model slug passed to the agent CLI (aliases: `default_model`, `defaultModel`, `default_tui_model`, `defaultTuiModel`). | CLI default (unset) |
+| `fallback_models` | Static fallback model candidates used when live discovery is unavailable (aliases: `fallbackModels`, `static_fallback_models`, `staticFallbackModels`, `fallback_model_list`, `fallbackModelList`, `fallback_candidates`, `fallbackCandidates`, `static_fallback_candidates`, `staticFallbackCandidates`). Supports arrays or comma-delimited strings; invalid entries degrade gracefully to empty without breaking parsing. | Built-in static fallbacks |
 | `effort` | Reasoning effort passed to the agent CLI, such as `low`, `medium`, or `high`. Supported values depend on the CLI. | CLI default |
 | `https_proxy` | Outbound proxy URL set as `HTTPS_PROXY` and `https_proxy` in the subagent environment. | Inherited from system |
 | `idle_timeout_mins` | Inactivity limit in minutes. If a session stays in `IdlePrompt` with no activity, it is automatically stopped and reclaimed. | `None` (unlimited) |

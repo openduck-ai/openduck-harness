@@ -153,7 +153,10 @@ impl TuiAgentHarnessExtension {
             })
             .await?;
 
-        let handle = self.manager.get_session(&rec.session_name).await?;
+        let handle = match service.session_manager.get_session(&rec.session_name).await {
+            Ok(handle) => handle,
+            Err(_) => self.manager.get_session(&rec.session_name).await?,
+        };
         let current_state = handle.last_state.lock().await.clone();
 
         if let Some(p) = prompt {
@@ -422,7 +425,10 @@ impl TuiAgentHarnessExtension {
             .filter(|s| !s.is_empty());
 
         if let Some(ref sid) = session_id_opt {
-            if self.manager.get_session(sid).await.is_ok() {
+            let service = crate::control::tui_management::TuiManagementService::global().await;
+            if service.session_manager.get_session(sid).await.is_ok()
+                || self.manager.get_session(sid).await.is_ok()
+            {
                 return self.handle_prompt(call).await;
             }
         }

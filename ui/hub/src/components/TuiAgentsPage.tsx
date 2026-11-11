@@ -3,6 +3,8 @@ import { Trans, useTranslation } from 'react-i18next'
 import type { createApi, ManagedTuiSession, SessionOperation, AgentProfile, TuiAccount, QuotaSnapshot, ProxyItem } from '../api'
 import { formatDateTime, formatTime, formatNumber } from '../i18n/format.ts'
 import { validateProxyUrlMessage } from '../providerConfig'
+import { resolveActiveModel } from '../tuiModelPicker'
+import { TuiModelPickerModal } from './TuiModelPickerModal'
 import {
   Terminal,
   Activity,
@@ -47,6 +49,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
   // Dialog & Inspection states
   const [inspectSession, setInspectSession] = useState<ManagedTuiSession | null>(null)
   const [inspectScreen, setInspectScreen] = useState<ScreenText>({ kind: 'raw', text: '' })
+  const [modelModalSession, setModelModalSession] = useState<ManagedTuiSession | null>(null)
   const [promptModalSession, setPromptModalSession] = useState<ManagedTuiSession | null>(null)
   const [promptText, setPromptText] = useState('')
   const [promptSending, setPromptSending] = useState(false)
@@ -556,7 +559,19 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                           </div>
                         </td>
                         <td style={{ padding: '12px' }}>
-                          <div>{s.model || t('tuiAgents.page.default')}</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span style={{ fontWeight: 600 }}>
+                              {resolveActiveModel(s, t('tuiAgents.page.default'))}
+                            </span>
+                            {s.model && s.activeModel && s.model !== s.activeModel && (
+                              <span
+                                style={{ fontSize: '10px', color: 'var(--text-muted, #888)' }}
+                                title={t('tuiAgents.page.configuredModel', { model: s.model })}
+                              >
+                                ({t('tuiAgents.page.initial')}: {s.model})
+                              </span>
+                            )}
+                          </div>
                           <div style={{ fontSize: '11px', color: 'var(--text-muted, #888)' }}>
                             {t('tuiAgents.page.proxyLabel', { proxy: s.effectiveProxy || s.proxyMode })}
                           </div>
@@ -600,6 +615,14 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                               style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
                             >
                               {t('tuiAgents.page.btnScreen')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setModelModalSession(s)}
+                              title={t('tuiAgents.page.actionSwitchModel')}
+                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #0284c7', color: '#0284c7', fontWeight: 500 }}
+                            >
+                              {t('tuiAgents.page.btnSwitchModel')}
                             </button>
                             <button
                               type="button"
@@ -983,9 +1006,34 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
               boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
             }}
           >
-            <div style={{ padding: '14px 18px', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ fontWeight: 600 }}>
-                {t('tuiAgents.page.terminalCaptureTitle', { name: inspectSession.sessionName, agent: inspectSession.agentKind })}
+            <div style={{ padding: '14px 18px', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 600 }}>
+                  {t('tuiAgents.page.terminalCaptureTitle', { name: inspectSession.sessionName, agent: inspectSession.agentKind })}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', background: '#2d3748', padding: '2px 8px', borderRadius: '4px' }}>
+                  <span style={{ color: '#94a3b8' }}>{t('tuiAgents.modelPicker.activeModelLabel')}:</span>
+                  <span style={{ color: '#38bdf8', fontWeight: 600 }}>
+                    {resolveActiveModel(inspectSession, t('tuiAgents.page.default'))}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setModelModalSession(inspectSession)}
+                    title={t('tuiAgents.page.actionSwitchModel')}
+                    style={{
+                      marginLeft: '4px',
+                      padding: '1px 6px',
+                      fontSize: '11px',
+                      borderRadius: '3px',
+                      border: '1px solid #475569',
+                      background: '#1e293b',
+                      color: '#e2e8f0',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {t('tuiAgents.page.btnSwitchModel')}
+                  </button>
+                </div>
               </div>
               <button
                 type="button"
@@ -1588,6 +1636,30 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           </div>
         </div>
       )}
+
+      {/* In-Session Model Picker Modal */}
+      <TuiModelPickerModal
+        session={modelModalSession}
+        projectSlug={modelModalSession?.createdByProjectId || undefined}
+        isOpen={Boolean(modelModalSession)}
+        onClose={() => setModelModalSession(null)}
+        onModelSwitched={(sessionId, newModel) => {
+          setSessions(prev =>
+            prev.map(item =>
+              item.id === sessionId || item.sessionName === sessionId
+                ? { ...item, activeModel: newModel, currentModel: newModel, model: item.model || newModel }
+                : item,
+            ),
+          )
+          if (inspectSession && (inspectSession.id === sessionId || inspectSession.sessionName === sessionId)) {
+            setInspectSession(prev =>
+              prev ? { ...prev, activeModel: newModel, currentModel: newModel, model: prev.model || newModel } : null,
+            )
+          }
+          loadData()
+        }}
+        api={api}
+      />
     </div>
   )
 }

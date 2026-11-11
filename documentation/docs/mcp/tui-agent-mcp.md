@@ -59,7 +59,7 @@ Unlike one-shot headless subprocess executions, driving agents inside persistent
 
 ### Declarative Configuration (`config.yaml` / `harness.yaml`)
 
-You can declare global or per-agent defaults (such as proxies, idle timeout, and retention policies) under `harness.tui_sessions` in `~/.config/openduck/config.yaml` or project `.openduck/config.yaml`:
+You can declare global or per-agent defaults (such as default model, static fallback models, proxies, idle timeout, and retention policies) under `harness.tui_sessions` in `~/.config/openduck/config.yaml` or project `.openduck/config.yaml`:
 
 ```yaml
 extensions:
@@ -76,8 +76,13 @@ harness:
       idle_timeout_mins: 45
       exited_retention_mins: 10
     agy:
+      model: gemini-2.5-pro
       idle_timeout_mins: 60
     grok:
+      model: grok-4
+      fallback_models:
+        - grok-3
+        - grok-2
       https_proxy: http://127.0.0.1:2087
       idle_timeout_mins: 30
 ```

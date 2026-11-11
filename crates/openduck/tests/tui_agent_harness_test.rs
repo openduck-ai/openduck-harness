@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use openduck::control::terminal::get_tui_session_manager;
 use openduck::control::tui_agent_extension::TuiAgentHarnessExtension;
+use openduck::control::tui_management::TuiManagementService;
 use openduck_harness::eval::task::TaskSpec;
 use openduck_harness::policy::adapters::MockPolicy;
 use openduck_harness::policy::{AgentAction, AgentPolicy, HarnessContextView};
@@ -26,6 +27,13 @@ fn test_tui_agent_extension_tool_definitions() {
     assert!(tool_names.contains(&"tui_agent_stop"));
     assert!(tool_names.contains(&"tui_agent"));
     assert_eq!(tools.len(), 7);
+}
+
+#[test]
+fn test_harness_and_management_share_tui_session_manager() {
+    let harness_manager = get_tui_session_manager();
+    let service_manager = TuiManagementService::shared_session_manager();
+    assert!(std::sync::Arc::ptr_eq(&harness_manager, &service_manager));
 }
 
 #[tokio::test]

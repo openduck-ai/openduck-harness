@@ -438,12 +438,51 @@ export interface TuiSessionSummary {
   kind: AgentCliKind
   pid?: number
   cwd: string
+  model?: string
+  activeModel?: string
+  currentModel?: string
   state: TuiSessionState
   attachCommand: string
   createdAtUnixSecs: number
   lastActivityUnixSecs?: number
   exitedAtUnixSecs?: number
   screenPreview?: string
+}
+
+export type TuiModelSource = 'static_fallback' | 'dynamic_loader' | 'custom'
+
+export interface TuiCatalogModelEntry {
+  id: string
+  displayName?: string
+  display_name?: string
+  description?: string | null
+  isDefault?: boolean
+  is_default?: boolean
+  source?: TuiModelSource
+}
+
+export interface TuiAgentModelCatalog {
+  agent: string
+  models: TuiCatalogModelEntry[]
+  defaultModel?: string | null
+  default_model?: string | null
+  supportsFreeText?: boolean
+  supports_free_text?: boolean
+  isFallback?: boolean
+  is_fallback?: boolean
+  cachedAtUnixSecs?: number
+  cached_at_unix_secs?: number
+}
+
+export interface SwitchTuiSessionModelInput {
+  model: string
+}
+
+export interface SwitchTuiSessionModelResult {
+  success: boolean
+  activeModel?: string
+  error?: string
+  message?: string
 }
 
 export interface StartTuiSessionInput {
