@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use super::AgentTuiProfile;
 use super::{
     detect_approval_modal, detect_common_working_status, detect_composer_idle_prompt,
-    switch_via_slash_command, AgentCliKind, TuiPaneState, TuiSessionConfig,
+    detect_quota_limit, switch_via_slash_command, AgentCliKind, TuiPaneState, TuiSessionConfig,
 };
 use crate::tui_session::backend::MultiplexerBackend;
 use crate::tui_session::screen::{is_spinner_activity_line, ScreenSnapshot};
@@ -61,6 +61,15 @@ impl AgentTuiProfile for GrokTuiProfile {
         let bottom = snapshot.bottom_non_empty_lines(14);
         if bottom.is_empty() {
             return TuiPaneState::Initializing;
+        }
+
+        if let Some(msg) = detect_quota_limit(&bottom) {
+            return TuiPaneState::QuotaExceeded { message: msg };
+        }
+        let full_clean = snapshot.trimmed_clean();
+        let full_lines: Vec<&str> = full_clean.lines().collect();
+        if let Some(msg) = detect_quota_limit(&full_lines) {
+            return TuiPaneState::QuotaExceeded { message: msg };
         }
 
         if let Some(snippet) = detect_approval_modal(&bottom) {
@@ -282,4 +291,73 @@ fn find_grok_chat_history(
     }
 
     newest.map(|(p, _)| p)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GrokQuotaInfo {
+    pub credit_usage_percent: f64,
+    pub quota_type: String,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub is_exhausted: bool,
+}
+
+pub fn read_grok_quota_info() -> Option<GrokQuotaInfo> {
+    let home = grok_home()?;
+    let log_path = home.join("logs").join("unified.jsonl");
+    if !log_path.is_file() {
+        return None;
+    }
+    let file = File::open(log_path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let metadata = reader.get_ref().metadata().ok()?;
+    let len = metadata.len();
+    if len > 262_144 {
+        let _ = reader.seek(SeekFrom::Start(len - 262_144));
+    }
+    let mut buffer = String::new();
+    reader.read_to_string(&mut buffer).ok()?;
+
+    for line in buffer.lines().rev() {
+        if line.contains("billing: fetched credits config") {
+            if let Ok(val) = serde_json::from_str::<Value>(line) {
+                if let Some(config) = val.pointer("/ctx/config") {
+                    let usage_pct = config
+                        .get("creditUsagePercent")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0);
+                    let period = config.get("currentPeriod");
+                    let quota_type = period
+                        .and_then(|p| p.get("type"))
+                        .and_then(Value::as_str)
+                        .map(|t| {
+                            if t.contains("WEEKLY") {
+                                "weekly"
+                            } else {
+                                "monthly"
+                            }
+                        })
+                        .unwrap_or("weekly")
+                        .to_string();
+                    let start = period
+                        .and_then(|p| p.get("start"))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                    let end = period
+                        .and_then(|p| p.get("end"))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                    let is_exhausted = usage_pct >= 100.0;
+                    return Some(GrokQuotaInfo {
+                        credit_usage_percent: usage_pct,
+                        quota_type,
+                        start,
+                        end,
+                        is_exhausted,
+                    });
+                }
+            }
+        }
+    }
+    None
 }

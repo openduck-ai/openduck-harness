@@ -1,3 +1,4 @@
+pub mod quota_slash_command;
 pub mod recipe_slash_command;
 pub mod rule_slash_command;
 pub mod skill_slash_command;

@@ -159,6 +159,18 @@ impl TuiAgentHarnessExtension {
         };
         let current_state = handle.last_state.lock().await.clone();
 
+        if let TuiPaneState::QuotaExceeded { ref message } = current_state {
+            return Ok(ToolCallResponse {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                output: format!(
+                    "Agent '{}' hit quota limit: {message}. Agent is suspended until quota reset. Please switch to another agent (e.g. 'agy', 'codex', 'claude').",
+                    kind
+                ),
+                is_error: true,
+            });
+        }
+
         if let Some(p) = prompt {
             if let TuiPaneState::WaitingApproval { ref prompt_snippet } = current_state {
                 return Ok(ToolCallResponse {
@@ -263,6 +275,7 @@ impl TuiAgentHarnessExtension {
             turn.screen_snapshot
         };
 
+        let is_quota_exceeded = matches!(turn.state, TuiPaneState::QuotaExceeded { .. });
         Ok(ToolCallResponse {
             id: call.id.clone(),
             name: call.name.clone(),
@@ -272,7 +285,7 @@ impl TuiAgentHarnessExtension {
                 turn.state.label(),
                 output
             ),
-            is_error: false,
+            is_error: is_quota_exceeded,
         })
     }
 
@@ -637,12 +650,23 @@ impl HarnessToolExtension for TuiAgentHarnessExtension {
 
         Some(match result {
             Ok(resp) => resp,
-            Err(e) => ToolCallResponse {
-                id: call.id.clone(),
-                name: call.name.clone(),
-                output: format!("Error in tool '{}': {:#}", call.name, e),
-                is_error: true,
-            },
+            Err(e) => {
+                let err_msg = format!("{:#}", e);
+                let helpful = if err_msg.contains("quota resets")
+                    || err_msg.contains("quota limit")
+                    || err_msg.contains("suspended until quota")
+                {
+                    format!("{err_msg}\nTip: Please switch to an alternative agent (e.g. 'agy', 'codex', 'claude').")
+                } else {
+                    format!("Error in tool '{}': {err_msg}", call.name)
+                };
+                ToolCallResponse {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    output: helpful,
+                    is_error: true,
+                }
+            }
         })
     }
 }

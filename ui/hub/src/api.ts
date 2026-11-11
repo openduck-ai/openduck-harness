@@ -328,6 +328,14 @@ export function createApi(baseUrl: string, secret = '', options?: ApiOptions) {
       secret,
       `/api/v1/tui-accounts/${encodeURIComponent(accountId)}/quotas/refresh`,
     )
+  api.listAllTuiQuotas = () =>
+    getJson<{ quotas: QuotaSnapshot[] }>(baseUrl, secret, '/api/v1/tui-quotas')
+  api.refreshTuiAgentQuotas = (agentKind: string) =>
+    postJson<{ success: boolean; quotas: QuotaSnapshot[] }>(
+      baseUrl,
+      secret,
+      `/api/v1/tui-agents/${encodeURIComponent(agentKind)}/quotas/refresh`,
+    )
 
   api.getTuiAgentModels = async (agentKind: string, options?: { refresh?: boolean }): Promise<TuiAgentModelCatalog> => {
     const qs = options?.refresh ? '?refresh=true' : ''

@@ -75,6 +75,9 @@ pub enum TuiPaneState {
     WaitingApproval {
         prompt_snippet: String,
     },
+    QuotaExceeded {
+        message: String,
+    },
     Exited {
         #[serde(skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
@@ -90,12 +93,17 @@ impl TuiPaneState {
         matches!(self, TuiPaneState::Working { .. })
     }
 
+    pub fn is_quota_exceeded(&self) -> bool {
+        matches!(self, TuiPaneState::QuotaExceeded { .. })
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             TuiPaneState::Initializing => "initializing",
             TuiPaneState::IdlePrompt => "idle_prompt",
             TuiPaneState::Working { .. } => "working",
             TuiPaneState::WaitingApproval { .. } => "waiting_approval",
+            TuiPaneState::QuotaExceeded { .. } => "quota_exceeded",
             TuiPaneState::Exited { .. } => "exited",
         }
     }
@@ -474,6 +482,35 @@ pub fn detect_approval_modal(bottom_lines: &[&str]) -> Option<String> {
         } else {
             snippet
         });
+    }
+    None
+}
+
+pub fn detect_quota_limit(lines: &[&str]) -> Option<String> {
+    let joined = lines.join("\n");
+    let lower = joined.to_ascii_lowercase();
+
+    if (lower.contains("upgrade tier") && lower.contains("buy more credits"))
+        || lower.contains("hit your weekly limit")
+        || lower.contains("hit the weekly limit")
+        || lower.contains("reached your weekly limit")
+        || lower.contains("weekly limit left: 0%")
+        || lower.contains("weekly limit reached")
+    {
+        return Some("Hit weekly limit".to_string());
+    }
+    if lower.contains("usage balance exhausted") || lower.contains("balance exhausted") {
+        return Some("Usage balance exhausted".to_string());
+    }
+    if lower.contains("quota exceeded")
+        || lower.contains("exceeded your current quota")
+        || lower.contains("exceeded your quota")
+        || lower.contains("insufficient_quota")
+    {
+        return Some("Quota exceeded".to_string());
+    }
+    if lower.contains("rate limit reached") || lower.contains("hit your rate limit") {
+        return Some("Rate limit reached".to_string());
     }
     None
 }

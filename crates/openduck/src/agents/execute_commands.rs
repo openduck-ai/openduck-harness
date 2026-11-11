@@ -75,6 +75,15 @@ static COMMANDS: &[CommandDef] = &[
         description: "Show session status: model, provider, mode, and token usage",
     },
     CommandDef {
+        name: "quota",
+        description:
+            "View and manage TUI agent quotas, usage limits, and reset times: /quota [reset|refresh|set|block <agent>]",
+    },
+    CommandDef {
+        name: "usage",
+        description: "Check current quota usage and limits across agents (alias for /quota)",
+    },
+    CommandDef {
         name: "resume",
         description:
             "Pick a saved session from a tip menu, or resume by name/id: /resume [name-or-id]",
@@ -184,6 +193,9 @@ impl Agent {
             "rules" => message_outcome(self.handle_rules_command(session_id).await),
             "doctor" => message_outcome(Ok(Some(crate::doctor::run(self, session_id).await?))),
             "status" => message_outcome(self.handle_status_command(session_id).await),
+            "quota" | "usage" | "limit" => {
+                message_outcome(self.handle_quota_command(params_str).await)
+            }
             "goal" => message_outcome(self.handle_goal_command(params_str).await),
             "grind" => message_outcome(self.handle_grind_command(params_str).await),
             "resume" => self.handle_resume_command(params_str, session_id).await,
@@ -365,7 +377,7 @@ impl Agent {
             "N/A".to_string()
         };
 
-        let text = format!(
+        let mut text = format!(
             "**Session status**\n\n\
              - Model: {}\n\
              - Provider: {}\n\
@@ -381,6 +393,20 @@ impl Agent {
             context_pct,
         );
 
+        let quota_summary =
+            crate::slash_commands::quota_slash_command::get_short_quota_summary().await;
+        if !quota_summary.is_empty() {
+            text.push_str("\n\n");
+            text.push_str(&quota_summary);
+        }
+
+        Ok(Some(user_only_assistant_text(text)))
+    }
+
+    async fn handle_quota_command(&self, params_str: &str) -> Result<Option<Message>> {
+        let text =
+            crate::slash_commands::quota_slash_command::handle_quota_slash_command(params_str)
+                .await;
         Ok(Some(user_only_assistant_text(text)))
     }
 

@@ -647,3 +647,141 @@ harness:
     assert!(validate_model_name("-flag").is_err());
     assert!(validate_model_name("/bin/sh").is_err());
 }
+
+#[tokio::test]
+async fn test_quota_exhausted_blocks_agent_until_reset() {
+    use openduck::control::tui_management::StartManagedSessionRequest;
+    use openduck_mcp::tui_session::profiles::detect_quota_limit;
+
+    // 1. Verify screen pattern detection
+    let sample_grok_screen = [
+        "  ┃",
+        "  ┃  You hit your weekly limit.",
+        "  ┃",
+        "  ┃  1 (○) Upgrade tier      Upgrade to a higher tier for more usage",
+        "  ┃  2 (○) Buy more credits  Purchase credits to keep using Grok Build",
+        "  ┃  3 (○) Try Again         Resubmit the last prompt once you have usage again",
+        "  ┃",
+        "  ↑/↓ navigate · y copy                                      Enter:submit",
+    ];
+    let detected = detect_quota_limit(&sample_grok_screen);
+    assert!(detected.is_some());
+    assert_eq!(detected.unwrap(), "Hit weekly limit");
+
+    // 2. Setup in-memory store and service
+    let store = Arc::new(
+        SqliteTuiStore::open(":memory:")
+            .await
+            .expect("open memory db"),
+    );
+    let session_mgr = Arc::new(TuiSessionManager::default());
+    let service = TuiManagementService::new(store.clone(), session_mgr);
+
+    let now = Utc::now();
+    let future_reset = (now + chrono::Duration::days(2)).to_rfc3339();
+
+    // Record exhausted weekly quota for grok
+    let quota = QuotaSnapshotRecord {
+        id: "q_grok_weekly".to_string(),
+        pool_id: "pool_grok".to_string(),
+        account_id: None,
+        agent_kind: Some("grok".to_string()),
+        model_pattern: Some("*".to_string()),
+        quota_type: "weekly".to_string(),
+        unit: "percent".to_string(),
+        used_amount: 100.0,
+        limit_amount: Some(100.0),
+        remaining_percent: Some(0.0),
+        window_start: Some(now.to_rfc3339()),
+        window_end: Some(future_reset.clone()),
+        reset_at: Some(future_reset.clone()),
+        source: "tui_detection".to_string(),
+        status: "exhausted".to_string(),
+        observed_at: now.to_rfc3339(),
+    };
+    store.upsert_quota(&quota).await.expect("upsert quota");
+
+    // Check agent quota reports exhausted
+    let check = service
+        .check_agent_quota("grok", None)
+        .await
+        .expect("check quota");
+    assert!(check.is_some(), "Grok should be reported as exhausted");
+    let check_rec = check.unwrap();
+    assert_eq!(check_rec.status, "exhausted");
+
+    // Attempting to start grok session should be rejected before reset
+    let start_res = service
+        .start_session(StartManagedSessionRequest {
+            agent: "grok".to_string(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            model: None,
+            effort: None,
+            auto_approve: Some(true),
+            resume_id: None,
+            initial_prompt: None,
+            session_name: Some("test_grok_blocked".to_string()),
+            extra_args: None,
+            proxy_mode: None,
+            proxy_id: None,
+            https_proxy: None,
+            account_id: None,
+            idle_timeout_mins: None,
+            exited_retention_mins: None,
+            project_slug: None,
+            task_id: None,
+            run_id: None,
+            subtask_id: None,
+            creation_source: None,
+        })
+        .await;
+
+    assert!(
+        start_res.is_err(),
+        "Should reject starting session for quota-exhausted agent"
+    );
+    let err_msg = start_res.err().unwrap().to_string();
+    assert!(
+        err_msg.contains("hit weekly limit"),
+        "Error must mention weekly limit: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("resets at"),
+        "Error must mention reset time: {err_msg}"
+    );
+
+    // 3. When reset time has passed (in the past):
+    let past_reset = (now - chrono::Duration::hours(1)).to_rfc3339();
+    let expired_quota = QuotaSnapshotRecord {
+        id: "q_grok_weekly".to_string(),
+        pool_id: "pool_grok".to_string(),
+        account_id: None,
+        agent_kind: Some("grok".to_string()),
+        model_pattern: Some("*".to_string()),
+        quota_type: "weekly".to_string(),
+        unit: "percent".to_string(),
+        used_amount: 100.0,
+        limit_amount: Some(100.0),
+        remaining_percent: Some(0.0),
+        window_start: Some(now.to_rfc3339()),
+        window_end: Some(past_reset.clone()),
+        reset_at: Some(past_reset.clone()),
+        source: "tui_detection".to_string(),
+        status: "exhausted".to_string(),
+        observed_at: now.to_rfc3339(),
+    };
+    store
+        .upsert_quota(&expired_quota)
+        .await
+        .expect("upsert expired quota");
+
+    // Check agent quota should auto-restore quota
+    let after_reset = service
+        .check_agent_quota("grok", None)
+        .await
+        .expect("check quota after reset");
+    assert!(
+        after_reset.is_none(),
+        "Quota should no longer block agent after reset_at has passed"
+    );
+}

@@ -154,6 +154,9 @@ impl TuiSessionHandle {
                 TuiPaneState::IdlePrompt => {
                     return Ok(state);
                 }
+                TuiPaneState::QuotaExceeded { .. } => {
+                    return Ok(state);
+                }
                 TuiPaneState::WaitingApproval { .. } => {
                     if !self.config.auto_approve {
                         return Ok(state);
@@ -212,6 +215,12 @@ impl TuiSessionHandle {
                     "Session '{}' is waiting for approval: {}. Inspect with tui_agent_read or confirm with tui_agent_keys before sending a prompt.",
                     self.config.session_id,
                     prompt_snippet
+                ));
+            }
+            TuiPaneState::QuotaExceeded { message } => {
+                return Err(anyhow!(
+                    "Session '{}' hit quota limit: {message}. Agent is suspended until quota resets.",
+                    self.config.session_id
                 ));
             }
             _ => {
@@ -297,6 +306,10 @@ impl TuiSessionHandle {
             let state = self.profile.classify_screen(&raw_screen);
 
             match &state {
+                TuiPaneState::QuotaExceeded { .. } => {
+                    final_state = state;
+                    break;
+                }
                 TuiPaneState::WaitingApproval { .. } => {
                     final_state = state;
                     break;

@@ -8,13 +8,15 @@ use tracing::{error, warn};
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use etcetera::base_strategy::BaseStrategy;
+use openduck_mcp::tui_session::profiles::detect_quota_limit;
 use openduck_mcp::tui_session::{
     AgentCliKind, AgentModelCatalog, TuiPaneState, TuiSessionConfig, TuiSessionManager,
     TuiTurnResult,
 };
 
 use super::models::{
-    SessionOperationRecord, SessionRunBindingRecord, TuiManagementEvent, TuiSessionRecord,
+    QuotaSnapshotRecord, SessionOperationRecord, SessionRunBindingRecord, TuiManagementEvent,
+    TuiSessionRecord,
 };
 use super::store::SqliteTuiStore;
 
@@ -324,11 +326,245 @@ impl TuiManagementService {
         Ok(reclaimed_ids)
     }
 
+    pub async fn check_agent_quota(
+        &self,
+        agent_kind: &str,
+        account_id: Option<&str>,
+    ) -> Result<Option<QuotaSnapshotRecord>> {
+        let normalized = agent_kind.trim().to_ascii_lowercase();
+        let now = Utc::now();
+
+        // 1. Check store for active quota record first
+        if let Some(mut quota) = self.store.find_quota_by_agent(&normalized).await? {
+            if quota.status == "exhausted" || quota.remaining_percent == Some(0.0) {
+                if let Some(ref reset_str) = quota.reset_at {
+                    if let Ok(reset_dt) = chrono::DateTime::parse_from_rfc3339(reset_str) {
+                        if now >= reset_dt {
+                            // Reset time has passed! Automatically restore quota
+                            quota.status = "valid".to_string();
+                            quota.remaining_percent = Some(100.0);
+                            quota.used_amount = 0.0;
+                            quota.observed_at = now.to_rfc3339();
+                            let _ = self.store.upsert_quota(&quota).await;
+                            self.emit_event(
+                                "quota_reset",
+                                None,
+                                None,
+                                serde_json::json!({
+                                    "agent": normalized,
+                                    "quota_type": quota.quota_type,
+                                    "reset_at": reset_str,
+                                }),
+                            );
+                            return Ok(None);
+                        }
+                    }
+                }
+                return Ok(Some(quota));
+            } else if quota.status == "valid" {
+                return Ok(None);
+            }
+        }
+
+        // 2. Proactive check for grok if not yet recorded in store
+        if normalized == "grok" {
+            if let Some(info) = openduck_mcp::tui_session::profiles::grok::read_grok_quota_info() {
+                if info.is_exhausted {
+                    let is_still_exhausted = if let Some(ref end_str) = info.end {
+                        if let Ok(end_dt) = chrono::DateTime::parse_from_rfc3339(end_str) {
+                            now < end_dt
+                        } else {
+                            true
+                        }
+                    } else {
+                        true
+                    };
+
+                    if is_still_exhausted {
+                        let existing = self.store.find_quota_by_agent(&normalized).await?;
+                        let q_id = existing
+                            .map(|e| e.id)
+                            .unwrap_or_else(|| format!("quota_{}", uuid::Uuid::new_v4()));
+                        let record = QuotaSnapshotRecord {
+                            id: q_id,
+                            pool_id: format!("pool_{normalized}"),
+                            account_id: account_id.map(ToString::to_string),
+                            agent_kind: Some(normalized.clone()),
+                            model_pattern: Some("*".to_string()),
+                            quota_type: info.quota_type,
+                            unit: "percent".to_string(),
+                            used_amount: info.credit_usage_percent,
+                            limit_amount: Some(100.0),
+                            remaining_percent: Some(0.0),
+                            window_start: info.start,
+                            window_end: info.end.clone(),
+                            reset_at: info.end,
+                            source: "cli_billing_log".to_string(),
+                            status: "exhausted".to_string(),
+                            observed_at: now.to_rfc3339(),
+                        };
+                        let _ = self.store.upsert_quota(&record).await;
+                        return Ok(Some(record));
+                    }
+                }
+            }
+        }
+
+        // 3. Also check account_id if provided
+        if let Some(acc_id) = account_id {
+            let quotas = self.store.list_quotas(Some(acc_id)).await?;
+            for mut q in quotas {
+                if q.status == "exhausted" || q.remaining_percent == Some(0.0) {
+                    let now = Utc::now();
+                    if let Some(ref reset_str) = q.reset_at {
+                        if let Ok(reset_dt) = chrono::DateTime::parse_from_rfc3339(reset_str) {
+                            if now >= reset_dt {
+                                q.status = "valid".to_string();
+                                q.remaining_percent = Some(100.0);
+                                q.used_amount = 0.0;
+                                q.observed_at = now.to_rfc3339();
+                                let _ = self.store.upsert_quota(&q).await;
+                                continue;
+                            }
+                        }
+                    }
+                    return Ok(Some(q));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    pub async fn record_quota_exhausted(
+        &self,
+        agent_kind: &str,
+        account_id: Option<&str>,
+        quota_type: &str,
+        _message: &str,
+        reset_at: Option<String>,
+    ) -> Result<QuotaSnapshotRecord> {
+        let normalized = agent_kind.trim().to_ascii_lowercase();
+        let now = Utc::now();
+
+        let (exact_reset, window_start, window_end) = if normalized == "grok" {
+            if let Some(info) = openduck_mcp::tui_session::profiles::grok::read_grok_quota_info() {
+                (info.end.clone(), info.start, info.end)
+            } else {
+                (
+                    reset_at.or_else(|| Some((now + chrono::Duration::days(7)).to_rfc3339())),
+                    None,
+                    None,
+                )
+            }
+        } else {
+            (
+                reset_at.or_else(|| Some((now + chrono::Duration::days(7)).to_rfc3339())),
+                None,
+                None,
+            )
+        };
+
+        let existing = self.store.find_quota_by_agent(&normalized).await?;
+        let q_id = existing
+            .map(|e| e.id)
+            .unwrap_or_else(|| format!("quota_{}", uuid::Uuid::new_v4()));
+
+        let record = QuotaSnapshotRecord {
+            id: q_id,
+            pool_id: format!("pool_{normalized}"),
+            account_id: account_id.map(ToString::to_string),
+            agent_kind: Some(normalized.clone()),
+            model_pattern: Some("*".to_string()),
+            quota_type: quota_type.to_string(),
+            unit: "percent".to_string(),
+            used_amount: 100.0,
+            limit_amount: Some(100.0),
+            remaining_percent: Some(0.0),
+            window_start,
+            window_end,
+            reset_at: exact_reset,
+            source: "tui_detection".to_string(),
+            status: "exhausted".to_string(),
+            observed_at: now.to_rfc3339(),
+        };
+
+        self.store.upsert_quota(&record).await?;
+
+        self.emit_event(
+            "quota_exhausted",
+            None,
+            None,
+            serde_json::to_value(&record).unwrap_or_default(),
+        );
+
+        Ok(record)
+    }
+
+    pub async fn refresh_quotas_for_agent(
+        &self,
+        agent_kind: &str,
+    ) -> Result<Option<QuotaSnapshotRecord>> {
+        let normalized = agent_kind.trim().to_ascii_lowercase();
+        if normalized == "grok" {
+            if let Some(info) = openduck_mcp::tui_session::profiles::grok::read_grok_quota_info() {
+                let now = Utc::now();
+                let existing = self.store.find_quota_by_agent(&normalized).await?;
+                let q_id = existing
+                    .map(|e| e.id)
+                    .unwrap_or_else(|| format!("quota_{}", uuid::Uuid::new_v4()));
+                let remaining = (100.0 - info.credit_usage_percent).max(0.0);
+                let record = QuotaSnapshotRecord {
+                    id: q_id,
+                    pool_id: format!("pool_{normalized}"),
+                    account_id: None,
+                    agent_kind: Some(normalized.clone()),
+                    model_pattern: Some("*".to_string()),
+                    quota_type: info.quota_type,
+                    unit: "percent".to_string(),
+                    used_amount: info.credit_usage_percent,
+                    limit_amount: Some(100.0),
+                    remaining_percent: Some(remaining),
+                    window_start: info.start,
+                    window_end: info.end.clone(),
+                    reset_at: info.end,
+                    source: "cli_billing_log".to_string(),
+                    status: if info.is_exhausted {
+                        "exhausted".to_string()
+                    } else {
+                        "valid".to_string()
+                    },
+                    observed_at: now.to_rfc3339(),
+                };
+                self.store.upsert_quota(&record).await?;
+                return Ok(Some(record));
+            }
+        }
+        self.store.find_quota_by_agent(&normalized).await
+    }
+
     pub async fn start_session(
         &self,
         req: StartManagedSessionRequest,
     ) -> Result<(TuiSessionRecord, Option<TuiTurnResult>)> {
         let kind = AgentCliKind::from_str(&req.agent)?;
+
+        // Quota check: If agent hit limit, do not use before limit reset
+        if let Some(exhausted) = self
+            .check_agent_quota(&kind.to_string(), req.account_id.as_deref())
+            .await?
+        {
+            let reset_info = match &exhausted.reset_at {
+                Some(r) => format!("resets at {}", r),
+                None => "waiting for limit reset".to_string(),
+            };
+            return Err(anyhow!(
+                "Cannot use agent '{}': hit {} limit ({reset_info}). Agent is suspended until quota resets.",
+                kind,
+                exhausted.quota_type
+            ));
+        }
+
         let session_name = req
             .session_name
             .clone()
@@ -632,6 +868,23 @@ impl TuiManagementService {
             }
         }
 
+        // Quota check: If agent hit limit, do not use before limit reset
+        if let Some(exhausted) = self
+            .check_agent_quota(&sess_rec.agent_kind, sess_rec.account_id.as_deref())
+            .await?
+        {
+            let reset_info = match &exhausted.reset_at {
+                Some(r) => format!("resets at {}", r),
+                None => "waiting for limit reset".to_string(),
+            };
+            return Err(anyhow!(
+                "Cannot use session '{}' (agent '{}'): hit {} limit ({reset_info}). Agent is suspended until quota resets.",
+                sess_rec.session_name,
+                sess_rec.agent_kind,
+                exhausted.quota_type
+            ));
+        }
+
         let op_id = format!("op_{}", uuid::Uuid::new_v4());
         let start_time = Instant::now();
         let now_str = Utc::now().to_rfc3339();
@@ -685,6 +938,32 @@ impl TuiManagementService {
                 updated.last_input_at = Some(finished_str.clone());
                 updated.last_progress_at = Some(finished_str.clone());
                 updated.tui_pane_state = turn.state.label().to_string();
+
+                if let TuiPaneState::QuotaExceeded { ref message } = turn.state {
+                    let _ = self
+                        .record_quota_exhausted(
+                            &updated.agent_kind,
+                            updated.account_id.as_deref(),
+                            "weekly",
+                            message,
+                            None,
+                        )
+                        .await;
+                } else if let Some(msg) =
+                    detect_quota_limit(&[&turn.screen_snapshot, &turn.response])
+                {
+                    updated.tui_pane_state = "quota_exceeded".to_string();
+                    let _ = self
+                        .record_quota_exhausted(
+                            &updated.agent_kind,
+                            updated.account_id.as_deref(),
+                            "weekly",
+                            &msg,
+                            None,
+                        )
+                        .await;
+                }
+
                 let _ = self.store.update_session(&updated).await;
 
                 self.emit_event(
@@ -695,6 +974,21 @@ impl TuiManagementService {
                 );
             }
             Err(e) => {
+                let err_str = e.to_string();
+                if let Some(msg) = detect_quota_limit(&[&err_str]) {
+                    let _ = self
+                        .record_quota_exhausted(
+                            &sess_rec.agent_kind,
+                            sess_rec.account_id.as_deref(),
+                            "weekly",
+                            &msg,
+                            None,
+                        )
+                        .await;
+                    let mut updated = sess_rec;
+                    updated.tui_pane_state = "quota_exceeded".to_string();
+                    let _ = self.store.update_session(&updated).await;
+                }
                 let _ = self
                     .store
                     .complete_operation(&op_id, "failed", Some(&e.to_string()), dur, &finished_str)

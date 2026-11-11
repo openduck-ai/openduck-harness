@@ -823,6 +823,45 @@ impl SqliteTuiStore {
         Ok(())
     }
 
+    pub async fn find_quota_by_agent(
+        &self,
+        agent_kind: &str,
+    ) -> Result<Option<QuotaSnapshotRecord>> {
+        let row = sqlx::query(
+            "SELECT * FROM tui_quotas WHERE agent_kind = ? ORDER BY observed_at DESC LIMIT 1",
+        )
+        .bind(agent_kind)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| QuotaSnapshotRecord {
+            id: r.get("id"),
+            pool_id: r.get("pool_id"),
+            account_id: r.get("account_id"),
+            agent_kind: r.get("agent_kind"),
+            model_pattern: r.get("model_pattern"),
+            quota_type: r.get("quota_type"),
+            unit: r.get("unit"),
+            used_amount: r.get("used_amount"),
+            limit_amount: r.get("limit_amount"),
+            remaining_percent: r.get("remaining_percent"),
+            window_start: r.get("window_start"),
+            window_end: r.get("window_end"),
+            reset_at: r.get("reset_at"),
+            source: r.get("source"),
+            status: r.get("status"),
+            observed_at: r.get("observed_at"),
+        }))
+    }
+
+    pub async fn delete_quota(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM tui_quotas WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn insert_reservation(&self, res: &UsageReservationRecord) -> Result<()> {
         sqlx::query(
             "INSERT INTO tui_usage_reservations (id, session_id, account_id, run_id, amount, unit, status, created_at, settled_at)

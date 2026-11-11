@@ -239,6 +239,13 @@ impl TuiAgentServer {
         })?;
 
         let current_state = handle.last_state.lock().await.clone();
+        if let TuiPaneState::QuotaExceeded { ref message } = current_state {
+            return Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("Session '{session_id}' ({kind}) hit quota limit: {message}"),
+                None,
+            ));
+        }
         let mut initial_turn = None;
         if let Some(prompt) = params.initial_prompt {
             if matches!(current_state, TuiPaneState::WaitingApproval { .. }) {

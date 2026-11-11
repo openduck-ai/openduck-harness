@@ -277,25 +277,22 @@ impl Operation<Session, GooseEffect> for InferenceRunner<'_> {
         conversation: &Conversation,
         emit: &Emitter,
     ) -> Result<OperationResult<GooseEffect>> {
-        if command.command != "status" {
-            return not_applicable();
-        }
-
-        let context_limit = self
-            .provider
-            .get_context_limit(&self.model_config)
-            .await
-            .unwrap_or_else(|_| self.model_config.context_limit());
-        let context_tokens = session.usage.total_tokens.unwrap_or(0).max(0) as usize;
-        let lifetime_tokens = session.accumulated_usage.total_tokens.unwrap_or(0).max(0) as usize;
-        let context_pct = if context_limit > 0 {
-            let pct = ((context_tokens as f64 / context_limit as f64) * 100.0).round() as usize;
-            format!("{}%", pct.min(100))
-        } else {
-            "N/A".to_string()
-        };
-        let response = Message::assistant()
-            .with_text(format!(
+        if command.command == "status" {
+            let context_limit = self
+                .provider
+                .get_context_limit(&self.model_config)
+                .await
+                .unwrap_or_else(|_| self.model_config.context_limit());
+            let context_tokens = session.usage.total_tokens.unwrap_or(0).max(0) as usize;
+            let lifetime_tokens =
+                session.accumulated_usage.total_tokens.unwrap_or(0).max(0) as usize;
+            let context_pct = if context_limit > 0 {
+                let pct = ((context_tokens as f64 / context_limit as f64) * 100.0).round() as usize;
+                format!("{}%", pct.min(100))
+            } else {
+                "N/A".to_string()
+            };
+            let mut status_text = format!(
                 "**Session status**\n\n\
                  - Model: {}\n\
                  - Provider: {}\n\
@@ -309,28 +306,67 @@ impl Operation<Session, GooseEffect> for InferenceRunner<'_> {
                 context_tokens,
                 context_limit,
                 context_pct,
-            ))
-            .with_visibility(true, false);
-        let command_message = messages_since_kickoff(conversation)?
-            .first()
-            .cloned()
-            .ok_or_else(|| anyhow!("status command conversation has no kickoff message"))?;
-        let message_id = command_message
-            .id
-            .clone()
-            .ok_or_else(|| anyhow!("Persisted slash command message has no id"))?;
-        emit.message(command_message.with_visibility(true, false))
-            .await;
-        let response = emit.message(response).await;
-        yielded_with([
-            ConversationEffect::SetMessageVisibility {
-                message_id,
-                user_visible: true,
-                agent_visible: false,
+            );
+            let quota_summary =
+                crate::slash_commands::quota_slash_command::get_short_quota_summary().await;
+            if !quota_summary.is_empty() {
+                status_text.push_str("\n\n");
+                status_text.push_str(&quota_summary);
             }
-            .into(),
-            response.into(),
-        ])
+            let response = Message::assistant()
+                .with_text(status_text)
+                .with_visibility(true, false);
+            let command_message = messages_since_kickoff(conversation)?
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow!("status command conversation has no kickoff message"))?;
+            let message_id = command_message
+                .id
+                .clone()
+                .ok_or_else(|| anyhow!("Persisted slash command message has no id"))?;
+            emit.message(command_message.with_visibility(true, false))
+                .await;
+            let response = emit.message(response).await;
+            yielded_with([
+                ConversationEffect::SetMessageVisibility {
+                    message_id,
+                    user_visible: true,
+                    agent_visible: false,
+                }
+                .into(),
+                response.into(),
+            ])
+        } else if matches!(command.command, "quota" | "usage" | "limit") {
+            let text = crate::slash_commands::quota_slash_command::handle_quota_slash_command(
+                command.params_str,
+            )
+            .await;
+            let response = Message::assistant()
+                .with_text(text)
+                .with_visibility(true, false);
+            let command_message = messages_since_kickoff(conversation)?
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow!("quota command conversation has no kickoff message"))?;
+            let message_id = command_message
+                .id
+                .clone()
+                .ok_or_else(|| anyhow!("Persisted slash command message has no id"))?;
+            emit.message(command_message.with_visibility(true, false))
+                .await;
+            let response = emit.message(response).await;
+            yielded_with([
+                ConversationEffect::SetMessageVisibility {
+                    message_id,
+                    user_visible: true,
+                    agent_visible: false,
+                }
+                .into(),
+                response.into(),
+            ])
+        } else {
+            not_applicable()
+        }
     }
 }
 

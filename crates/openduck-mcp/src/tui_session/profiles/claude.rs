@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use super::AgentTuiProfile;
 use super::{
-    detect_approval_modal, detect_composer_idle_prompt, switch_via_slash_command, AgentCliKind,
-    TuiPaneState, TuiSessionConfig,
+    detect_approval_modal, detect_composer_idle_prompt, detect_quota_limit,
+    switch_via_slash_command, AgentCliKind, TuiPaneState, TuiSessionConfig,
 };
 use crate::tui_session::backend::MultiplexerBackend;
 use crate::tui_session::screen::{contains_braille_spinner, ScreenSnapshot};
@@ -61,6 +61,15 @@ impl AgentTuiProfile for ClaudeTuiProfile {
         let bottom = snapshot.bottom_non_empty_lines(14);
         if bottom.is_empty() {
             return TuiPaneState::Initializing;
+        }
+
+        if let Some(msg) = detect_quota_limit(&bottom) {
+            return TuiPaneState::QuotaExceeded { message: msg };
+        }
+        let full_clean = snapshot.trimmed_clean();
+        let full_lines: Vec<&str> = full_clean.lines().collect();
+        if let Some(msg) = detect_quota_limit(&full_lines) {
+            return TuiPaneState::QuotaExceeded { message: msg };
         }
 
         if let Some(snippet) = detect_approval_modal(&bottom) {

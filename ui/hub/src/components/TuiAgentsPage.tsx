@@ -39,6 +39,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
   const [agents, setAgents] = useState<AgentProfile[]>([])
   const [accounts, setAccounts] = useState<TuiAccount[]>([])
   const [quotas, setQuotas] = useState<Record<string, QuotaSnapshot[]>>({})
+  const [allQuotas, setAllQuotas] = useState<QuotaSnapshot[]>([])
   const [proxies, setProxies] = useState<ProxyItem[]>([])
   const [fileProxies, setFileProxies] = useState<Record<string, string>>({})
   const [editFileProxyMode, setEditFileProxyMode] = useState<'inherit' | 'direct' | 'url'>('inherit')
@@ -103,13 +104,28 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       }
       setFileProxies(nextFileProxies)
 
+      // Load all quotas
+      let allQuotasList: QuotaSnapshot[] = []
+      if (typeof (api as any).listAllTuiQuotas === 'function') {
+        try {
+          const allQ = await (api as any).listAllTuiQuotas()
+          allQuotasList = allQ.quotas || []
+        } catch (_) {}
+      }
+      setAllQuotas(allQuotasList)
+
       // Load quotas for accounts
       const quotasMap: Record<string, QuotaSnapshot[]> = {}
       for (const acc of accRes.accounts || []) {
-        try {
-          const qRes = await api.listTuiQuotas(acc.id)
-          quotasMap[acc.id] = qRes.quotas || []
-        } catch (_) {}
+        const matching = allQuotasList.filter(q => q.accountId === acc.id)
+        if (matching.length > 0) {
+          quotasMap[acc.id] = matching
+        } else {
+          try {
+            const qRes = await api.listTuiQuotas(acc.id)
+            quotasMap[acc.id] = qRes.quotas || []
+          } catch (_) {}
+        }
       }
       setQuotas(quotasMap)
     } catch (e: any) {
@@ -318,6 +334,17 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
     }
   }
 
+  const handleRefreshAgentQuotas = async (agentKind: string) => {
+    try {
+      if (typeof (api as any).refreshTuiAgentQuotas === 'function') {
+        await (api as any).refreshTuiAgentQuotas(agentKind)
+      }
+      loadData()
+    } catch (e: any) {
+      alert(t('tuiAgents.page.refreshQuotasFailed', { message: e.message }))
+    }
+  }
+
   const resolveProxyDisplay = (proxyMode?: string, proxyId?: string, effectiveProxy?: string) => {
     if (effectiveProxy) {
       const match = proxies.find(p => p.id === effectiveProxy || p.url === effectiveProxy)
@@ -446,7 +473,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           { key: 'history', label: t('tuiAgents.page.tabSessionHistory', { count: historicalSessions.length }), icon: History },
           { key: 'operations', label: t('tuiAgents.page.tabOperationsLedger', { count: operations.length }), icon: ListOrdered },
           { key: 'agents', label: t('tuiAgents.page.tabAgentProfiles', { count: agents.length }), icon: Cpu },
-          { key: 'quotas', label: t('tuiAgents.page.tabAccountsQuotas', { count: accounts.length }), icon: CreditCard },
+          { key: 'quotas', label: t('tuiAgents.page.tabAccountsQuotas', { count: accounts.length + allQuotas.length }), icon: CreditCard },
         ].map(tab => {
           const Icon = tab.icon
           const isActive = activeTab === tab.key
@@ -874,6 +901,20 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       </span>
                     </div>
                     <div><strong>{t('tuiAgents.page.labelAccountBinding')}</strong> {profile?.accountId || t('tuiAgents.page.noneSystem')}</div>
+                    {(() => {
+                      const q = allQuotas.find(item => item.agentKind?.toLowerCase() === kind.toLowerCase())
+                      if (!q) return null
+                      const isExhausted = q.status === 'exhausted'
+                      return (
+                        <div>
+                          <strong>{t('tuiAgents.page.labelQuotaStatus')}</strong>{' '}
+                          <span style={{ color: isExhausted ? '#c62828' : '#2e7d32', fontWeight: 600 }}>
+                            {isExhausted ? `🚫 ${t('tuiAgents.page.quotaStatusExhausted')}` : `✅ ${t('tuiAgents.page.quotaStatusValid')}`}
+                          </span>
+                          {q.remainingPercent !== undefined && <span> ({q.remainingPercent.toFixed(0)}% left)</span>}
+                        </div>
+                      )
+                    })()}
                     <div><strong>{t('tuiAgents.page.labelMaxConcurrency')}</strong> {profile?.maxConcurrency || t('tuiAgents.page.unlimited')}</div>
                     <div><strong>{t('tuiAgents.page.labelIdleTimeout')}</strong> {profile?.idleTimeoutMins ? t('tuiAgents.page.timeoutMins', { mins: profile.idleTimeoutMins }) : t('tuiAgents.page.timeoutDefault')}</div>
                   </div>
@@ -887,6 +928,94 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       {/* Tab: Accounts & Quotas */}
       {activeTab === 'quotas' && (
         <div>
+          {/* Agent Quota Pools & Limits */}
+          {allQuotas.length > 0 && (
+            <div style={{ marginBottom: '32px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h3 style={{ margin: 0, fontSize: '16px' }}>{t('tuiAgents.page.agentQuotasTitle')}</h3>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '16px' }}>
+                {allQuotas.map(q => {
+                  const isExhausted = q.status === 'exhausted'
+                  const agentName = q.agentKind || q.poolId
+                  return (
+                    <div
+                      key={q.id}
+                      style={{
+                        padding: '20px',
+                        borderRadius: '8px',
+                        background: isExhausted ? 'rgba(244, 67, 54, 0.04)' : 'var(--bg-card, #f9f9f9)',
+                        border: isExhausted ? '1px solid #f44336' : '1px solid var(--border-color, #eee)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                        <div>
+                          <h4 style={{ margin: 0, fontSize: '15px', textTransform: 'capitalize', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <Cpu size={16} />
+                            <span>{agentName}</span>
+                            <span
+                              style={{
+                                fontSize: '11px',
+                                padding: '2px 8px',
+                                borderRadius: '10px',
+                                background: isExhausted ? '#ffebee' : '#e8f5e9',
+                                color: isExhausted ? '#c62828' : '#2e7d32',
+                                fontWeight: 600,
+                              }}
+                            >
+                              {isExhausted ? `🚫 ${t('tuiAgents.page.quotaStatusExhausted')}` : `✅ ${t('tuiAgents.page.quotaStatusValid')}`}
+                            </span>
+                          </h4>
+                          <div style={{ fontSize: '12px', color: 'var(--text-muted, #888)', marginTop: '2px' }}>
+                            {t('tuiAgents.page.quotaHeading', { type: q.quotaType, unit: q.unit })}
+                          </div>
+                        </div>
+                        {q.agentKind && (
+                          <button
+                            type="button"
+                            onClick={() => handleRefreshAgentQuotas(q.agentKind!)}
+                            style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '4px', border: '1px solid #ccc', cursor: 'pointer' }}
+                          >
+                            {t('tuiAgents.page.btnRefreshQuota')}
+                          </button>
+                        )}
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                          <span>{t('tuiAgents.page.usedAmount', { amount: q.usedAmount })}</span>
+                          <span style={{ fontWeight: 600 }}>
+                            {q.remainingPercent !== undefined
+                              ? t('tuiAgents.page.percentLeft', {
+                                  percent: formatNumber(q.remainingPercent, {
+                                    minimumFractionDigits: 1,
+                                    maximumFractionDigits: 1,
+                                  }),
+                                })
+                              : t('tuiAgents.page.unknown')}
+                          </span>
+                        </div>
+                        <div style={{ height: '6px', width: '100%', background: '#eee', borderRadius: '3px', overflow: 'hidden' }}>
+                          <div
+                            style={{
+                              height: '100%',
+                              width: `${Math.min(100, Math.max(0, q.remainingPercent ?? 100))}%`,
+                              background: (q.remainingPercent ?? 100) > 20 ? '#4caf50' : '#f44336',
+                            }}
+                          />
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted, #888)', marginTop: '4px' }}>
+                          <span>{q.resetAt ? t('tuiAgents.page.quotaResetsAt', { time: q.resetAt }) : (q.source ? t('tuiAgents.page.quotaSource', { source: q.source }) : '')}</span>
+                          <span>{t('tuiAgents.page.observedTime', { time: formatTime(q.observedAt) })}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
             <h3 style={{ margin: 0, fontSize: '16px' }}>{t('tuiAgents.page.providerAccountsTitle')}</h3>
             <button

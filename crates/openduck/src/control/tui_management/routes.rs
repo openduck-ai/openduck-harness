@@ -514,30 +514,101 @@ pub async fn refresh_tui_quotas(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let service = TuiManagementService::global().await;
     let now = Utc::now().to_rfc3339();
-    let sample = QuotaSnapshotRecord {
-        id: format!("quota_{}", uuid::Uuid::new_v4()),
-        pool_id: format!("pool_{}", account_id),
-        account_id: Some(account_id.clone()),
-        agent_kind: None,
-        model_pattern: Some("*".to_string()),
-        quota_type: "weekly".to_string(),
-        unit: "percent".to_string(),
-        used_amount: 15.0,
-        limit_amount: Some(100.0),
-        remaining_percent: Some(85.0),
-        window_start: Some(now.clone()),
-        window_end: None,
-        reset_at: None,
-        source: "cli_status".to_string(),
-        status: "valid".to_string(),
-        observed_at: now,
+
+    // If there is an agent associated with this account or account is grok
+    let refreshed = if account_id.to_ascii_lowercase().contains("grok") {
+        service
+            .refresh_quotas_for_agent("grok")
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
     };
-    service.store.upsert_quota(&sample).await.map_err(bad)?;
+
+    if refreshed.is_none() {
+        let sample = QuotaSnapshotRecord {
+            id: format!("quota_{}", uuid::Uuid::new_v4()),
+            pool_id: format!("pool_{}", account_id),
+            account_id: Some(account_id.clone()),
+            agent_kind: None,
+            model_pattern: Some("*".to_string()),
+            quota_type: "weekly".to_string(),
+            unit: "percent".to_string(),
+            used_amount: 15.0,
+            limit_amount: Some(100.0),
+            remaining_percent: Some(85.0),
+            window_start: Some(now.clone()),
+            window_end: None,
+            reset_at: None,
+            source: "cli_status".to_string(),
+            status: "valid".to_string(),
+            observed_at: now,
+        };
+        service.store.upsert_quota(&sample).await.map_err(bad)?;
+    }
+
     let quotas = service
         .store
         .list_quotas(Some(&account_id))
         .await
         .map_err(bad)?;
+    Ok(Json(
+        serde_json::json!({ "success": true, "quotas": quotas }),
+    ))
+}
+
+pub async fn list_all_tui_quotas(
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let service = TuiManagementService::global().await;
+    let quotas = service.store.list_quotas(None).await.map_err(bad)?;
+    Ok(Json(serde_json::json!({ "quotas": quotas })))
+}
+
+pub async fn upsert_tui_quota(
+    Json(mut req): Json<QuotaSnapshotRecord>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let service = TuiManagementService::global().await;
+    let now = Utc::now().to_rfc3339();
+    if req.id.is_empty() {
+        req.id = format!("quota_{}", uuid::Uuid::new_v4());
+    }
+    if req.observed_at.is_empty() {
+        req.observed_at = now;
+    }
+    service.store.upsert_quota(&req).await.map_err(bad)?;
+    service.emit_event(
+        "quota_updated",
+        None,
+        None,
+        serde_json::to_value(&req).unwrap_or_default(),
+    );
+    Ok(Json(serde_json::json!({ "success": true, "quota": req })))
+}
+
+pub async fn get_tui_agent_quotas(
+    AxumPath(agent_id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let service = TuiManagementService::global().await;
+    let _ = service.check_agent_quota(&agent_id, None).await;
+    let quota = service
+        .store
+        .find_quota_by_agent(&agent_id)
+        .await
+        .map_err(bad)?;
+    let quotas = quota.into_iter().collect::<Vec<_>>();
+    Ok(Json(serde_json::json!({ "quotas": quotas })))
+}
+
+pub async fn refresh_tui_agent_quotas(
+    AxumPath(agent_id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let service = TuiManagementService::global().await;
+    let quota = service
+        .refresh_quotas_for_agent(&agent_id)
+        .await
+        .map_err(bad)?;
+    let quotas = quota.into_iter().collect::<Vec<_>>();
     Ok(Json(
         serde_json::json!({ "success": true, "quotas": quotas }),
     ))
@@ -679,6 +750,15 @@ where
         .route(
             "/api/v1/tui-accounts/{id}/quotas/refresh",
             post(refresh_tui_quotas),
+        )
+        .route(
+            "/api/v1/tui-quotas",
+            get(list_all_tui_quotas).post(upsert_tui_quota),
+        )
+        .route("/api/v1/tui-agents/{id}/quotas", get(get_tui_agent_quotas))
+        .route(
+            "/api/v1/tui-agents/{id}/quotas/refresh",
+            post(refresh_tui_agent_quotas),
         )
         .route("/api/v1/tui-events", get(tui_events_sse))
 }

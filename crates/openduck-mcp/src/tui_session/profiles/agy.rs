@@ -1,7 +1,7 @@
 use super::{
     detect_approval_modal, detect_common_working_status, detect_composer_idle_prompt,
-    strip_common_tui_chrome, switch_via_slash_command, user_home, AgentCliKind, AgentTuiProfile,
-    TuiPaneState, TuiSessionConfig,
+    detect_quota_limit, strip_common_tui_chrome, switch_via_slash_command, user_home, AgentCliKind,
+    AgentTuiProfile, TuiPaneState, TuiSessionConfig,
 };
 use crate::tui_session::backend::MultiplexerBackend;
 use crate::tui_session::screen::{is_horizontal_rule_line, ScreenSnapshot};
@@ -204,6 +204,14 @@ impl AgentTuiProfile for AgyTuiProfile {
         let bottom = snapshot.bottom_non_empty_lines(14);
         if bottom.is_empty() {
             return TuiPaneState::Initializing;
+        }
+        if let Some(msg) = detect_quota_limit(&bottom) {
+            return TuiPaneState::QuotaExceeded { message: msg };
+        }
+        let full_clean = snapshot.trimmed_clean();
+        let full_lines: Vec<&str> = full_clean.lines().collect();
+        if let Some(msg) = detect_quota_limit(&full_lines) {
+            return TuiPaneState::QuotaExceeded { message: msg };
         }
         if let Some(snippet) = detect_approval_modal(&bottom) {
             return TuiPaneState::WaitingApproval {
