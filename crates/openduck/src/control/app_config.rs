@@ -1750,7 +1750,7 @@ pub fn read_tui_agent_proxies(config: &Config) -> Result<TuiAgentProxyDocument, 
     let harness = load_harness_map(config)?;
     let sessions = harness
         .as_ref()
-        .map(|map| tui_sessions_from_harness(map))
+        .map(tui_sessions_from_harness)
         .unwrap_or_default();
     Ok(TuiAgentProxyDocument {
         agents: tui_proxy_rows(&sessions),

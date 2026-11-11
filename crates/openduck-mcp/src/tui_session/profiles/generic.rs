@@ -7,12 +7,14 @@ use super::{
     TuiSessionConfig,
 };
 use crate::tui_session::screen::{contains_braille_spinner, ScreenSnapshot};
+use async_trait::async_trait;
 
 #[derive(Debug, Default, Clone)]
 pub struct GenericTuiProfile {
     pub prompt_pattern: Option<String>,
 }
 
+#[async_trait]
 impl AgentTuiProfile for GenericTuiProfile {
     fn kind(&self) -> AgentCliKind {
         AgentCliKind::Custom

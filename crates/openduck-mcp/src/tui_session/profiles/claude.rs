@@ -7,14 +7,17 @@ use std::path::{Path, PathBuf};
 
 use super::AgentTuiProfile;
 use super::{
-    detect_approval_modal, detect_composer_idle_prompt, AgentCliKind, TuiPaneState,
-    TuiSessionConfig,
+    detect_approval_modal, detect_composer_idle_prompt, switch_via_slash_command, AgentCliKind,
+    TuiPaneState, TuiSessionConfig,
 };
+use crate::tui_session::backend::MultiplexerBackend;
 use crate::tui_session::screen::{contains_braille_spinner, ScreenSnapshot};
+use async_trait::async_trait;
 
 #[derive(Debug, Default, Clone)]
 pub struct ClaudeTuiProfile;
 
+#[async_trait]
 impl AgentTuiProfile for ClaudeTuiProfile {
     fn kind(&self) -> AgentCliKind {
         AgentCliKind::Claude
@@ -34,6 +37,16 @@ impl AgentTuiProfile for ClaudeTuiProfile {
         if let Some(ref r) = config.resume_id {
             cmd.push("--resume".to_string());
             cmd.push(r.clone());
+        }
+
+        if let Some(model) = config
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            cmd.push("--model".to_string());
+            cmd.push(model.to_string());
         }
 
         for arg in &config.extra_args {
@@ -153,6 +166,19 @@ impl AgentTuiProfile for ClaudeTuiProfile {
         } else {
             Some(responses.join("\n\n"))
         }
+    }
+
+    fn supports_runtime_model_switch(&self) -> bool {
+        true
+    }
+
+    async fn switch_runtime_model(
+        &self,
+        backend: &dyn MultiplexerBackend,
+        session_name: &str,
+        new_model: &str,
+    ) -> Result<String> {
+        switch_via_slash_command(backend, session_name, new_model).await
     }
 }
 

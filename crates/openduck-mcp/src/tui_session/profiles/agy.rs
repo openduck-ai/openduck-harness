@@ -1,10 +1,12 @@
 use super::{
     detect_approval_modal, detect_common_working_status, detect_composer_idle_prompt,
-    strip_common_tui_chrome, user_home, AgentCliKind, AgentTuiProfile, TuiPaneState,
-    TuiSessionConfig,
+    strip_common_tui_chrome, switch_via_slash_command, user_home, AgentCliKind, AgentTuiProfile,
+    TuiPaneState, TuiSessionConfig,
 };
+use crate::tui_session::backend::MultiplexerBackend;
 use crate::tui_session::screen::{is_horizontal_rule_line, ScreenSnapshot};
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use serde_json::Value;
 use std::env;
 use std::fs::{self, File};
@@ -150,6 +152,7 @@ impl AgyTuiProfile {
     }
 }
 
+#[async_trait]
 impl AgentTuiProfile for AgyTuiProfile {
     fn kind(&self) -> AgentCliKind {
         AgentCliKind::Agy
@@ -269,6 +272,19 @@ impl AgentTuiProfile for AgyTuiProfile {
         file.read_to_end(&mut buf).ok()?;
         *since_offset = len;
         Self::parse_transcript_bytes(&buf)
+    }
+
+    fn supports_runtime_model_switch(&self) -> bool {
+        true
+    }
+
+    async fn switch_runtime_model(
+        &self,
+        backend: &dyn MultiplexerBackend,
+        session_name: &str,
+        new_model: &str,
+    ) -> Result<String> {
+        switch_via_slash_command(backend, session_name, new_model).await
     }
 }
 
