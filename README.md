@@ -43,9 +43,10 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 
 ### 🚀 2. Enterprise Agent System & Multi-Project Workspace
 - **Project Dashboard**: Register and manage multiple software projects with automatic directory binding, metadata tags, and insight summaries.
-- **Visual Git Management**: Built-in Git control module with an interactive commit graph, branch & tag ref tooltips, file diff viewer, worktree management, status inspection, serialized mutation locking, and automated commit message generation.
+- **Multi-Repository Visual Git Management**: Built-in Git control module with an interactive commit graph, branch & tag ref tooltips, file diff viewer, worktree management, status inspection, serialized mutation locking, and automated commit message generation. Automatically discovers nested Git repositories within a project root, providing an intuitive repository switcher, upstream ahead/behind tracking, and remote sync operations (pull, commit, push) backed by in-process write locks (`with_repo_write_lock`).
 - **Unified TUI Agent Management & Quota Pools**: Centralized control plane and Web Hub dashboard (`/tui-agents`) to manage agent profiles (`agy`, `claude`, `codex`, `grok`, `custom`), account credentials, shared quota pools, session run bindings, and operation audit history.
-- **Dynamic TUI Model Catalog & Live Model Switching**: Runtime model catalog discovery per CLI, live model switching across Codex, Grok, Claude, and Agy with fuzzy search picker in Web Hub, and REST endpoints for catalog queries and model switching.
+- **Proactive Quota Monitoring & `/quota` Slash Command**: Real-time quota exhaustion and rate limit detection across agent profiles (Grok, Claude, Codex, Agy), persistent quota store tracking remaining percentages and reset windows, automatic state machine safety guards, and chat slash commands (`/quota` and `/usage`) for live inspection, refresh, manual reset, and suspension.
+- **Dynamic CLI Model Discovery & Hybrid Picker**: Dynamic runtime CLI model extraction via `discovery_command` / `cli_discovery_command` stdout parsing (Codex, AGY, Grok, Claude) with fallback catalogs (Gemini 4 Argon / 3.8, Claude 3.7 / 3.5, GPT-4.5 / o3, Grok 3), dual-mode picker (fuzzy-search catalog selector vs. custom model input), and dynamic catalog refresh via REST and Web Hub.
 - **Per-Agent TUI Outbound Proxy Settings**: Configure independent HTTPS proxy settings per agent profile (`harness.tui_sessions.<agent>.https_proxy`) directly via REST and the Web Hub.
 - **Project Tasks Agent Extension & Interactive Drawer**: Expose project task queries and actions directly to interactive chat agents with a dedicated UI drawer.
 - **Project-Level Task Harness**: Define, draft, and execute repeatable task specs in `.openduck/tasks/` configured via `.openduck/harness.yaml`.
@@ -67,7 +68,7 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 - **Decoupled Provider & Model Selection**: Independent role model resolution (`active_model`, `secondary_provider_model`) decoupled from provider definitions. Precedence hierarchy (explicit argument > environment variable > role file config > provider default model > fallback) allows major and secondary roles to share the same provider with independent models. V2 configuration API (`selectionVersion: 2`) with background model inventory refresh.
 - **Global Outbound HTTP & SOCKS Proxy Support**: Connect providers and MCP servers through HTTP or SOCKS5 proxies configured via declarative files (`config.yaml`), environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`), or the Web Hub UI, complete with credential redaction, built-in network health monitoring, and endpoint reachability diagnostics.
 - **Model Context Protocol (MCP)**: Native support for 70+ community MCP extensions plus built-in extensions:
-  - `tui_agent` / `tui_session`: Persistent interactive coding agent TUI & tmux driver (`agy`, `grok`, `codex`, `claude`, `custom`) with bracketed paste, idle prompt detection (including bordered and unbordered composers), spinner vs braille art classification, interactive modal/keystroke answering, lossless side-channel transcript correlation, live human attachment, and native `AgentHarness` tool integration.
+  - `tui_agent` / `tui_session`: Persistent interactive coding agent TUI & tmux driver (`agy`, `grok`, `codex`, `claude`, `custom`) with bracketed paste, idle prompt detection (including bordered and unbordered composers), spinner vs braille art classification, interactive modal/keystroke answering, lossless side-channel transcript correlation, live human attachment, dynamic CLI model discovery, proactive rate limit/quota tracking, and native `AgentHarness` tool integration.
   - `agy`: Antigravity CLI integration for delegated subagent task execution.
   - `developer`: Local shell command execution, file reading, and editing.
   - `computercontroller`: Headless browser scraping and automated web interaction.
@@ -75,16 +76,16 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 - **Agent Client Protocol (ACP)**: Standardized streaming protocol over HTTP/SSE, WebSockets, and stdio for rich UI client integration.
 
 ### 🖥️ 6. Unified Multi-Interface Suite
-- **OpenDuck CLI**: Full-featured terminal interface (`session`, `run`, `harness`, `serve`, `schedule`, `term`, `doctor`).
+- **OpenDuck CLI**: Full-featured terminal interface (`session`, `run`, `harness`, `serve`, `schedule`, `term`, `doctor`) with built-in interactive slash commands including `/quota` and `/usage` for agent quota inspection and management.
 - **OpenDuck Web Hub (`ui/hub`)**: Enterprise web dashboard featuring:
   - **Full Internationalization (i18n)**: English and Chinese (EN / ZH) language support with a real-time language switcher.
   - **Live Running Tasks Page (`/running-tasks`)**: Dedicated view of all active executions with real-time phase, current tool invocation, truncated args, elapsed timers, and cancel controls.
-  - **TUI Agents Page (`/tui-agents`)**: Unified management for agent profiles, account bindings, quota pools, active sessions, and audit history.
+  - **TUI Agents Page (`/tui-agents`)**: Unified management for agent profiles, account bindings, quota pools, active sessions, and audit history, featuring dynamic CLI model discovery, dual-mode model picker (fuzzy-search catalog and custom model freeform input), and live quota status badges with manual reset controls.
   - **Inline Autosaving Task Creator**: Collapsible, autosaving draft editor per project with local draft persistence and discard controls.
   - **PDF Trajectory & Conclusion Export**: Download, print, or preview full task trajectories and conclusions as styled PDFs with CJK font support (STSong-Light).
   - **Deep-Linking & History Navigation**: URL query parameter synchronization for task history, agent logs, file previews, and split-view states.
   - **Settings Section Navigation**: Localized sidebar navigation with smooth scroll tracking in Server Settings.
-  - **Visual Git & Project Workspaces**: Commit graph, worktrees, file diffs, commit generator, and project-level task execution.
+  - **Multi-Repository Git & Project Workspaces**: Discovers nested Git repositories within project directories, repository selector dropdown, ahead/behind upstream commit counters, remote actions (pull, commit, push) with conflict protection, commit graph, worktrees, file diffs, and commit generator.
 - **OpenDuck Desktop (`ui/desktop`)**: Native Electron desktop application for macOS, Windows, and Linux.
 - **OpenDuck Mobile PWA (`ui/mobile`)**: Mobile web client for steering agents and approving permissions on the go.
 - **Cross-Language SDKs**: First-class client libraries for TypeScript (`@openduck/sdk`), Python, Rust, JVM/Kotlin (`io.github.aaif-goose:gdk`), and Swift.
@@ -99,7 +100,7 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 +-----------------------------------------------------------------------------------+
 |  [ Interfaces & Frontends ]                                                       |
 |   ├── OpenDuck CLI (`openduck`, `goose`, `duck`)                                  |
-|   ├── OpenDuck Web Hub (`ui/hub` & `ui/hub-core` React Dashboard, i18n EN/ZH)      |
+|   ├── OpenDuck Web Hub (`ui/hub` & `ui/hub-core` React Dashboard, i18n EN/ZH)     |
 |   ├── OpenDuck Desktop (`ui/desktop` Electron App)                                |
 |   ├── OpenDuck Mobile PWA (`ui/mobile`)                                           |
 |   └── Cross-Language SDKs (TypeScript `@openduck/sdk`, Python, Kotlin, Rust)      |
@@ -107,7 +108,7 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 |  [ Control Plane & Server (`openduck serve` / ACP & REST) ]                       |
 |   ├── Project Workspace Registry, TUI Session Manager & Quota Store               |
 |   ├── Per-Project FIFO Task Queue & Serialized Git Mutation Locks                 |
-|   ├── Interactive Git Management (Graph, Worktrees, Diffs, Auto-Commits)          |
+|   ├── Multi-Repository Git Engine (Discovery, Graph, Diffs, Pull/Push/Commit)     |
 |   ├── In-Browser Config Manager, Outbound Proxy & Decoupled Model Selection       |
 |   ├── Task Scheduler (Cron, Task Locking, Concurrency Control)                    |
 |   ├── SMTP Alerts & PDF Trajectory Exporter (CJK-aware STSong-Light)              |
@@ -118,7 +119,7 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 |   ├── Pluggable Agent Policies (`AgentPolicy`: ReAct, State Machine, Adapters)    |
 |   ├── Sandbox Drivers (`SandboxDriver`: Local, Git Worktree, Docker Container)    |
 |   ├── Pluggable Tool Extensions (`HarnessToolExtension`: TuiAgent, ProjectTasks)  |
-|   ├── Task Drafting, Inline Autosaving Creator & Evaluation Engine (`EvalRunner`)  |
+|   ├── Task Drafting, Inline Autosaving Creator & Evaluation Engine (`EvalRunner`) |
 |   ├── Task Continuations, Subtask Resume & Trajectory Status Tracking             |
 |   ├── Provider Telemetry, Network Timing & Trajectory Metrics (Tokens, TTFT)      |
 |   └── Deterministic Record & Replay Layer (`Cassette`, `MockProvider`)            |
@@ -130,7 +131,7 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 +-----------------------------------------------------------------------------------+
 |  [ Tool & Extensibility Layer ]                                                   |
 |   ├── Model Context Protocol (MCP) Servers (tui_session, agy, dev, browser, etc.) |
-|   ├── Dynamic TUI Model Catalog & Live Model Switching (Codex, Grok, Claude, Agy) |
+|   ├── Dynamic CLI Model Discovery & Live Catalog Switching (Codex, Grok, Claude)  |
 |   └── 15+ LLM Providers (OpenAI, Anthropic, Gemini, Ollama, Qwen, Azure, Proxies) |
 +-----------------------------------------------------------------------------------+
 ```
@@ -245,6 +246,28 @@ curl http://localhost:3000/api/tui/agents/claude/models
 curl -X POST http://localhost:3000/api/tui/sessions/<session_id>/switch-model \
   -H "Content-Type: application/json" \
   -d '{"model":"claude-3-7-sonnet"}'
+
+# Dynamically parse available models from agent CLI help/discovery output
+curl -X POST http://localhost:3000/api/v1/tui-agents/<agent_id>/parse-models
+
+# Dispatch prompts or raw keystrokes directly to an active TUI agent session
+curl -X POST http://localhost:3000/api/v1/tui-agents/<agent_id>/prompt \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Refactor auth tests"}'
+curl -X POST http://localhost:3000/api/v1/tui-agents/<agent_id>/keys \
+  -H "Content-Type: application/json" \
+  -d '{"keys":"y\n"}'
+```
+
+### 📊 Agent Quota Management & Slash Command
+Monitor agent usage limits and unblock exhausted quotas interactively in chat sessions:
+
+```markdown
+- `/quota` or `/usage`         # Display table of agent quotas, remaining %, and reset timers
+- `/quota refresh [agent]`     # Re-query quota status from provider/logs
+- `/quota reset <agent>`       # Reset agent quota to 100% (valid) and unblock immediately
+- `/quota set <agent> <pct>`   # Manually set remaining quota percentage (e.g. `/quota set grok 80%`)
+- `/quota block <agent>`       # Manually mark quota as exhausted / suspend agent until reset
 ```
 
 ### Headless Instruction Execution
@@ -287,10 +310,10 @@ openduck schedule run-now --id <JOB_ID>
 The Web Hub is an enterprise agent management dashboard that connects to `openduck serve`:
 - **Full Internationalization (i18n)**: Native English and Chinese (EN / ZH) language support with persistent language switcher.
 - **Project Workspaces**: Register, switch, and inspect multiple software repositories.
-- **Git Graph & Worktree Visualizer**: Interactive commit log, branch heads, tags, worktree status, file diff views, and serialized repo mutation handling.
+- **Multi-Repository Git & Worktree Visualizer**: Discovers nested Git repositories within project directories, repository switcher dropdown, ahead/behind upstream commit counters, remote actions (pull, commit, push) with conflict protection and write lock synchronization, interactive commit log, branch heads, tags, worktree status, file diff views, and automated commit messages.
 - **Harness Task Runner, AI Drafting & Continuations**: Inline autosaving task creator with local draft persistence, dependency-ordered subtasks with synchronized `max_turns` budgets, isolated Git worktrees with optional auto-commit, follow-ups on historical runs, and cassette replay.
 - **Live Running Tasks Page (`/running-tasks`)**: Dedicated real-time monitoring page showing all active harness jobs across projects, current execution phase, active tool invocation, truncated arguments, elapsed timers, and cancel controls.
-- **Unified TUI Agents Dashboard (`/tui-agents`)**: Manage coding agent profiles (`agy`, `claude`, `codex`, `grok`, `custom`), account credential bindings, quota pools, active sessions, and operation audit history.
+- **Unified TUI Agents Dashboard (`/tui-agents`)**: Manage coding agent profiles (`agy`, `claude`, `codex`, `grok`, `custom`), account credential bindings, quota pools, active sessions, and operation audit history. Includes dynamic CLI model discovery ("Discover Models from CLI"), dual-mode model picker (fuzzy-search catalog selector vs. custom model freeform input), and real-time quota status badges with manual reset controls.
 - **Interactive Project Terminal & TUI Sessions**: Launch, monitor, attach to persistent `tmux`-backed coding agent sessions, and switch active models dynamically via fuzzy search.
 - **Provider Stats & Network Timing Dashboard**: Real-time telemetry monitoring for token consumption, latency, TTFT, network phase timings, request volume, and costs across providers and models.
 - **Paginated Trajectory & Coding-Agent Transcript View**: Server-side paginated trajectory viewer (`TaskTrajectoryViewer`) with configurable page sizes, collapsible reasoning/thinking blocks, parsed TUI session state cards, and live status indicators.
