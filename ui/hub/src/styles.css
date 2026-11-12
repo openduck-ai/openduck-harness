@@ -23,8 +23,14 @@
 
   --border-subtle: #1c2635;
   --border-default: #253346;
+  --border-color: var(--border-default);
   --border-focus: #3b506d;
   --border-highlight: #d7f171;
+
+  --bg-panel: var(--bg-modal);
+  --text-default: var(--text-primary);
+  --bg-active-model: var(--accent-sky-tint);
+  --border-active-model: var(--accent-sky-border);
 
   --text-primary: #f1f5fa;
   --text-secondary: #9cb2cb;
@@ -101,8 +107,14 @@
 
   --border-subtle: #e2e8f0;
   --border-default: #cbd5e1;
+  --border-color: #cbd5e1;
   --border-focus: #94a3b8;
   --border-highlight: #65a30d;
+
+  --bg-panel: #ffffff;
+  --text-default: #1e293b;
+  --bg-active-model: #f0f9ff;
+  --border-active-model: #bae6fd;
 
   --text-primary: #0f172a;
   --text-secondary: #475569;

@@ -497,14 +497,13 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
             type="button"
             onClick={loadData}
             disabled={loading}
+            className="secondary"
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
               padding: '8px 14px',
               borderRadius: '6px',
-              border: '1px solid var(--border-color, #ccc)',
-              background: 'var(--bg-card, #fff)',
               cursor: 'pointer',
             }}
           >
@@ -693,9 +692,10 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                             <button
                               type="button"
+                              className="secondary"
                               onClick={() => handleOpenScreen(s)}
                               title={t('tuiAgents.page.actionViewScreen')}
-                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
+                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px' }}
                             >
                               {t('tuiAgents.page.btnScreen')}
                             </button>
@@ -703,31 +703,43 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                               type="button"
                               onClick={() => setModelModalSession(s)}
                               title={t('tuiAgents.page.actionSwitchModel')}
-                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #0284c7', color: '#0284c7', fontWeight: 500 }}
+                              style={{
+                                padding: '4px 8px',
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                                borderRadius: '4px',
+                                border: '1px solid var(--accent-sky-border, rgba(56, 189, 248, 0.35))',
+                                background: 'var(--accent-sky-tint, rgba(56, 189, 248, 0.14))',
+                                color: 'var(--accent-sky, #38bdf8)',
+                                fontWeight: 500,
+                              }}
                             >
                               {t('tuiAgents.page.btnSwitchModel')}
                             </button>
                             <button
                               type="button"
+                              className="secondary"
                               onClick={() => setPromptModalSession(s)}
                               title={t('tuiAgents.page.actionSendPrompt')}
-                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
+                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px' }}
                             >
                               {t('tuiAgents.page.btnPrompt')}
                             </button>
                             <button
                               type="button"
+                              className="secondary"
                               onClick={() => setKeysModalSession(s)}
                               title={t('tuiAgents.page.actionSendKeys')}
-                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
+                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px' }}
                             >
                               {t('tuiAgents.page.btnKeys')}
                             </button>
                             <button
                               type="button"
+                              className="secondary"
                               onClick={() => handleExtend(s.id)}
                               title={t('tuiAgents.page.actionExtend30m')}
-                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
+                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px' }}
                             >
                               {t('tuiAgents.page.btnExtend30m')}
                             </button>
@@ -735,26 +747,36 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                               type="button"
                               onClick={() => handleInterrupt(s.id)}
                               title={t('tuiAgents.page.actionInterrupt')}
-                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ff9800', color: '#e65100' }}
+                              style={{
+                                padding: '4px 8px',
+                                fontSize: '11px',
+                                cursor: 'pointer',
+                                borderRadius: '4px',
+                                border: '1px solid var(--accent-amber-border, rgba(251, 191, 36, 0.35))',
+                                background: 'var(--accent-amber-tint, rgba(251, 191, 36, 0.14))',
+                                color: 'var(--accent-amber, #fbbf24)',
+                              }}
                             >
                               {t('tuiAgents.page.btnInterrupt')}
                             </button>
                             <button
                               type="button"
+                              className="secondary"
                               onClick={() => handleTakeover(s.id)}
                               title={t('tuiAgents.page.actionTakeover')}
-                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
+                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px' }}
                             >
                               {t('tuiAgents.page.btnTakeover')}
                             </button>
                             <button
                               type="button"
+                              className="secondary"
                               onClick={() => {
                                 setTransferModalSession(s)
                                 setTransferRunId('')
                               }}
                               title={t('tuiAgents.page.actionTransfer')}
-                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
+                              style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px' }}
                             >
                               {t('tuiAgents.page.btnTransfer')}
                             </button>
@@ -812,15 +834,16 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       <td style={{ padding: '12px' }}>{formatDateTime(s.createdAt)}</td>
                       <td style={{ padding: '12px' }}>{s.reclaimedAt ? formatDateTime(s.reclaimedAt) : s.stoppedAt ? formatDateTime(s.stoppedAt) : t('tuiAgents.page.notAvailable')}</td>
                       <td style={{ padding: '12px' }}>
-                        <span style={{ padding: '2px 6px', borderRadius: '4px', background: '#f5f5f5', fontSize: '11px' }}>
+                        <span style={{ padding: '2px 6px', borderRadius: '4px', background: 'var(--bg-secondary, #17212e)', color: 'var(--text-secondary, #9cb2cb)', fontSize: '11px' }}>
                           {s.stopIntent || s.lifecycleState}
                         </span>
                       </td>
                       <td style={{ padding: '12px' }}>
                         <button
                           type="button"
+                          className="secondary"
                           onClick={() => handleOpenScreen(s)}
-                          style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px', border: '1px solid #ccc' }}
+                          style={{ padding: '4px 8px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px' }}
                         >
                           {t('tuiAgents.page.btnViewSnapshot')}
                         </button>
@@ -945,13 +968,14 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                           padding: '4px 8px',
                           fontSize: '11px',
                           borderRadius: '4px',
-                          border: '1px solid #0284c7',
-                          background: '#f0f9ff',
-                          color: '#0284c7',
+                          border: '1px solid var(--accent-sky-border, rgba(56, 189, 248, 0.35))',
+                          background: 'var(--accent-sky-tint, rgba(56, 189, 248, 0.14))',
+                          color: 'var(--accent-sky, #38bdf8)',
                           cursor: 'pointer',
                           display: 'flex',
                           alignItems: 'center',
                           gap: '4px',
+                          fontWeight: 500,
                         }}
                         title={t('tuiAgents.page.discoverModelsHint')}
                       >
@@ -960,6 +984,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       </button>
                       <button
                         type="button"
+                        className="secondary"
                         onClick={() =>
                           openProfileEditor(
                             profile || {
@@ -975,7 +1000,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                             },
                           )
                         }
-                        style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '4px', border: '1px solid #ccc', cursor: 'pointer' }}
+                        style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '4px', cursor: 'pointer' }}
                       >
                         {t('tuiAgents.page.btnConfigure')}
                       </button>
@@ -985,7 +1010,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                     <div><strong>{t('tuiAgents.page.labelDefaultModel')}</strong> {profile?.defaultModel || t('tuiAgents.page.cliDefault')}</div>
                     <div>
                       <strong>{t('tuiAgents.page.cliDiscoveryCommand')}:</strong>{' '}
-                      <span style={{ fontFamily: 'monospace', color: '#0284c7' }}>
+                      <span style={{ fontFamily: 'monospace', color: 'var(--accent-sky, #38bdf8)' }}>
                         {getCliDiscoveryCommand(kind)}
                       </span>
                     </div>
@@ -1073,8 +1098,9 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                         {q.agentKind && (
                           <button
                             type="button"
+                            className="secondary"
                             onClick={() => handleRefreshAgentQuotas(q.agentKind!)}
-                            style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '4px', border: '1px solid #ccc', cursor: 'pointer' }}
+                            style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '4px', cursor: 'pointer' }}
                           >
                             {t('tuiAgents.page.btnRefreshQuota')}
                           </button>
@@ -1165,8 +1191,9 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       </div>
                       <button
                         type="button"
+                        className="secondary"
                         onClick={() => handleRefreshQuotas(acc.id)}
-                        style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '4px', border: '1px solid #ccc', cursor: 'pointer' }}
+                        style={{ padding: '4px 8px', fontSize: '11px', borderRadius: '4px', cursor: 'pointer' }}
                       >
                         {t('tuiAgents.page.btnRefreshQuota')}
                       </button>
@@ -1179,12 +1206,12 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                         {accQuotas.map(q => (
-                          <div key={q.id} style={{ padding: '8px', background: '#fff', borderRadius: '6px', border: '1px solid #eee' }}>
+                          <div key={q.id} style={{ padding: '8px', background: 'var(--bg-subtle, #111722)', borderRadius: '6px', border: '1px solid var(--border-subtle, #1c2635)' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
                               <span style={{ fontWeight: 600 }}>{t('tuiAgents.page.quotaHeading', { type: q.quotaType, unit: q.unit })}</span>
                               <span>{q.remainingPercent !== undefined ? t('tuiAgents.page.percentLeft', { percent: formatNumber(q.remainingPercent, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }) : t('tuiAgents.page.unknown')}</span>
                             </div>
-                            <div style={{ height: '6px', width: '100%', background: '#eee', borderRadius: '3px', overflow: 'hidden' }}>
+                            <div style={{ height: '6px', width: '100%', background: 'var(--bg-secondary, #17212e)', borderRadius: '3px', overflow: 'hidden' }}>
                               <div
                                 style={{
                                   height: '100%',
@@ -1307,35 +1334,37 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.5)',
+            background: 'var(--backdrop-blur, rgba(0,0,0,0.6))',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             zIndex: 1000,
           }}
         >
-          <div style={{ width: '90%', maxWidth: '500px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>{t('tuiAgents.page.sendPromptTitle', { name: promptModalSession.sessionName })}</h3>
+          <div style={{ width: '90%', maxWidth: '500px', background: 'var(--bg-modal, #131a24)', color: 'var(--text-primary, #f1f5fa)', borderRadius: '8px', padding: '20px', boxShadow: 'var(--shadow-lg, 0 8px 32px rgba(0,0,0,0.4))', border: '1px solid var(--border-default, #253346)' }}>
+            <h3 style={{ margin: '0 0 12px 0', color: 'var(--text-heading, #ffffff)' }}>{t('tuiAgents.page.sendPromptTitle', { name: promptModalSession.sessionName })}</h3>
             <textarea
               rows={4}
               value={promptText}
               onChange={e => setPromptText(e.target.value)}
               placeholder={t('tuiAgents.page.promptPlaceholder')}
-              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
               <button
                 type="button"
+                className="secondary"
                 onClick={() => setPromptModalSession(null)}
-                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
               >
                 {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
+                className="btn-primary"
                 onClick={handleSendPrompt}
                 disabled={promptSending || !promptText.trim()}
-                style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', cursor: 'pointer' }}
               >
                 {promptSending ? t('tuiAgents.page.btnSubmitting') : t('tuiAgents.page.btnSendPrompt')}
               </button>
@@ -1350,16 +1379,16 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.5)',
+            background: 'var(--backdrop-blur, rgba(0,0,0,0.6))',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             zIndex: 1000,
           }}
         >
-          <div style={{ width: '90%', maxWidth: '400px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>{t('tuiAgents.page.sendKeysTitle', { name: keysModalSession.sessionName })}</h3>
-            <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: '#666' }}>
+          <div style={{ width: '90%', maxWidth: '400px', background: 'var(--bg-modal, #131a24)', color: 'var(--text-primary, #f1f5fa)', borderRadius: '8px', padding: '20px', boxShadow: 'var(--shadow-lg, 0 8px 32px rgba(0,0,0,0.4))', border: '1px solid var(--border-default, #253346)' }}>
+            <h3 style={{ margin: '0 0 12px 0', color: 'var(--text-heading, #ffffff)' }}>{t('tuiAgents.page.sendKeysTitle', { name: keysModalSession.sessionName })}</h3>
+            <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: 'var(--text-muted, #677b94)' }}>
               {t('tuiAgents.page.commonKeysHint')}
             </p>
             <input
@@ -1367,21 +1396,23 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
               value={keysInput}
               onChange={e => setKeysInput(e.target.value)}
               placeholder={t('tuiAgents.page.keysPlaceholder')}
-              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
               <button
                 type="button"
+                className="secondary"
                 onClick={() => setKeysModalSession(null)}
-                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
               >
                 {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
+                className="btn-primary"
                 onClick={handleSendKeys}
                 disabled={!keysInput.trim()}
-                style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', cursor: 'pointer' }}
               >
                 {t('tuiAgents.page.btnSendKeys')}
               </button>
@@ -1396,16 +1427,16 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.5)',
+            background: 'var(--backdrop-blur, rgba(0,0,0,0.6))',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             zIndex: 1000,
           }}
         >
-          <div style={{ width: '90%', maxWidth: '450px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 12px 0' }}>{t('tuiAgents.page.transferTitle')}</h3>
-            <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: '#666' }}>
+          <div style={{ width: '90%', maxWidth: '450px', background: 'var(--bg-modal, #131a24)', color: 'var(--text-primary, #f1f5fa)', borderRadius: '8px', padding: '20px', boxShadow: 'var(--shadow-lg, 0 8px 32px rgba(0,0,0,0.4))', border: '1px solid var(--border-default, #253346)' }}>
+            <h3 style={{ margin: '0 0 12px 0', color: 'var(--text-heading, #ffffff)' }}>{t('tuiAgents.page.transferTitle')}</h3>
+            <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: 'var(--text-muted, #677b94)' }}>
               <Trans i18nKey="tuiAgents.page.transferAssign" values={{ name: transferModalSession.sessionName }} components={{ strong: <strong /> }} />
             </p>
             <input
@@ -1413,21 +1444,23 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
               value={transferRunId}
               onChange={e => setTransferRunId(e.target.value)}
               placeholder={t('tuiAgents.page.targetRunIdPlaceholder')}
-              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+              style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
             />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
               <button
                 type="button"
+                className="secondary"
                 onClick={() => setTransferModalSession(null)}
-                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
               >
                 {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
+                className="btn-primary"
                 onClick={handleTransfer}
                 disabled={!transferRunId.trim()}
-                style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', cursor: 'pointer' }}
               >
                 {t('tuiAgents.page.btnTransfer')}
               </button>
@@ -1442,19 +1475,19 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.5)',
+            background: 'var(--backdrop-blur, rgba(0,0,0,0.6))',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             zIndex: 1000,
           }}
         >
-          <div style={{ width: '90%', maxWidth: '480px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 16px 0' }}>{t('tuiAgents.page.configureProfileTitle', { kind: editProfileModal.agentKind.toUpperCase() })}</h3>
+          <div style={{ width: '90%', maxWidth: '480px', background: 'var(--bg-modal, #131a24)', color: 'var(--text-primary, #f1f5fa)', borderRadius: '8px', padding: '20px', boxShadow: 'var(--shadow-lg, 0 8px 32px rgba(0,0,0,0.4))', border: '1px solid var(--border-default, #253346)' }}>
+            <h3 style={{ margin: '0 0 16px 0', color: 'var(--text-heading, #ffffff)' }}>{t('tuiAgents.page.configureProfileTitle', { kind: editProfileModal.agentKind.toUpperCase() })}</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                  <label style={{ fontWeight: 500 }}>{t('tuiAgents.page.formDefaultModel')}</label>
+                  <label style={{ fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formDefaultModel')}</label>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <button
                       type="button"
@@ -1467,9 +1500,9 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                         padding: '2px 8px',
                         fontSize: '11px',
                         borderRadius: '4px',
-                        border: '1px solid #0284c7',
-                        background: '#f0f9ff',
-                        color: '#0284c7',
+                        border: '1px solid var(--accent-sky-border, rgba(56, 189, 248, 0.35))',
+                        background: 'var(--accent-sky-tint, rgba(56, 189, 248, 0.14))',
+                        color: 'var(--accent-sky, #38bdf8)',
                         cursor: discoveringModels ? 'not-allowed' : 'pointer',
                         fontWeight: 500,
                       }}
@@ -1485,14 +1518,14 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', padding: '4px 8px', background: '#f8fafc', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#64748b' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', padding: '4px 8px', background: 'var(--bg-subtle, #111722)', borderRadius: '4px', border: '1px solid var(--border-subtle, #1c2635)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary, #9cb2cb)' }}>
                     <span>{t('tuiAgents.page.cliDiscoveryCommand')}:</span>
-                    <span style={{ fontFamily: 'monospace', fontWeight: 600, color: '#0284c7' }}>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--accent-sky, #38bdf8)' }}>
                       {getCliDiscoveryCommand(editProfileModal.agentKind)}
                     </span>
                   </div>
-                  <span style={{ fontSize: '10px', color: '#94a3b8' }}>{t('tuiAgents.page.cliDiscoveryCommandNote')}</span>
+                  <span style={{ fontSize: '10px', color: 'var(--text-muted, #677b94)' }}>{t('tuiAgents.page.cliDiscoveryCommandNote')}</span>
                 </div>
 
                 {discoveryNotice && (
@@ -1502,8 +1535,15 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       padding: '4px 8px',
                       borderRadius: '4px',
                       marginBottom: '6px',
-                      background: discoveryNotice.toLowerCase().includes('failed') ? '#fef2f2' : '#f0fdf4',
-                      color: discoveryNotice.toLowerCase().includes('failed') ? '#991b1b' : '#166534',
+                      background: discoveryNotice.toLowerCase().includes('failed')
+                        ? 'var(--accent-rose-tint, rgba(248, 113, 113, 0.14))'
+                        : 'var(--accent-emerald-tint, rgba(52, 211, 153, 0.14))',
+                      color: discoveryNotice.toLowerCase().includes('failed')
+                        ? 'var(--accent-rose, #f87171)'
+                        : 'var(--accent-emerald, #34d399)',
+                      border: discoveryNotice.toLowerCase().includes('failed')
+                        ? '1px solid var(--accent-rose-border, rgba(248, 113, 113, 0.35))'
+                        : '1px solid var(--accent-emerald-border, rgba(52, 211, 153, 0.3))',
                     }}
                   >
                     {discoveryNotice}
@@ -1526,7 +1566,9 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                         width: '100%',
                         padding: '6px 8px',
                         borderRadius: '4px',
-                        border: '1px solid #ccc',
+                        border: '1px solid var(--border-default, #253346)',
+                        background: 'var(--bg-input, #121822)',
+                        color: 'var(--text-primary, #f1f5fa)',
                         boxSizing: 'border-box',
                       }}
                     >
@@ -1547,7 +1589,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       value={editProfileModal.defaultModel || ''}
                       onChange={e => setEditProfileModal({ ...editProfileModal, defaultModel: e.target.value })}
                       placeholder={t('tuiAgents.page.modelPlaceholder')}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                     />
                     {profileCatalog && profileCatalog.models.length > 0 && (
                       <button
@@ -1556,7 +1598,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                         style={{
                           background: 'none',
                           border: 'none',
-                          color: '#0284c7',
+                          color: 'var(--accent-sky, #38bdf8)',
                           cursor: 'pointer',
                           fontSize: '11px',
                           padding: '2px 0',
@@ -1571,17 +1613,17 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                 )}
               </div>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formDefaultEffort')}</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formDefaultEffort')}</label>
                 <input
                   type="text"
                   value={editProfileModal.defaultEffort || ''}
                   onChange={e => setEditProfileModal({ ...editProfileModal, defaultEffort: e.target.value })}
                   placeholder={t('tuiAgents.page.effortPlaceholder')}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                 />
               </div>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formFileProxy')}</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formFileProxy')}</label>
                 <select
                   value={editFileProxyMode}
                   onChange={e => {
@@ -1589,7 +1631,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                     setEditFileProxyMode(mode)
                     if (mode !== 'url') setEditFileProxyUrl('')
                   }}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                 >
                   <option value="inherit">{t('config.panel.tuiAgentProxyInherit')}</option>
                   <option value="direct">{t('config.panel.tuiAgentProxyDirect')}</option>
@@ -1601,15 +1643,15 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                     value={editFileProxyUrl}
                     onChange={e => setEditFileProxyUrl(e.target.value)}
                     placeholder={t('config.panel.tuiAgentProxyUrlPlaceholder')}
-                    style={{ width: '100%', marginTop: '8px', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                    style={{ width: '100%', marginTop: '8px', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                   />
                 )}
-                <small style={{ color: 'var(--text-muted, #888)', display: 'block', marginTop: '4px' }}>
+                <small style={{ color: 'var(--text-muted, #677b94)', display: 'block', marginTop: '4px' }}>
                   {t('tuiAgents.page.fileProxyHint')}
                 </small>
               </div>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formProxyMode')}</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formProxyMode')}</label>
                 <select
                   value={editProfileModal.proxyMode || 'inherit'}
                   onChange={e => {
@@ -1620,7 +1662,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       proxyId: nextMode === 'named' ? (proxies[0]?.id || '') : nextMode === 'custom' ? (editProfileModal.proxyId || '') : '',
                     })
                   }}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                 >
                   <option value="inherit">{t('tuiAgents.page.optProxyInherit')}</option>
                   <option value="direct">{t('tuiAgents.page.optProxyDirect')}</option>
@@ -1630,12 +1672,12 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
               </div>
               {editProfileModal.proxyMode === 'named' && (
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formConfiguredProxy')}</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formConfiguredProxy')}</label>
                   {proxies.length > 0 ? (
                     <select
                       value={editProfileModal.proxyId || ''}
                       onChange={e => setEditProfileModal({ ...editProfileModal, proxyId: e.target.value })}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                     >
                       <option value="">{t('tuiAgents.page.optSelectProxy')}</option>
                       {proxies.map(p => (
@@ -1650,11 +1692,11 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       value={editProfileModal.proxyId || ''}
                       onChange={e => setEditProfileModal({ ...editProfileModal, proxyId: e.target.value })}
                       placeholder={t('tuiAgents.page.proxyIdPlaceholder')}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                     />
                   )}
                   {proxies.length === 0 && (
-                    <small style={{ color: 'var(--text-muted, #888)', display: 'block', marginTop: '4px' }}>
+                    <small style={{ color: 'var(--text-muted, #677b94)', display: 'block', marginTop: '4px' }}>
                       {t('tuiAgents.page.noNamedProxiesHint')}
                     </small>
                   )}
@@ -1662,42 +1704,44 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
               )}
               {editProfileModal.proxyMode === 'custom' && (
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formCustomProxyUrl')}</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formCustomProxyUrl')}</label>
                   <input
                     type="text"
                     value={editProfileModal.proxyId || ''}
                     onChange={e => setEditProfileModal({ ...editProfileModal, proxyId: e.target.value })}
                     placeholder={t('tuiAgents.page.customProxyPlaceholder')}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                   />
-                  <small style={{ color: 'var(--text-muted, #888)', display: 'block', marginTop: '4px' }}>
+                  <small style={{ color: 'var(--text-muted, #677b94)', display: 'block', marginTop: '4px' }}>
                     {t('tuiAgents.page.customProxyHint')}
                   </small>
                 </div>
               )}
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formIdleTimeout')}</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formIdleTimeout')}</label>
                 <input
                   type="number"
                   value={editProfileModal.idleTimeoutMins || ''}
                   onChange={e => setEditProfileModal({ ...editProfileModal, idleTimeoutMins: Number(e.target.value) || undefined })}
                   placeholder={t('tuiAgents.page.idleTimeoutPlaceholder')}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                 />
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '20px' }}>
               <button
                 type="button"
+                className="secondary"
                 onClick={() => setEditProfileModal(null)}
-                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
               >
                 {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
+                className="btn-primary"
                 onClick={() => handleSaveProfile(editProfileModal)}
-                style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', cursor: 'pointer' }}
               >
                 {t('tuiAgents.page.btnSaveProfile')}
               </button>
@@ -1712,25 +1756,25 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.5)',
+            background: 'var(--backdrop-blur, rgba(0,0,0,0.6))',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             zIndex: 1000,
           }}
         >
-          <div style={{ width: '90%', maxWidth: '520px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ width: '90%', maxWidth: '520px', background: 'var(--bg-modal, #131a24)', color: 'var(--text-primary, #f1f5fa)', borderRadius: '8px', padding: '20px', boxShadow: 'var(--shadow-lg, 0 8px 32px rgba(0,0,0,0.4))', border: '1px solid var(--border-default, #253346)' }}>
+            <h3 style={{ margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-heading, #ffffff)' }}>
               <Play size={18} />
               <span>{t('tuiAgents.page.launchSessionTitle')}</span>
             </h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formAgentCli')}</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formAgentCli')}</label>
                 <select
                   value={newSessionAgent}
                   onChange={e => setNewSessionAgent(e.target.value)}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                 >
                   <option value="agy">{t('tuiAgents.page.optAgentAgy')}</option>
                   <option value="grok">{t('tuiAgents.page.optAgentGrok')}</option>
@@ -1742,72 +1786,72 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
 
               {newSessionAgent === 'custom' && (
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formCustomCliCommand')}</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formCustomCliCommand')}</label>
                   <input
                     type="text"
                     value={newSessionCustomAgent}
                     onChange={e => setNewSessionCustomAgent(e.target.value)}
                     placeholder={t('tuiAgents.page.customCliPlaceholder')}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                   />
                 </div>
               )}
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formSessionNameOptional')}</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formSessionNameOptional')}</label>
                   <input
                     type="text"
                     value={newSessionName}
                     onChange={e => setNewSessionName(e.target.value)}
                     placeholder={t('tuiAgents.page.sessionNamePlaceholder')}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formWorkingDirectory')}</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formWorkingDirectory')}</label>
                   <input
                     type="text"
                     value={newSessionCwd}
                     onChange={e => setNewSessionCwd(e.target.value)}
                     placeholder={t('tuiAgents.page.workingDirPlaceholder')}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                   />
                 </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formModelOverride')}</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formModelOverride')}</label>
                   <input
                     type="text"
                     value={newSessionModel}
                     onChange={e => setNewSessionModel(e.target.value)}
                     placeholder={t('tuiAgents.page.modelOverridePlaceholder')}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                   />
                 </div>
                 <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formEffort')}</label>
+                  <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formEffort')}</label>
                   <input
                     type="text"
                     value={newSessionEffort}
                     onChange={e => setNewSessionEffort(e.target.value)}
                     placeholder={t('tuiAgents.page.effortLevelsPlaceholder')}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                   />
                 </div>
               </div>
 
               {/* Proxy Setting for Session */}
-              <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+              <div style={{ background: 'var(--bg-subtle, #111722)', padding: '12px', borderRadius: '6px', border: '1px solid var(--border-subtle, #1c2635)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', fontWeight: 600 }}>
                   <Globe size={16} />
                   <span>{t('tuiAgents.page.networkProxySetting')}</span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: newSessionProxyMode === 'named' || newSessionProxyMode === 'custom' ? '1fr 1fr' : '1fr', gap: '10px' }}>
                   <div>
-                    <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#64748b' }}>{t('tuiAgents.page.formProxyMode')}</label>
+                    <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: 'var(--text-muted, #677b94)' }}>{t('tuiAgents.page.formProxyMode')}</label>
                     <select
                       value={newSessionProxyMode}
                       onChange={e => {
@@ -1819,7 +1863,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                           setNewSessionProxyId('')
                         }
                       }}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                     >
                       <option value="inherit">{t('tuiAgents.page.optProxyInheritFromProfile')}</option>
                       <option value="direct">{t('tuiAgents.page.optProxyDirect')}</option>
@@ -1830,12 +1874,12 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
 
                   {newSessionProxyMode === 'named' && (
                     <div>
-                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#64748b' }}>{t('tuiAgents.page.formConfiguredProxy')}</label>
+                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: 'var(--text-muted, #677b94)' }}>{t('tuiAgents.page.formConfiguredProxy')}</label>
                       {proxies.length > 0 ? (
                         <select
                           value={newSessionProxyId}
                           onChange={e => setNewSessionProxyId(e.target.value)}
-                          style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                          style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                         >
                           <option value="">{t('tuiAgents.page.optSelectProxyShort')}</option>
                           {proxies.map(p => (
@@ -1850,7 +1894,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                           value={newSessionProxyId}
                           onChange={e => setNewSessionProxyId(e.target.value)}
                           placeholder={t('tuiAgents.page.proxyIdPlaceholder')}
-                          style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                          style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                         />
                       )}
                     </div>
@@ -1858,13 +1902,13 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
 
                   {newSessionProxyMode === 'custom' && (
                     <div>
-                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: '#64748b' }}>{t('tuiAgents.page.formProxyUrl')}</label>
+                      <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', color: 'var(--text-muted, #677b94)' }}>{t('tuiAgents.page.formProxyUrl')}</label>
                       <input
                         type="text"
                         value={newSessionProxyId}
                         onChange={e => setNewSessionProxyId(e.target.value)}
                         placeholder={t('tuiAgents.page.proxyUrlPlaceholder')}
-                        style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                        style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                       />
                     </div>
                   )}
@@ -1872,13 +1916,13 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
               </div>
 
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formInitialPromptOptional')}</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formInitialPromptOptional')}</label>
                 <textarea
                   value={newSessionInitialPrompt}
                   onChange={e => setNewSessionInitialPrompt(e.target.value)}
                   placeholder={t('tuiAgents.page.initialPromptPlaceholder')}
                   rows={3}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }}
                 />
               </div>
 
@@ -1897,17 +1941,19 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '20px' }}>
               <button
                 type="button"
+                className="secondary"
                 onClick={() => setNewSessionModal(false)}
                 disabled={newSessionStarting}
-                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
               >
                 {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
+                className="btn-primary"
                 onClick={handleStartSession}
                 disabled={newSessionStarting}
-                style={{ padding: '6px 16px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer', fontWeight: 500 }}
+                style={{ padding: '6px 16px', borderRadius: '4px', border: 'none', cursor: 'pointer', fontWeight: 500 }}
               >
                 {newSessionStarting ? t('tuiAgents.page.btnStarting') : t('tuiAgents.page.btnStartSession')}
               </button>
@@ -1922,50 +1968,52 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.5)',
+            background: 'var(--backdrop-blur, rgba(0,0,0,0.6))',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             zIndex: 1000,
           }}
         >
-          <div style={{ width: '90%', maxWidth: '420px', background: '#fff', borderRadius: '8px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 16px 0' }}>{t('tuiAgents.page.addAccountTitle')}</h3>
+          <div style={{ width: '90%', maxWidth: '420px', background: 'var(--bg-modal, #131a24)', color: 'var(--text-primary, #f1f5fa)', borderRadius: '8px', padding: '20px', boxShadow: 'var(--shadow-lg, 0 8px 32px rgba(0,0,0,0.4))', border: '1px solid var(--border-default, #253346)' }}>
+            <h3 style={{ margin: '0 0 16px 0', color: 'var(--text-heading, #ffffff)' }}>{t('tuiAgents.page.addAccountTitle')}</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formProvider')}</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formProvider')}</label>
                 <input
                   type="text"
                   value={newAccountProvider}
                   onChange={e => setNewAccountProvider(e.target.value)}
                   placeholder={t('tuiAgents.page.providerPlaceholder')}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                 />
               </div>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formAccountIdentifierName')}</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>{t('tuiAgents.page.formAccountIdentifierName')}</label>
                 <input
                   type="text"
                   value={newAccountName}
                   onChange={e => setNewAccountName(e.target.value)}
                   placeholder={t('tuiAgents.page.accountNamePlaceholder')}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--border-default, #253346)', background: 'var(--bg-input, #121822)', color: 'var(--text-primary, #f1f5fa)', boxSizing: 'border-box' }}
                 />
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '20px' }}>
               <button
                 type="button"
+                className="secondary"
                 onClick={() => setNewAccountModal(false)}
-                style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
               >
                 {t('tuiAgents.page.btnCancel')}
               </button>
               <button
                 type="button"
+                className="btn-primary"
                 onClick={handleCreateAccount}
                 disabled={!newAccountProvider.trim() || !newAccountName.trim()}
-                style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#0066cc', color: '#fff', cursor: 'pointer' }}
+                style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', cursor: 'pointer' }}
               >
                 {t('tuiAgents.page.btnCreateAccount')}
               </button>

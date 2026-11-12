@@ -216,12 +216,12 @@ export function TuiModelPickerModal({
         style={{
           width: '90%',
           maxWidth: '540px',
-          background: 'var(--bg-panel, #ffffff)',
-          color: 'var(--text-default, #1e293b)',
+          background: 'var(--bg-modal, #131a24)',
+          color: 'var(--text-primary, #f1f5fa)',
           borderRadius: '8px',
           padding: '22px',
-          boxShadow: '0 12px 36px rgba(0,0,0,0.25)',
-          border: '1px solid var(--border-default, #e2e8f0)',
+          boxShadow: 'var(--shadow-lg, 0 12px 36px rgba(0,0,0,0.4))',
+          border: '1px solid var(--border-default, #253346)',
           display: 'flex',
           flexDirection: 'column',
           gap: '16px',
@@ -230,8 +230,8 @@ export function TuiModelPickerModal({
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Cpu size={20} style={{ color: '#0284c7' }} />
-            <h3 id="tui-model-picker-title" style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>
+            <Cpu size={20} style={{ color: 'var(--accent-sky, #38bdf8)' }} />
+            <h3 id="tui-model-picker-title" style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text-heading, #ffffff)' }}>
               {t('tuiAgents.modelPicker.title', {
                 name: session.sessionName || session.id.slice(0, 10),
               })}
@@ -245,7 +245,7 @@ export function TuiModelPickerModal({
               background: 'transparent',
               border: 'none',
               cursor: 'pointer',
-              color: 'var(--text-muted, #64748b)',
+              color: 'var(--text-muted, #677b94)',
               padding: '4px',
               display: 'flex',
               alignItems: 'center',
@@ -258,8 +258,8 @@ export function TuiModelPickerModal({
         {/* Current Active Model Banner */}
         <div
           style={{
-            background: 'var(--bg-active-model, #f0f9ff)',
-            border: '1px solid var(--border-active-model, #bae6fd)',
+            background: 'var(--accent-sky-tint, rgba(56, 189, 248, 0.14))',
+            border: '1px solid var(--accent-sky-border, rgba(56, 189, 248, 0.3))',
             borderRadius: '6px',
             padding: '10px 14px',
             display: 'flex',
@@ -269,10 +269,10 @@ export function TuiModelPickerModal({
           }}
         >
           <div>
-            <span style={{ color: 'var(--text-muted, #64748b)', marginRight: '6px' }}>
+            <span style={{ color: 'var(--text-muted, #677b94)', marginRight: '6px' }}>
               {t('tuiAgents.modelPicker.activeModelLabel')}:
             </span>
-            <strong style={{ color: '#0369a1', fontFamily: 'monospace', fontSize: '13px' }}>
+            <strong style={{ color: 'var(--accent-sky, #38bdf8)', fontFamily: 'monospace', fontSize: '13px' }}>
               {currentActiveModel || t('tuiAgents.page.default')}
             </strong>
           </div>
@@ -313,9 +313,9 @@ export function TuiModelPickerModal({
         {catalogError && (
           <div
             style={{
-              background: '#fffbeb',
-              border: '1px solid #fde68a',
-              color: '#92400e',
+              background: 'var(--accent-amber-tint, rgba(251, 191, 36, 0.14))',
+              border: '1px solid var(--accent-amber-border, rgba(251, 191, 36, 0.35))',
+              color: 'var(--accent-amber, #fbbf24)',
               borderRadius: '6px',
               padding: '8px 12px',
               fontSize: '12px',
@@ -336,8 +336,9 @@ export function TuiModelPickerModal({
                 fontSize: '11px',
                 padding: '2px 6px',
                 borderRadius: '4px',
-                border: '1px solid #d97706',
-                background: '#fff',
+                border: '1px solid var(--accent-amber, #fbbf24)',
+                background: 'transparent',
+                color: 'var(--accent-amber, #fbbf24)',
                 cursor: 'pointer',
               }}
             >
@@ -349,9 +350,9 @@ export function TuiModelPickerModal({
         {switchError && (
           <div
             style={{
-              background: '#fef2f2',
-              border: '1px solid #fecaca',
-              color: '#b91c1c',
+              background: 'var(--accent-rose-tint, rgba(248, 113, 113, 0.14))',
+              border: '1px solid var(--accent-rose-border, rgba(248, 113, 113, 0.35))',
+              color: 'var(--accent-rose, #f87171)',
               borderRadius: '6px',
               padding: '10px 12px',
               fontSize: '12px',
@@ -370,11 +371,11 @@ export function TuiModelPickerModal({
           <div
             style={{
               fontSize: '11px',
-              color: 'var(--text-muted, #64748b)',
-              background: 'var(--bg-subtle, #f8fafc)',
+              color: 'var(--text-muted, #677b94)',
+              background: 'var(--bg-subtle, #111722)',
               padding: '6px 10px',
               borderRadius: '4px',
-              border: '1px dashed var(--border-default, #cbd5e1)',
+              border: '1px dashed var(--border-default, #253346)',
             }}
           >
             {t('tuiAgents.modelPicker.fallbackNotice')}
@@ -384,7 +385,7 @@ export function TuiModelPickerModal({
         {/* Model Picker Controls */}
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-            <label style={{ fontSize: '13px', fontWeight: 500 }}>
+            <label style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-primary, #f1f5fa)' }}>
               {t('tuiAgents.modelPicker.selectModelLabel')}
             </label>
             <button
@@ -393,7 +394,7 @@ export function TuiModelPickerModal({
               disabled={isRefreshing || loadingCatalog}
               style={{
                 background: 'transparent',
-                border: '1px solid var(--border-default, #cbd5e1)',
+                border: '1px solid var(--border-default, #253346)',
                 borderRadius: '4px',
                 padding: '3px 8px',
                 fontSize: '11px',
@@ -401,7 +402,7 @@ export function TuiModelPickerModal({
                 display: 'flex',
                 alignItems: 'center',
                 gap: '4px',
-                color: 'var(--text-muted, #475569)',
+                color: 'var(--text-muted, #677b94)',
               }}
             >
               <RefreshCw
@@ -419,7 +420,7 @@ export function TuiModelPickerModal({
           </div>
 
           {loadingCatalog ? (
-            <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted, #64748b)', fontSize: '12px' }}>
+            <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted, #677b94)', fontSize: '12px' }}>
               {t('tuiAgents.modelPicker.loadingCatalog', { agent: session.agentKind })}
             </div>
           ) : isCustomMode ? (
@@ -433,7 +434,9 @@ export function TuiModelPickerModal({
                   width: '100%',
                   padding: '8px 10px',
                   borderRadius: '4px',
-                  border: '1px solid var(--border-default, #cbd5e1)',
+                  border: '1px solid var(--border-default, #253346)',
+                  background: 'var(--bg-input, #121822)',
+                  color: 'var(--text-primary, #f1f5fa)',
                   boxSizing: 'border-box',
                   fontSize: '13px',
                 }}
@@ -448,11 +451,11 @@ export function TuiModelPickerModal({
                 width: '100%',
                 padding: '8px 10px',
                 borderRadius: '4px',
-                border: '1px solid var(--border-default, #cbd5e1)',
+                border: '1px solid var(--border-default, #253346)',
+                background: 'var(--bg-input, #121822)',
+                color: 'var(--text-primary, #f1f5fa)',
                 boxSizing: 'border-box',
                 fontSize: '13px',
-                background: 'var(--bg-input, #fff)',
-                color: 'inherit',
               }}
             >
               {currentActiveModel && !hasActiveInCatalog && (
@@ -520,13 +523,12 @@ export function TuiModelPickerModal({
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
           <button
             type="button"
+            className="secondary"
             onClick={onClose}
             disabled={isSwitching}
             style={{
               padding: '6px 14px',
               borderRadius: '4px',
-              border: '1px solid var(--border-default, #cbd5e1)',
-              background: 'transparent',
               cursor: isSwitching ? 'not-allowed' : 'pointer',
               fontSize: '13px',
             }}
@@ -535,17 +537,15 @@ export function TuiModelPickerModal({
           </button>
           <button
             type="button"
+            className="btn-primary"
             onClick={handleSwitch}
             disabled={!canSwitch}
             style={{
               padding: '6px 16px',
               borderRadius: '4px',
               border: 'none',
-              background: canSwitch ? '#0284c7' : '#94a3b8',
-              color: '#ffffff',
               cursor: canSwitch ? 'pointer' : 'not-allowed',
               fontSize: '13px',
-              fontWeight: 500,
             }}
           >
             {isSwitching
