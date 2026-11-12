@@ -1245,7 +1245,10 @@ async fn test_agent_discovery_commands() {
         agy_entry.cli_discovery_command.as_deref(),
         Some("agy models")
     );
-    assert_eq!(agy_entry.cli_discovery_command.as_deref(), Some("agy models"));
+    assert_eq!(
+        agy_entry.cli_discovery_command.as_deref(),
+        Some("agy models")
+    );
 
     let claude_entry = catalog.get_models(AgentCliKind::Claude).await;
     assert_eq!(claude_entry.discovery_command.as_deref(), Some("/model"));
@@ -1253,7 +1256,10 @@ async fn test_agent_discovery_commands() {
         claude_entry.cli_discovery_command.as_deref(),
         Some("claude")
     );
-    assert_eq!(claude_entry.cli_discovery_command.as_deref(), Some("claude"));
+    assert_eq!(
+        claude_entry.cli_discovery_command.as_deref(),
+        Some("claude")
+    );
 
     let codex_entry = catalog.get_models(AgentCliKind::Codex).await;
     assert_eq!(codex_entry.discovery_command.as_deref(), Some("/models"));
@@ -1261,7 +1267,10 @@ async fn test_agent_discovery_commands() {
         codex_entry.cli_discovery_command.as_deref(),
         Some("codex debug models")
     );
-    assert_eq!(codex_entry.cli_discovery_command.as_deref(), Some("codex debug models"));
+    assert_eq!(
+        codex_entry.cli_discovery_command.as_deref(),
+        Some("codex debug models")
+    );
 }
 
 #[tokio::test]

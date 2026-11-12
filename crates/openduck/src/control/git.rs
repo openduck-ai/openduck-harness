@@ -941,15 +941,12 @@ fn looks_like_git_root(dir: &Path) -> bool {
         return false;
     }
     let git_path = dir.join(".git");
-    let Ok(meta) = std::fs::symlink_metadata(&git_path) else {
+    let Ok(meta) = std::fs::metadata(&git_path) else {
         return false;
     };
-    if meta.file_type().is_symlink() {
-        return false;
-    }
     if meta.is_dir() {
-        dir.join(".git").join("HEAD").exists()
-    } else if meta.file_type().is_file() {
+        git_path.join("HEAD").exists()
+    } else if meta.is_file() {
         std::fs::read_to_string(&git_path)
             .map(|content| content.trim_start().starts_with("gitdir:"))
             .unwrap_or(false)
@@ -972,10 +969,10 @@ fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
     if path_has_git_component(root) {
         return Vec::new();
     }
-    let Ok(root_meta) = std::fs::symlink_metadata(root) else {
+    let Ok(root_meta) = std::fs::metadata(root) else {
         return Vec::new();
     };
-    if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
+    if !root_meta.is_dir() {
         return Vec::new();
     }
 
@@ -987,11 +984,14 @@ fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
         if path_has_git_component(&dir) {
             continue;
         }
-        let Ok(meta) = std::fs::symlink_metadata(&dir) else {
-            continue;
-        };
-        if meta.file_type().is_symlink() || !meta.is_dir() {
-            continue;
+        let is_root = dir == root;
+        if !is_root {
+            let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                continue;
+            }
         }
 
         if looks_like_git_root(&dir) {
@@ -1012,6 +1012,12 @@ fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
                 continue;
             };
             if entry_meta.file_type().is_symlink() {
+                // If it is a symlink, check if it points to a git repository or git worktree root.
+                // Do NOT queue it for BFS traversal (avoids recursive symlink loops or deep external traversals),
+                // but DO record the symlinked directory itself as a candidate if it looks like a git root.
+                if looks_like_git_root(&entry_path) {
+                    candidates.push(entry_path);
+                }
                 continue;
             }
             if entry_meta.is_dir() {
@@ -1033,18 +1039,33 @@ pub async fn discover_repositories(root: &Path) -> Result<GitRepositoriesRespons
     let candidates = collect_candidate_roots(root);
     let mut repositories = Vec::new();
     let root_canonical = root.canonicalize().ok();
+    let mut seen_canonical_roots = std::collections::HashSet::new();
 
     for candidate in candidates {
         if !is_actual_repo_root(&candidate).await {
             continue;
         }
 
+        let candidate_canonical = candidate.canonicalize().ok();
+        let is_root = candidate == root
+            || (root_canonical.is_some() && root_canonical == candidate_canonical);
+
+        // Deduplication: prevent duplicate entries when symlinks point to the same repo or back to root.
+        if let Some(ref canon) = candidate_canonical {
+            if is_root
+                && repositories
+                    .iter()
+                    .any(|r: &GitRepositoryEntry| r.path == ".")
+            {
+                continue;
+            }
+            if !seen_canonical_roots.insert(canon.clone()) {
+                continue;
+            }
+        }
+
         match status(&candidate).await {
             Ok(repo_status) => {
-                let candidate_canonical = candidate.canonicalize().ok();
-                let is_root = candidate == root
-                    || (root_canonical.is_some() && root_canonical == candidate_canonical);
-
                 let rel_path = if is_root {
                     ".".to_string()
                 } else {
@@ -1128,14 +1149,6 @@ fn validate_and_resolve_repo_path(project_root: &Path, rel_path: &str) -> Result
     let target_canonical = target
         .canonicalize()
         .map_err(|_| anyhow!("Repository path does not exist: {rel_path}"))?;
-
-    let root_canonical = project_root
-        .canonicalize()
-        .map_err(|_| anyhow!("Project root path does not exist"))?;
-
-    if !target_canonical.starts_with(&root_canonical) {
-        bail!("Repository path is outside project root");
-    }
 
     Ok(target_canonical)
 }
@@ -2877,8 +2890,74 @@ detached
 
         let response = discover_repositories(&root).await.unwrap();
 
-        assert_eq!(response.repositories.len(), 1);
+        assert_eq!(response.repositories.len(), 2);
         assert_eq!(response.repositories[0].path, ".");
+        assert_eq!(response.repositories[1].path, "linked_repo");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discover_and_manage_symlinked_git_worktree() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let upstream = dir.path().join("upstream");
+        fs::create_dir_all(&upstream).unwrap();
+        init_repo(&upstream);
+        run_plain_git(&upstream, &["commit", "--allow-empty", "-m", "init"]);
+
+        let worktree_dir = dir.path().join("worktree_branch");
+        run_plain_git(
+            &upstream,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feat-wt",
+                worktree_dir.to_str().unwrap(),
+            ],
+        );
+
+        let project_root = dir.path().join("my_project");
+        fs::create_dir_all(&project_root).unwrap();
+        init_repo(&project_root);
+        run_plain_git(
+            &project_root,
+            &["commit", "--allow-empty", "-m", "proj root"],
+        );
+
+        // Symlink the git worktree into the project
+        symlink(&worktree_dir, project_root.join("mqtt-broker-ptt")).unwrap();
+
+        let response = discover_repositories(&project_root).await.unwrap();
+        assert_eq!(response.repositories.len(), 2);
+        assert_eq!(response.repositories[0].path, ".");
+        assert_eq!(response.repositories[1].path, "mqtt-broker-ptt");
+        assert_eq!(
+            response.repositories[1].status.branch.as_deref(),
+            Some("feat-wt")
+        );
+
+        // Make a change in the worktree and verify repository_action works via symlink path
+        fs::write(worktree_dir.join("test.txt"), "hello worktree\n").unwrap();
+        stage(&worktree_dir, &["test.txt".to_string()])
+            .await
+            .unwrap();
+
+        let commit_res = repository_action(
+            &project_root,
+            GitRepositoryActionRequest {
+                path: "mqtt-broker-ptt".to_string(),
+                action: GitRepositoryActionType::Commit,
+                message: Some("commit in symlinked worktree".to_string()),
+                paths: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(commit_res.success);
+        assert_eq!(commit_res.path, "mqtt-broker-ptt");
     }
 
     #[tokio::test]
@@ -3030,7 +3109,7 @@ detached
             .unwrap();
         assert_eq!(resolved, nested.canonicalize().unwrap());
 
-        // 7. Symlink pointing outside project root rejected
+        // 7. Symlink pointing to external repo is accepted and resolved
         #[cfg(unix)]
         {
             let outside_dir = tempdir().unwrap();
@@ -3039,6 +3118,11 @@ detached
             init_repo(&outside_repo);
             let symlink_path = root.join("symlinked_repo");
             let _ = std::os::unix::fs::symlink(&outside_repo, &symlink_path);
+            let resolved_symlink = resolve_discovered_repo(root, "symlinked_repo")
+                .await
+                .unwrap();
+            assert_eq!(resolved_symlink, outside_repo.canonicalize().unwrap());
+
             let err = repository_action(
                 root,
                 GitRepositoryActionRequest {
@@ -3050,13 +3134,7 @@ detached
             )
             .await
             .unwrap_err();
-            assert!(
-                err.to_string().contains("outside project root")
-                    || err
-                        .to_string()
-                        .contains("not among discovered repositories")
-                    || err.to_string().contains("not a git repository root")
-            );
+            assert!(err.to_string().contains("No remote repository configured"));
         }
     }
 
