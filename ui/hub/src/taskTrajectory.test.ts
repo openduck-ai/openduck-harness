@@ -185,7 +185,7 @@ test('parseAgentAction handles YieldControl and RequestInput', () => {
   assert.equal(parsedReq.prompt, 'Do you want to apply this change?')
 })
 
-test('describeTranscriptConclusion maps statuses across casing and reason presence', () => {
+test('describeTranscriptConclusion maps statuses across casing without overriding successful runs', () => {
   const cases = [
     ['Success', '✅ Task Completed', 'success'],
     ['Failure', '❌ Task Failed', 'failure'],
@@ -195,14 +195,13 @@ test('describeTranscriptConclusion maps statuses across casing and reason presen
     ['Running', 'Task In Progress', 'neutral'],
     ['', 'Task Conclusion', 'neutral'],
     ['Unrecognized', 'Task Conclusion', 'neutral'],
+    ['Error', 'Task Conclusion', 'neutral'],
   ] as const
 
   for (const [rustStatus, title, tone] of cases) {
     for (const status of new Set([rustStatus, rustStatus.toLowerCase(), rustStatus.toUpperCase()])) {
       for (const hasFailureReason of [false, true]) {
-        const expected = status.toLowerCase() === 'success' && hasFailureReason
-          ? { title: '❌ Task Failed', tone: 'failure' }
-          : { title, tone }
+        const expected = { title, tone }
         assert.deepEqual(
           describeTranscriptConclusion({ status, hasFailureReason }),
           expected,

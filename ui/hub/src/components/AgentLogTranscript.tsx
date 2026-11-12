@@ -9,6 +9,7 @@ import {
   presentToolCall,
   resolveThinkingOpen,
   sanitizeSubtaskSummary,
+  describeTranscriptConclusion,
   tuiStatusesForTool,
   type AgentLogPagination,
   type AgentLogToolCall,
@@ -151,6 +152,15 @@ export function AgentLogTranscript({
   const [detailsOpen, setDetailsOpen] = useState<Record<string, boolean>>({})
   const [toolsOpen, setToolsOpen] = useState<Record<string, boolean>>({})
 
+  const conclusion = describeTranscriptConclusion({
+    status,
+    hasFailureReason: Boolean(failureReason?.trim()),
+  })
+  const conclusionColor = conclusion.tone === 'success'
+    ? '#22c55e'
+    : conclusion.tone === 'failure'
+      ? '#ef4444'
+      : '#f59e0b'
   const turnsToInspect = allTurns ?? turns
   let lastFinalId: string | undefined
   let lastAssistantTurnId: string | undefined
@@ -314,10 +324,7 @@ export function AgentLogTranscript({
                 margin: '1.5rem 0',
                 padding: '1.25rem',
                 borderRadius: '8px',
-                border:
-                  status.toLowerCase() === 'cancelled'
-                    ? '1px solid rgba(245, 158, 11, 0.4)'
-                    : '1px solid rgba(239, 68, 68, 0.4)',
+                border: `1px solid ${conclusionColor}66`,
                 background: 'rgba(15, 23, 42, 0.6)',
               }}
             >
@@ -335,12 +342,10 @@ export function AgentLogTranscript({
                   style={{
                     fontWeight: 600,
                     fontSize: '1rem',
-                    color: status.toLowerCase() === 'cancelled' ? '#f59e0b' : '#ef4444',
+                    color: conclusionColor,
                   }}
                 >
-                  {status.toLowerCase() === 'cancelled'
-                    ? t('trajectory.log.cancelled')
-                    : t('trajectory.log.failedTitle')}
+                  {conclusion.title}
                 </span>
                 {failureReason && (
                   <span

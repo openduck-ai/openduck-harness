@@ -110,10 +110,9 @@ export function describeTranscriptConclusion(options: {
   const status = options.status.toLowerCase()
   switch (status) {
     case 'success':
-      return options.hasFailureReason
-        ? { title: translate('trajectory.helper.failed'), tone: 'failure' }
-        : { title: translate('trajectory.helper.completed'), tone: 'success' }
+      return { title: translate('trajectory.helper.completed'), tone: 'success' }
     case 'failure':
+    case 'error':
       return { title: translate('trajectory.helper.failed'), tone: 'failure' }
     case 'timeout':
       return { title: translate('trajectory.helper.timedOut'), tone: 'warning' }
