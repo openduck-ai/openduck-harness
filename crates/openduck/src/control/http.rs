@@ -1362,6 +1362,27 @@ async fn git_status(
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
 }
 
+async fn git_repositories(
+    AxumPath(slug): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let path = project_dir(&slug)?;
+    let result = super::git::discover_repositories(&path)
+        .await
+        .map_err(bad)?;
+    Ok(Json(serde_json::to_value(result).map_err(bad)?))
+}
+
+async fn git_repository_action(
+    AxumPath(slug): AxumPath<String>,
+    Json(req): Json<super::git::GitRepositoryActionRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let path = project_dir(&slug)?;
+    let result = super::git::repository_action(&path, req)
+        .await
+        .map_err(bad)?;
+    Ok(Json(serde_json::to_value(result).map_err(bad)?))
+}
+
 async fn git_log(
     AxumPath(slug): AxumPath<String>,
     Query(query): Query<super::git::GitLogQuery>,
@@ -1875,6 +1896,14 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
             post(switch_project_tui_session_model),
         )
         .route("/api/v1/projects/{slug}/git/status", get(git_status))
+        .route(
+            "/api/v1/projects/{slug}/git/repositories",
+            get(git_repositories),
+        )
+        .route(
+            "/api/v1/projects/{slug}/git/repositories/action",
+            post(git_repository_action),
+        )
         .route("/api/v1/projects/{slug}/git/log", get(git_log))
         .route("/api/v1/projects/{slug}/git/diff", get(git_diff))
         .route("/api/v1/projects/{slug}/git/show", get(git_show))

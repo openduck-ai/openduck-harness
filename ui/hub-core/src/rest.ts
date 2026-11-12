@@ -8,6 +8,9 @@ import type {
   GitCommitResponse,
   GitDiffResponse,
   GitLogResponse,
+  GitRepositoriesResponse,
+  GitRepositoryActionRequest,
+  GitRepositoryActionResponse,
   GitShowResponse,
   GitStatusResponse,
   FileListResponse,
@@ -198,7 +201,7 @@ async function fetchWithTimeout(
 
 export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}) {
   function gitRouteTimeoutMs(route: string): number {
-    if (route.endsWith('/git/commit')) return GIT_COMMIT_TIMEOUT_MS
+    if (route.endsWith('/git/commit') || route.endsWith('/git/repositories/action')) return GIT_COMMIT_TIMEOUT_MS
     if (route.endsWith('/git/commit-message')) return GIT_COMMIT_MESSAGE_TIMEOUT_MS
     if (['/git/stage', '/git/unstage', '/git/discard'].some((r) => route.endsWith(r))) {
       return GIT_MUTATE_TIMEOUT_MS
@@ -495,6 +498,20 @@ export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}
     getGitStatus: (slug: string) =>
       request<GitStatusResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/git/status`,
+      ),
+    getGitRepositories: (slug: string) =>
+      request<GitRepositoriesResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/git/repositories`,
+      ),
+    executeGitRepositoryAction: (slug: string, body: GitRepositoryActionRequest) =>
+      request<GitRepositoryActionResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/git/repositories/action`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    runGitRepositoryAction: (slug: string, body: GitRepositoryActionRequest) =>
+      request<GitRepositoryActionResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/git/repositories/action`,
+        { method: 'POST', body: JSON.stringify(body) },
       ),
     getGitLog: (slug: string, limit?: number) =>
       request<GitLogResponse>(

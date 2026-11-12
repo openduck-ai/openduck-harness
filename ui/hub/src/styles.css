@@ -9849,6 +9849,205 @@ textarea {
   min-height: 560px;
 }
 
+.git-repositories-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
+}
+
+.git-repositories-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.git-repositories-pills {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.git-repo-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.25rem;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  transition: all 0.15s ease;
+}
+
+.git-repo-row.active {
+  border-color: var(--accent-sky-border);
+  background: var(--accent-sky-tint);
+}
+
+.git-repo-row .git-repo-pill {
+  border: none;
+  background: transparent;
+  padding: 0.2rem 0.45rem;
+}
+
+.git-repo-row .git-repo-pill.active {
+  background: transparent;
+  border: none;
+}
+
+.git-repo-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-right: 0.35rem;
+}
+
+.git-repo-row-actions .mini-btn {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.72rem;
+  height: auto;
+  line-height: 1.2;
+  gap: 0.25rem;
+}
+
+.git-repo-ahead-badge,
+.git-repo-behind-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0 0.2rem;
+  border-radius: var(--radius-sm);
+}
+
+.git-repo-ahead-badge {
+  color: var(--accent-sky);
+}
+
+.git-repo-behind-badge {
+  color: var(--accent-amber);
+}
+
+.git-repo-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius-full);
+  font-size: 0.8rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.git-repo-pill:hover {
+  border-color: var(--border-strong);
+}
+
+.git-repo-pill.active {
+  background: var(--accent-sky-tint);
+  border-color: var(--accent-sky-border);
+  color: var(--accent-sky);
+  font-weight: 600;
+}
+
+.git-repo-path {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.git-repo-branch {
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+
+.git-repo-dirty-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.25rem;
+  border-radius: var(--radius-full);
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: var(--accent-amber-tint);
+  color: var(--accent-amber);
+  border: 1px solid var(--accent-amber-border);
+}
+
+.git-repo-clean-badge {
+  color: var(--accent-emerald);
+  font-size: 0.75rem;
+  font-weight: bold;
+}
+
+.git-nested-repo-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.2rem 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.git-nested-repo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.git-nested-repo-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.git-nested-repo-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.git-nested-repo-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.git-repo-commit-modal {
+  max-width: 480px;
+  width: 90vw;
+}
+
+.git-modal-repo-info {
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
 .git-toolbar {
   display: flex;
   align-items: center;

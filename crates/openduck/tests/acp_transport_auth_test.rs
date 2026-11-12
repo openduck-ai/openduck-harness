@@ -922,3 +922,68 @@ async fn authenticated_api_v1_cors_preflight_allows_hub_dev_origin() {
         Some("http://127.0.0.1:5173")
     );
 }
+
+#[tokio::test]
+async fn git_repositories_endpoint_is_routed_and_requires_auth() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = test_authenticated_acp_router(&dir);
+
+    let status_unauth = send(
+        &router,
+        Method::GET,
+        "/api/v1/projects/my-proj/git/repositories",
+        &[],
+    )
+    .await;
+    assert_eq!(status_unauth, StatusCode::UNAUTHORIZED);
+
+    let response = send_response(
+        &router,
+        Method::GET,
+        "/api/v1/projects/my-proj/git/repositories",
+        &[("x-secret-key", SECRET)],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        json.get("error").is_some() || json.get("message").is_some(),
+        "Expected project not found error from handler, got: {json}"
+    );
+}
+
+#[tokio::test]
+async fn git_repository_action_endpoint_is_routed_and_requires_auth() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = test_authenticated_acp_router(&dir);
+
+    let status_unauth = send(
+        &router,
+        Method::POST,
+        "/api/v1/projects/my-proj/git/repositories/action",
+        &[],
+    )
+    .await;
+    assert_eq!(status_unauth, StatusCode::UNAUTHORIZED);
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/projects/my-proj/git/repositories/action")
+        .header("x-secret-key", SECRET)
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"path": ".", "action": "pull"}"#))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        json.get("error").is_some() || json.get("message").is_some(),
+        "Expected project not found error from handler, got: {json}"
+    );
+}

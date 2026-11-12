@@ -540,6 +540,32 @@ export interface GitStatusResponse {
   files: GitFileChange[]
 }
 
+export interface GitRepositoryEntry {
+  path: string
+  status: GitStatusResponse
+}
+
+export interface GitRepositoriesResponse {
+  repositories: GitRepositoryEntry[]
+}
+
+export type GitRepositoryActionType = 'pull' | 'commit' | 'push'
+
+export interface GitRepositoryActionRequest {
+  path: string
+  action: GitRepositoryActionType
+  message?: string
+}
+
+export interface GitRepositoryActionResponse {
+  success: boolean
+  action: GitRepositoryActionType
+  path: string
+  message?: string
+  commit?: GitCommitResponse
+  status?: GitStatusResponse
+}
+
 export interface GitCommitEntry {
   sha: string
   shortSha: string

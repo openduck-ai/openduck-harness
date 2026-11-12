@@ -298,6 +298,8 @@ const COMMIT_TIMEOUT: Duration = Duration::from_secs(120);
 const MUTATE_TIMEOUT: Duration = Duration::from_secs(90);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(90);
+const PULL_TIMEOUT: Duration = Duration::from_secs(120);
+const PUSH_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_LOG: usize = 500;
 const DEFAULT_LOG: usize = 150;
 const MAX_DIFF_BYTES: usize = 200 * 1024;
@@ -328,6 +330,19 @@ pub struct GitStatusResponse {
     pub ahead: u32,
     pub behind: u32,
     pub files: Vec<GitFileChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRepositoryEntry {
+    pub path: String,
+    pub status: GitStatusResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRepositoriesResponse {
+    pub repositories: Vec<GitRepositoryEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -429,7 +444,39 @@ pub struct GitCommitRequest {
     pub paths: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GitRepositoryActionType {
+    Pull,
+    Commit,
+    Push,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRepositoryActionRequest {
+    pub path: String,
+    pub action: GitRepositoryActionType,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRepositoryActionResponse {
+    pub success: bool,
+    pub action: GitRepositoryActionType,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<GitCommitResponse>,
+    pub status: GitStatusResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitCommitResponse {
     pub sha: String,
@@ -514,6 +561,11 @@ async fn run_git_timed(
     let mut child = command
         .spawn()
         .map_err(|error| anyhow!("git is not available: {error}"))?;
+    if timeout.is_zero() {
+        return Ok(GitChildOutcome::TimedOut(
+            reap_timed_out_git(child, label).await,
+        ));
+    }
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let drain = async {
@@ -878,6 +930,504 @@ pub async fn status(path: &Path) -> Result<GitStatusResponse> {
         behind,
         files,
     })
+}
+
+fn path_has_git_component(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str() == ".git")
+}
+
+fn looks_like_git_root(dir: &Path) -> bool {
+    if path_has_git_component(dir) {
+        return false;
+    }
+    let git_path = dir.join(".git");
+    let Ok(meta) = std::fs::symlink_metadata(&git_path) else {
+        return false;
+    };
+    if meta.file_type().is_symlink() {
+        return false;
+    }
+    if meta.is_dir() {
+        dir.join(".git").join("HEAD").exists()
+    } else if meta.file_type().is_file() {
+        std::fs::read_to_string(&git_path)
+            .map(|content| content.trim_start().starts_with("gitdir:"))
+            .unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+async fn is_actual_repo_root(candidate: &Path) -> bool {
+    let Ok(layout) = repo_layout(candidate).await else {
+        return false;
+    };
+    let Ok(candidate_canonical) = candidate.canonicalize() else {
+        return false;
+    };
+    candidate_canonical == layout.toplevel
+}
+
+fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
+    if path_has_git_component(root) {
+        return Vec::new();
+    }
+    let Ok(root_meta) = std::fs::symlink_metadata(root) else {
+        return Vec::new();
+    };
+    if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(root.to_path_buf());
+
+    while let Some(dir) = queue.pop_front() {
+        if path_has_git_component(&dir) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            continue;
+        }
+
+        if looks_like_git_root(&dir) {
+            candidates.push(dir.clone());
+        }
+
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            if file_name == ".git" {
+                continue;
+            }
+            let entry_path = entry.path();
+            let Ok(entry_meta) = std::fs::symlink_metadata(&entry_path) else {
+                continue;
+            };
+            if entry_meta.file_type().is_symlink() {
+                continue;
+            }
+            if entry_meta.is_dir() {
+                queue.push_back(entry_path);
+            }
+        }
+    }
+
+    candidates
+}
+
+pub async fn discover_repositories(root: &Path) -> Result<GitRepositoriesResponse> {
+    if path_has_git_component(root) {
+        return Ok(GitRepositoriesResponse {
+            repositories: Vec::new(),
+        });
+    }
+
+    let candidates = collect_candidate_roots(root);
+    let mut repositories = Vec::new();
+    let root_canonical = root.canonicalize().ok();
+
+    for candidate in candidates {
+        if !is_actual_repo_root(&candidate).await {
+            continue;
+        }
+
+        match status(&candidate).await {
+            Ok(repo_status) => {
+                let candidate_canonical = candidate.canonicalize().ok();
+                let is_root = candidate == root
+                    || (root_canonical.is_some() && root_canonical == candidate_canonical);
+
+                let rel_path = if is_root {
+                    ".".to_string()
+                } else {
+                    let rel = match candidate.strip_prefix(root) {
+                        Ok(p) => p.to_path_buf(),
+                        Err(_) => {
+                            if let (Some(rc), Some(cc)) = (&root_canonical, &candidate_canonical) {
+                                cc.strip_prefix(rc)
+                                    .map(Path::to_path_buf)
+                                    .unwrap_or(candidate.clone())
+                            } else {
+                                candidate.clone()
+                            }
+                        }
+                    };
+                    let s = rel.to_string_lossy().replace('\\', "/");
+                    let clean = s.trim_start_matches("./").trim_matches('/');
+                    if clean.is_empty() || clean == "." {
+                        ".".to_string()
+                    } else {
+                        clean.to_string()
+                    }
+                };
+
+                repositories.push(GitRepositoryEntry {
+                    path: rel_path,
+                    status: repo_status,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to get git status for repository candidate {}: {e}",
+                    candidate.display()
+                );
+            }
+        }
+    }
+
+    repositories.sort_by(|a, b| {
+        if a.path == "." && b.path != "." {
+            std::cmp::Ordering::Less
+        } else if a.path != "." && b.path == "." {
+            std::cmp::Ordering::Greater
+        } else {
+            a.path.cmp(&b.path)
+        }
+    });
+
+    Ok(GitRepositoriesResponse { repositories })
+}
+
+fn validate_and_resolve_repo_path(project_root: &Path, rel_path: &str) -> Result<PathBuf> {
+    if rel_path.contains('\0') {
+        bail!("Invalid path containing null bytes");
+    }
+    let p = Path::new(rel_path);
+    if p.is_absolute() {
+        bail!("Absolute paths are not allowed");
+    }
+    for component in p.components() {
+        match component {
+            std::path::Component::ParentDir => bail!("Path traversal (..) is not allowed"),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                bail!("Absolute paths are not allowed")
+            }
+            _ => {}
+        }
+    }
+    if path_has_git_component(p) {
+        bail!("Access to git internal directories (.git) is not allowed");
+    }
+
+    let clean = rel_path.replace('\\', "/");
+    let trimmed = clean.trim_start_matches("./").trim_matches('/');
+    let target = if trimmed.is_empty() || trimmed == "." {
+        project_root.to_path_buf()
+    } else {
+        project_root.join(trimmed)
+    };
+
+    let target_canonical = target
+        .canonicalize()
+        .map_err(|_| anyhow!("Repository path does not exist: {rel_path}"))?;
+
+    let root_canonical = project_root
+        .canonicalize()
+        .map_err(|_| anyhow!("Project root path does not exist"))?;
+
+    if !target_canonical.starts_with(&root_canonical) {
+        bail!("Repository path is outside project root");
+    }
+
+    Ok(target_canonical)
+}
+
+pub async fn resolve_discovered_repo(project_root: &Path, rel_path: &str) -> Result<PathBuf> {
+    let target_canonical = validate_and_resolve_repo_path(project_root, rel_path)?;
+
+    if !is_actual_repo_root(&target_canonical).await {
+        bail!("Path is not a git repository root: {rel_path}");
+    }
+
+    let discovered = discover_repositories(project_root).await?;
+    let mut is_discovered = false;
+    for entry in &discovered.repositories {
+        let entry_dir = if entry.path == "." {
+            project_root.to_path_buf()
+        } else {
+            project_root.join(&entry.path)
+        };
+        if let Ok(entry_canon) = entry_dir.canonicalize() {
+            if entry_canon == target_canonical {
+                is_discovered = true;
+                break;
+            }
+        }
+    }
+
+    if !is_discovered {
+        bail!("Repository at '{rel_path}' is not among discovered repositories in project");
+    }
+
+    Ok(target_canonical)
+}
+
+async fn resolve_default_remote(
+    repo_root: &Path,
+    branch: &str,
+    remotes: &[&str],
+) -> Option<String> {
+    let branch_push_remote_key = format!("branch.{}.pushRemote", branch);
+    if let Ok(val) = run_git_ok(
+        repo_root,
+        "git config",
+        &["config", "--get", &branch_push_remote_key],
+        READ_TIMEOUT,
+    )
+    .await
+    {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() && remotes.contains(&trimmed) {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    if let Ok(val) = run_git_ok(
+        repo_root,
+        "git config",
+        &["config", "--get", "remote.pushDefault"],
+        READ_TIMEOUT,
+    )
+    .await
+    {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() && remotes.contains(&trimmed) {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    let branch_remote_key = format!("branch.{}.remote", branch);
+    if let Ok(val) = run_git_ok(
+        repo_root,
+        "git config",
+        &["config", "--get", &branch_remote_key],
+        READ_TIMEOUT,
+    )
+    .await
+    {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() && remotes.contains(&trimmed) {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    if remotes.contains(&"origin") {
+        return Some("origin".to_string());
+    }
+
+    if remotes.len() == 1 {
+        return Some(remotes[0].to_string());
+    }
+
+    None
+}
+
+async fn determine_push_args(repo_root: &Path, remotes: &[&str]) -> Vec<String> {
+    let has_upstream = run_git_ok(
+        repo_root,
+        "git rev-parse",
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        READ_TIMEOUT,
+    )
+    .await
+    .is_ok();
+
+    if has_upstream {
+        return vec!["push".to_string()];
+    }
+
+    let branch_out = run_git_ok(
+        repo_root,
+        "git rev-parse",
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+        READ_TIMEOUT,
+    )
+    .await
+    .ok();
+
+    let branch = branch_out.as_deref().map(str::trim).unwrap_or("");
+    if branch.is_empty() || branch == "HEAD" || branch.starts_with('-') {
+        return vec!["push".to_string()];
+    }
+
+    if let Some(remote) = resolve_default_remote(repo_root, branch, remotes).await {
+        if !remote.is_empty() && !remote.starts_with('-') {
+            return vec![
+                "push".to_string(),
+                "--set-upstream".to_string(),
+                remote,
+                branch.to_string(),
+            ];
+        }
+    }
+
+    vec!["push".to_string()]
+}
+
+pub async fn repository_action(
+    project_root: &Path,
+    req: GitRepositoryActionRequest,
+) -> Result<GitRepositoryActionResponse> {
+    let repo_root = resolve_discovered_repo(project_root, &req.path).await?;
+    with_repo_write_lock(&repo_root, async {
+        repository_action_locked(&repo_root, req).await
+    })
+    .await
+}
+
+async fn repository_action_locked(
+    repo_root: &Path,
+    req: GitRepositoryActionRequest,
+) -> Result<GitRepositoryActionResponse> {
+    let layout = repo_layout(repo_root).await?;
+    reclaim_stale_index_lock(&layout).await?;
+
+    match req.action {
+        GitRepositoryActionType::Commit => {
+            let message = match &req.message {
+                Some(msg) => validate_commit_message(msg)?,
+                None => bail!("Commit message is required"),
+            };
+
+            let current_status = status(repo_root).await?;
+            let paths = req.paths.as_deref().unwrap_or(&[]);
+            if current_status.files.is_empty() {
+                bail!("Nothing to commit: working tree is clean");
+            }
+            if paths.is_empty() && !current_status.files.iter().any(|f| f.staged) {
+                bail!(
+                    "No changes added to commit (stage changes first or specify files to commit)"
+                );
+            }
+
+            let commit_resp = commit_locked(repo_root, &message, paths).await?;
+            let status_after = status(repo_root).await?;
+            Ok(GitRepositoryActionResponse {
+                success: true,
+                action: req.action,
+                path: req.path,
+                message: Some(commit_resp.subject.clone()),
+                commit: Some(commit_resp),
+                status: status_after,
+            })
+        }
+        GitRepositoryActionType::Pull => {
+            let remotes_out =
+                run_git_ok(repo_root, "git remote", &["remote"], READ_TIMEOUT).await?;
+            if remotes_out.trim().is_empty() {
+                bail!("No remote repository configured");
+            }
+
+            let output = run_git_mutating(
+                repo_root,
+                &layout.index_lock,
+                "git pull",
+                &["pull"],
+                PULL_TIMEOUT,
+            )
+            .await?;
+
+            if !output.success {
+                let stderr = output.stderr.trim();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let err_msg = if !stderr.is_empty() {
+                    stderr.to_string()
+                } else if !stdout.is_empty() {
+                    stdout
+                } else {
+                    "git pull failed".to_string()
+                };
+                bail!("{err_msg}");
+            }
+
+            let stdout_msg = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let msg = if stdout_msg.is_empty() {
+                if !output.stderr.trim().is_empty() {
+                    output.stderr.trim().to_string()
+                } else {
+                    "Pull completed successfully".to_string()
+                }
+            } else {
+                stdout_msg
+            };
+
+            let status_after = status(repo_root).await?;
+            Ok(GitRepositoryActionResponse {
+                success: true,
+                action: req.action,
+                path: req.path,
+                message: Some(msg),
+                commit: None,
+                status: status_after,
+            })
+        }
+        GitRepositoryActionType::Push => {
+            let remotes_out =
+                run_git_ok(repo_root, "git remote", &["remote"], READ_TIMEOUT).await?;
+            let remotes: Vec<&str> = remotes_out
+                .lines()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            if remotes.is_empty() {
+                bail!("No remote repository configured");
+            }
+
+            let push_cmd_args = determine_push_args(repo_root, &remotes).await;
+            let push_cmd_refs: Vec<&str> = push_cmd_args.iter().map(String::as_str).collect();
+
+            let output = run_git_mutating(
+                repo_root,
+                &layout.index_lock,
+                "git push",
+                &push_cmd_refs,
+                PUSH_TIMEOUT,
+            )
+            .await?;
+
+            if !output.success {
+                let stderr = output.stderr.trim();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let err_msg = if !stderr.is_empty() {
+                    stderr.to_string()
+                } else if !stdout.is_empty() {
+                    stdout
+                } else {
+                    "git push failed".to_string()
+                };
+                bail!("{err_msg}");
+            }
+
+            let stdout_msg = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let msg = if stdout_msg.is_empty() {
+                if !output.stderr.trim().is_empty() {
+                    output.stderr.trim().to_string()
+                } else {
+                    "Push completed successfully".to_string()
+                }
+            } else {
+                stdout_msg
+            };
+
+            let status_after = status(repo_root).await?;
+            Ok(GitRepositoryActionResponse {
+                success: true,
+                action: req.action,
+                path: req.path,
+                message: Some(msg),
+                commit: None,
+                status: status_after,
+            })
+        }
+    }
 }
 
 pub async fn log(path: &Path, limit: Option<usize>) -> Result<GitLogResponse> {
@@ -2219,5 +2769,785 @@ detached
             "error string mentions timeout: {error}"
         );
         assert!(!layout.index_lock.exists());
+    }
+
+    #[tokio::test]
+    async fn discover_repositories_multiple_nested_and_ordinary_dirs() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        run_plain_git(root, &["commit", "--allow-empty", "-m", "root init"]);
+
+        let ordinary_dir = root.join("docs").join("guides");
+        fs::create_dir_all(&ordinary_dir).unwrap();
+        fs::write(ordinary_dir.join("readme.md"), "# Guide\n").unwrap();
+
+        let nested_a = root.join("packages").join("repo_a");
+        fs::create_dir_all(&nested_a).unwrap();
+        init_repo(&nested_a);
+        run_plain_git(&nested_a, &["commit", "--allow-empty", "-m", "repo a init"]);
+        fs::write(nested_a.join("untracked_a.txt"), "hello a\n").unwrap();
+
+        let nested_b = root.join("services").join("repo_b");
+        fs::create_dir_all(&nested_b).unwrap();
+        init_repo(&nested_b);
+        run_plain_git(&nested_b, &["commit", "--allow-empty", "-m", "repo b init"]);
+        fs::write(nested_b.join("staged_b.txt"), "hello b\n").unwrap();
+        stage(&nested_b, &["staged_b.txt".to_string()])
+            .await
+            .unwrap();
+
+        let response = discover_repositories(root).await.unwrap();
+
+        assert_eq!(response.repositories.len(), 3);
+        assert_eq!(response.repositories[0].path, ".");
+        assert_eq!(response.repositories[1].path, "packages/repo_a");
+        assert_eq!(response.repositories[2].path, "services/repo_b");
+
+        let status_root = &response.repositories[0].status;
+        assert!(status_root.is_repo);
+        assert!(status_root.files.iter().any(|f| f.path.contains("docs")));
+
+        let status_a = &response.repositories[1].status;
+        assert!(status_a.is_repo);
+        assert_eq!(status_a.files.len(), 1);
+        assert_eq!(status_a.files[0].path, "untracked_a.txt");
+        assert!(status_a.files[0].untracked);
+
+        let status_b = &response.repositories[2].status;
+        assert!(status_b.is_repo);
+        assert_eq!(status_b.files.len(), 1);
+        assert_eq!(status_b.files[0].path, "staged_b.txt");
+        assert!(status_b.files[0].staged);
+    }
+
+    #[tokio::test]
+    async fn discover_repositories_excludes_git_internals_and_fake_object_repos() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        run_plain_git(root, &["commit", "--allow-empty", "-m", "root init"]);
+
+        let fake_repo = root.join(".git").join("objects").join("fake_repo");
+        fs::create_dir_all(fake_repo.join(".git")).unwrap();
+        fs::write(
+            fake_repo.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .unwrap();
+
+        let fake_module = root.join(".git").join("modules").join("sub");
+        fs::create_dir_all(fake_module.join(".git")).unwrap();
+        fs::write(
+            fake_module.join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .unwrap();
+
+        let response = discover_repositories(root).await.unwrap();
+
+        assert_eq!(response.repositories.len(), 1);
+        assert_eq!(response.repositories[0].path, ".");
+
+        let response_git = discover_repositories(&root.join(".git")).await.unwrap();
+        assert!(response_git.repositories.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discover_repositories_avoids_symlink_traversal() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("main_proj");
+        fs::create_dir_all(&root).unwrap();
+        init_repo(&root);
+        run_plain_git(&root, &["commit", "--allow-empty", "-m", "root init"]);
+
+        let external_repo = dir.path().join("external_repo");
+        fs::create_dir_all(&external_repo).unwrap();
+        init_repo(&external_repo);
+        run_plain_git(
+            &external_repo,
+            &["commit", "--allow-empty", "-m", "ext init"],
+        );
+
+        symlink(&external_repo, root.join("linked_repo")).unwrap();
+        symlink(&root, root.join("loop_link")).unwrap();
+
+        let response = discover_repositories(&root).await.unwrap();
+
+        assert_eq!(response.repositories.len(), 1);
+        assert_eq!(response.repositories[0].path, ".");
+    }
+
+    #[tokio::test]
+    async fn discover_repositories_non_repo_root_with_nested_repos() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let repo1 = root.join("backend");
+        fs::create_dir_all(&repo1).unwrap();
+        init_repo(&repo1);
+        run_plain_git(&repo1, &["commit", "--allow-empty", "-m", "init backend"]);
+
+        let repo2 = root.join("frontend");
+        fs::create_dir_all(&repo2).unwrap();
+        init_repo(&repo2);
+        run_plain_git(&repo2, &["commit", "--allow-empty", "-m", "init frontend"]);
+
+        let docs = root.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(docs.join("info.txt"), "hello").unwrap();
+
+        let response = discover_repositories(root).await.unwrap();
+
+        assert_eq!(response.repositories.len(), 2);
+        assert_eq!(response.repositories[0].path, "backend");
+        assert_eq!(response.repositories[1].path, "frontend");
+        assert!(response.repositories[0].status.is_repo);
+        assert!(response.repositories[1].status.is_repo);
+    }
+
+    #[tokio::test]
+    async fn discover_repositories_empty_when_no_git_repositories() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("some").join("nested").join("dir")).unwrap();
+        fs::write(root.join("some").join("file.txt"), "plain").unwrap();
+
+        let response = discover_repositories(root).await.unwrap();
+        assert!(response.repositories.is_empty());
+    }
+
+    #[tokio::test]
+    async fn repository_action_path_validation() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        run_plain_git(root, &["commit", "--allow-empty", "-m", "init root"]);
+
+        let nested = root.join("packages").join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        init_repo(&nested);
+        run_plain_git(&nested, &["commit", "--allow-empty", "-m", "init nested"]);
+
+        let non_repo = root.join("docs");
+        fs::create_dir_all(&non_repo).unwrap();
+
+        // 1. Absolute path rejected
+        let abs_path = nested.to_string_lossy().to_string();
+        let err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: abs_path,
+                action: GitRepositoryActionType::Pull,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Absolute paths are not allowed"));
+
+        // 2. Traversal path rejected
+        let err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: "../outside".to_string(),
+                action: GitRepositoryActionType::Pull,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Path traversal"));
+
+        let err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: "packages/../../outside".to_string(),
+                action: GitRepositoryActionType::Pull,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Path traversal"));
+
+        // 3. Non-repo directory rejected
+        let err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: "docs".to_string(),
+                action: GitRepositoryActionType::Pull,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("not a git repository root")
+                || err
+                    .to_string()
+                    .contains("not among discovered repositories")
+        );
+
+        // 4. Non-existent path rejected
+        let err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: "packages/doesnotexist".to_string(),
+                action: GitRepositoryActionType::Pull,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
+
+        // 5. Access inside .git rejected
+        let err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: ".git".to_string(),
+                action: GitRepositoryActionType::Pull,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains(".git"));
+
+        // 6. Valid discovered nested repo is accepted for resolution
+        let resolved = resolve_discovered_repo(root, "packages/nested")
+            .await
+            .unwrap();
+        assert_eq!(resolved, nested.canonicalize().unwrap());
+
+        // 7. Symlink pointing outside project root rejected
+        #[cfg(unix)]
+        {
+            let outside_dir = tempdir().unwrap();
+            let outside_repo = outside_dir.path().join("outside_repo");
+            fs::create_dir_all(&outside_repo).unwrap();
+            init_repo(&outside_repo);
+            let symlink_path = root.join("symlinked_repo");
+            let _ = std::os::unix::fs::symlink(&outside_repo, &symlink_path);
+            let err = repository_action(
+                root,
+                GitRepositoryActionRequest {
+                    path: "symlinked_repo".to_string(),
+                    action: GitRepositoryActionType::Pull,
+                    message: None,
+                    paths: None,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("outside project root")
+                    || err
+                        .to_string()
+                        .contains("not among discovered repositories")
+                    || err.to_string().contains("not a git repository root")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn repository_action_parent_nested_isolation() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        run_plain_git(root, &["commit", "--allow-empty", "-m", "root base"]);
+        let root_head_before =
+            run_git_ok(root, "git rev-parse", &["rev-parse", "HEAD"], READ_TIMEOUT)
+                .await
+                .unwrap();
+
+        let nested = root.join("services").join("subrepo");
+        fs::create_dir_all(&nested).unwrap();
+        init_repo(&nested);
+        run_plain_git(&nested, &["commit", "--allow-empty", "-m", "nested base"]);
+        let nested_head_before = run_git_ok(
+            &nested,
+            "git rev-parse",
+            &["rev-parse", "HEAD"],
+            READ_TIMEOUT,
+        )
+        .await
+        .unwrap();
+
+        // Create dirty files in both root and nested
+        fs::write(root.join("root_dirty.txt"), "parent content\n").unwrap();
+        fs::write(nested.join("nested_file.txt"), "nested content\n").unwrap();
+
+        // Stage file ONLY in nested repo
+        stage(&nested, &["nested_file.txt".to_string()])
+            .await
+            .unwrap();
+
+        // Commit action targeting nested repo
+        let res = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: "services/subrepo".to_string(),
+                action: GitRepositoryActionType::Commit,
+                message: Some("feat: nested commit".to_string()),
+                paths: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(res.success);
+        assert_eq!(res.action, GitRepositoryActionType::Commit);
+        assert_eq!(res.path, "services/subrepo");
+        assert_eq!(res.message.as_deref(), Some("feat: nested commit"));
+        assert!(res.commit.is_some());
+
+        // Verify nested HEAD advanced
+        let nested_head_after = run_git_ok(
+            &nested,
+            "git rev-parse",
+            &["rev-parse", "HEAD"],
+            READ_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_ne!(nested_head_before, nested_head_after);
+
+        // Verify root HEAD is completely UNCHANGED
+        let root_head_after =
+            run_git_ok(root, "git rev-parse", &["rev-parse", "HEAD"], READ_TIMEOUT)
+                .await
+                .unwrap();
+        assert_eq!(root_head_before, root_head_after);
+
+        // Verify root dirty file is STILL dirty and uncommitted
+        let root_status = status(root).await.unwrap();
+        assert!(root_status.files.iter().any(|f| f.path == "root_dirty.txt"));
+
+        // Now stage and commit in root repo via path "."
+        stage(root, &["root_dirty.txt".to_string()]).await.unwrap();
+        let res_root = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: ".".to_string(),
+                action: GitRepositoryActionType::Commit,
+                message: Some("feat: root commit".to_string()),
+                paths: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(res_root.success);
+
+        // Verify root HEAD advanced, nested HEAD was unaffected
+        let root_head_final =
+            run_git_ok(root, "git rev-parse", &["rev-parse", "HEAD"], READ_TIMEOUT)
+                .await
+                .unwrap();
+        let nested_head_final = run_git_ok(
+            &nested,
+            "git rev-parse",
+            &["rev-parse", "HEAD"],
+            READ_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_ne!(root_head_after, root_head_final);
+        assert_eq!(nested_head_after, nested_head_final);
+    }
+
+    #[tokio::test]
+    async fn repository_action_no_remote_failure() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        run_plain_git(root, &["commit", "--allow-empty", "-m", "init"]);
+
+        let pull_err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: ".".to_string(),
+                action: GitRepositoryActionType::Pull,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(pull_err
+            .to_string()
+            .contains("No remote repository configured"));
+
+        let push_err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: ".".to_string(),
+                action: GitRepositoryActionType::Push,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(push_err
+            .to_string()
+            .contains("No remote repository configured"));
+    }
+
+    #[tokio::test]
+    async fn repository_action_empty_commit_and_message_validation() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        run_plain_git(root, &["commit", "--allow-empty", "-m", "init"]);
+
+        // Missing message
+        let err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: ".".to_string(),
+                action: GitRepositoryActionType::Commit,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Commit message is required"));
+
+        // Whitespace message
+        let err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: ".".to_string(),
+                action: GitRepositoryActionType::Commit,
+                message: Some("   \n  ".to_string()),
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Commit message is required"));
+
+        // Empty commit on clean repo
+        let err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: ".".to_string(),
+                action: GitRepositoryActionType::Commit,
+                message: Some("valid msg".to_string()),
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("Nothing to commit"));
+
+        // Unstaged file, but nothing staged and no paths
+        fs::write(root.join("unstaged.txt"), "hello").unwrap();
+        let err = repository_action(
+            root,
+            GitRepositoryActionRequest {
+                path: ".".to_string(),
+                action: GitRepositoryActionType::Commit,
+                message: Some("valid msg".to_string()),
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("No changes added to commit"));
+    }
+
+    #[tokio::test]
+    async fn repository_action_unavailable_remote_and_dirty_pull_failure() {
+        let dir = tempdir().unwrap();
+        let upstream = dir.path().join("upstream");
+        fs::create_dir_all(&upstream).unwrap();
+        init_repo(&upstream);
+        fs::write(upstream.join("shared.txt"), "initial\n").unwrap();
+        run_plain_git(&upstream, &["add", "shared.txt"]);
+        run_plain_git(&upstream, &["commit", "-m", "init shared"]);
+
+        // Clone/create downstream repo inside project
+        let project_root = dir.path().join("project");
+        let local_repo = project_root.join("nested").join("repo");
+        fs::create_dir_all(&local_repo).unwrap();
+        init_repo(&local_repo);
+        run_plain_git(
+            &local_repo,
+            &["remote", "add", "origin", upstream.to_str().unwrap()],
+        );
+        run_plain_git(&local_repo, &["pull", "origin", "main"]);
+
+        // Commit new change upstream
+        fs::write(upstream.join("shared.txt"), "upstream update\n").unwrap();
+        run_plain_git(&upstream, &["commit", "-am", "upstream change"]);
+
+        // In local repo, create dirty conflict
+        fs::write(
+            local_repo.join("shared.txt"),
+            "local dirty conflicting change\n",
+        )
+        .unwrap();
+
+        // 1. Dirty pull should fail with useful error
+        let err = repository_action(
+            &project_root,
+            GitRepositoryActionRequest {
+                path: "nested/repo".to_string(),
+                action: GitRepositoryActionType::Pull,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("overwritten by merge") || err.to_string().contains("pull")
+        );
+
+        // 2. Unavailable remote failure
+        let broken_repo = project_root.join("nested").join("broken");
+        fs::create_dir_all(&broken_repo).unwrap();
+        init_repo(&broken_repo);
+        run_plain_git(&broken_repo, &["commit", "--allow-empty", "-m", "init"]);
+        run_plain_git(
+            &broken_repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "http://127.0.0.1:9/nonexistent.git",
+            ],
+        );
+
+        let err = repository_action(
+            &project_root,
+            GitRepositoryActionRequest {
+                path: "nested/broken".to_string(),
+                action: GitRepositoryActionType::Pull,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("fatal:")
+                || err_str.contains("Failed to connect")
+                || err_str.contains("git pull failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn repository_action_push_and_pull_success() {
+        let dir = tempdir().unwrap();
+        let upstream = dir.path().join("upstream");
+        fs::create_dir_all(&upstream).unwrap();
+        init_repo(&upstream);
+        run_plain_git(
+            &upstream,
+            &["config", "receive.denyCurrentBranch", "ignore"],
+        );
+        fs::write(upstream.join("file.txt"), "v1\n").unwrap();
+        run_plain_git(&upstream, &["add", "file.txt"]);
+        run_plain_git(&upstream, &["commit", "-m", "init upstream"]);
+
+        let project_root = dir.path().join("project");
+        let nested_repo = project_root.join("packages").join("service");
+        fs::create_dir_all(&nested_repo).unwrap();
+        init_repo(&nested_repo);
+        run_plain_git(
+            &nested_repo,
+            &["remote", "add", "origin", upstream.to_str().unwrap()],
+        );
+        run_plain_git(&nested_repo, &["pull", "origin", "main"]);
+
+        // 1. Commit and Push from nested repo to upstream
+        fs::write(nested_repo.join("file.txt"), "v2 from nested\n").unwrap();
+        stage(&nested_repo, &["file.txt".to_string()])
+            .await
+            .unwrap();
+
+        let commit_res = repository_action(
+            &project_root,
+            GitRepositoryActionRequest {
+                path: "packages/service".to_string(),
+                action: GitRepositoryActionType::Commit,
+                message: Some("feat: update from nested".to_string()),
+                paths: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(commit_res.success);
+        let commit_sha = commit_res.commit.unwrap().sha;
+
+        let push_res = repository_action(
+            &project_root,
+            GitRepositoryActionRequest {
+                path: "packages/service".to_string(),
+                action: GitRepositoryActionType::Push,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(push_res.success);
+
+        // Verify upstream tracking was established by push
+        let tracking = run_git_ok(
+            &nested_repo,
+            "git rev-parse",
+            &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            READ_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tracking.trim(), "origin/main");
+
+        // Verify upstream has the pushed commit
+        let upstream_head = run_git_ok(
+            &upstream,
+            "git rev-parse",
+            &["rev-parse", "HEAD"],
+            READ_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(upstream_head.trim(), commit_sha.trim());
+
+        // 2. Make change in upstream, then Pull from nested repo
+        fs::write(upstream.join("new_file.txt"), "upstream addition\n").unwrap();
+        run_plain_git(&upstream, &["add", "new_file.txt"]);
+        run_plain_git(&upstream, &["commit", "-m", "upstream new file"]);
+
+        let pull_res = repository_action(
+            &project_root,
+            GitRepositoryActionRequest {
+                path: "packages/service".to_string(),
+                action: GitRepositoryActionType::Pull,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(pull_res.success);
+        assert!(nested_repo.join("new_file.txt").exists());
+        assert_eq!(
+            fs::read_to_string(nested_repo.join("new_file.txt")).unwrap(),
+            "upstream addition\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn repository_action_push_rejected_preserves_error() {
+        let dir = tempdir().unwrap();
+        let upstream = dir.path().join("upstream");
+        fs::create_dir_all(&upstream).unwrap();
+        init_repo(&upstream);
+        run_plain_git(
+            &upstream,
+            &["config", "receive.denyCurrentBranch", "ignore"],
+        );
+        fs::write(upstream.join("file.txt"), "v1\n").unwrap();
+        run_plain_git(&upstream, &["add", "file.txt"]);
+        run_plain_git(&upstream, &["commit", "-m", "init upstream"]);
+
+        let project_root = dir.path().join("project");
+        let nested_repo = project_root.join("packages").join("service");
+        fs::create_dir_all(&nested_repo).unwrap();
+        init_repo(&nested_repo);
+        run_plain_git(
+            &nested_repo,
+            &["remote", "add", "origin", upstream.to_str().unwrap()],
+        );
+        run_plain_git(&nested_repo, &["pull", "origin", "main"]);
+
+        // Make an upstream commit
+        fs::write(upstream.join("file.txt"), "v2 upstream\n").unwrap();
+        run_plain_git(&upstream, &["commit", "-am", "upstream update"]);
+
+        // Make a conflicting local commit without pulling first
+        fs::write(nested_repo.join("file.txt"), "v2 local conflict\n").unwrap();
+        stage(&nested_repo, &["file.txt".to_string()])
+            .await
+            .unwrap();
+        let _ = commit(
+            &nested_repo,
+            "feat: local conflict",
+            &["file.txt".to_string()],
+        )
+        .await
+        .unwrap();
+
+        // Push should fail because remote has work we do not have
+        let push_err = repository_action(
+            &project_root,
+            GitRepositoryActionRequest {
+                path: "packages/service".to_string(),
+                action: GitRepositoryActionType::Push,
+                message: None,
+                paths: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        let err_str = push_err.to_string();
+        assert!(
+            err_str.contains("rejected")
+                || err_str.contains("fetch first")
+                || err_str.contains("failed to push")
+        );
+    }
+
+    #[tokio::test]
+    async fn repository_action_commit_with_explicit_paths() {
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        let nested_repo = project_root.join("packages").join("pkg-a");
+        fs::create_dir_all(&nested_repo).unwrap();
+        init_repo(&nested_repo);
+        run_plain_git(&nested_repo, &["commit", "--allow-empty", "-m", "init"]);
+
+        // Create two dirty files, unstaged
+        fs::write(nested_repo.join("file1.txt"), "one\n").unwrap();
+        fs::write(nested_repo.join("file2.txt"), "two\n").unwrap();
+
+        // Commit ONLY file1.txt using explicit paths
+        let res = repository_action(
+            project_root,
+            GitRepositoryActionRequest {
+                path: "packages/pkg-a".to_string(),
+                action: GitRepositoryActionType::Commit,
+                message: Some("feat: commit only file1".to_string()),
+                paths: Some(vec!["file1.txt".to_string()]),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(res.success);
+        assert_eq!(res.action, GitRepositoryActionType::Commit);
+
+        // Verify file1 is committed (not in status), file2 is still untracked/dirty
+        let nested_status = status(&nested_repo).await.unwrap();
+        assert!(!nested_status.files.iter().any(|f| f.path == "file1.txt"));
+        assert!(nested_status.files.iter().any(|f| f.path == "file2.txt"));
     }
 }

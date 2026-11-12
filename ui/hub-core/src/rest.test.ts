@@ -103,6 +103,7 @@ test('REST client calls file management and terminal endpoints', async () => {
     await api.renameFile('my-proj', { oldPath: 'a.txt', newPath: 'b.txt' })
     await api.execCommand('my-proj', { command: 'cargo check' })
     await api.getGitStatus('my-proj')
+    await api.getGitRepositories('my-proj')
     await api.getGitLog('my-proj', 50)
     await api.getGitDiff('my-proj', 'src/main.rs', true)
     await api.getGitShow('my-proj', 'abc1234')
@@ -139,19 +140,21 @@ test('REST client calls file management and terminal endpoints', async () => {
 
     assert.equal(calls[7].url, 'http://host/api/v1/projects/my-proj/git/status')
     assert.equal(calls[7].method, 'GET')
-    assert.equal(calls[8].url, 'http://host/api/v1/projects/my-proj/git/log?limit=50')
-    assert.equal(calls[9].url, 'http://host/api/v1/projects/my-proj/git/diff?path=src%2Fmain.rs&staged=true')
-    assert.equal(calls[10].url, 'http://host/api/v1/projects/my-proj/git/show?sha=abc1234')
-    assert.equal(calls[11].url, 'http://host/api/v1/projects/my-proj/git/stage')
-    assert.equal(calls[11].method, 'POST')
-    assert.equal(calls[12].url, 'http://host/api/v1/projects/my-proj/git/unstage')
-    assert.equal(calls[13].url, 'http://host/api/v1/projects/my-proj/git/discard')
-    assert.equal(calls[14].url, 'http://host/api/v1/projects/my-proj/git/commit')
-    assert.match(calls[14].body ?? '', /"fix parser"/)
-    assert.equal(calls[15].url, 'http://host/api/v1/projects/my-proj/git/commit-message')
-    assert.equal(calls[15].method, 'POST')
-    assert.equal(calls[16].url, 'http://host/api/v1/projects/my-proj/files/bytes?path=assets%2Ficon.png')
-    assert.equal(calls[16].method, 'GET')
+    assert.equal(calls[8].url, 'http://host/api/v1/projects/my-proj/git/repositories')
+    assert.equal(calls[8].method, 'GET')
+    assert.equal(calls[9].url, 'http://host/api/v1/projects/my-proj/git/log?limit=50')
+    assert.equal(calls[10].url, 'http://host/api/v1/projects/my-proj/git/diff?path=src%2Fmain.rs&staged=true')
+    assert.equal(calls[11].url, 'http://host/api/v1/projects/my-proj/git/show?sha=abc1234')
+    assert.equal(calls[12].url, 'http://host/api/v1/projects/my-proj/git/stage')
+    assert.equal(calls[12].method, 'POST')
+    assert.equal(calls[13].url, 'http://host/api/v1/projects/my-proj/git/unstage')
+    assert.equal(calls[14].url, 'http://host/api/v1/projects/my-proj/git/discard')
+    assert.equal(calls[15].url, 'http://host/api/v1/projects/my-proj/git/commit')
+    assert.match(calls[15].body ?? '', /"fix parser"/)
+    assert.equal(calls[16].url, 'http://host/api/v1/projects/my-proj/git/commit-message')
+    assert.equal(calls[16].method, 'POST')
+    assert.equal(calls[17].url, 'http://host/api/v1/projects/my-proj/files/bytes?path=assets%2Ficon.png')
+    assert.equal(calls[17].method, 'GET')
 
     assert.equal(
       api.getFileBytesUrl('my-proj', 'assets/icon.png'),
@@ -799,6 +802,8 @@ test('git routes get long git-specific timeouts', async () => {
     await api.unstageGitFiles('my-proj', ['a.txt'])
     await api.discardGitFiles('my-proj', ['a.txt'])
     await api.getGitStatus('my-proj')
+    await api.getGitRepositories('my-proj')
+    await api.runGitRepositoryAction('my-proj', { path: 'packages/ui', action: 'pull' })
 
     assert.ok(signals[0], 'commit should carry an abort signal')
     assert.ok(signals[1], 'commit-message should carry an abort signal')
@@ -806,8 +811,12 @@ test('git routes get long git-specific timeouts', async () => {
     assert.ok(signals[3], 'unstage should carry an abort signal')
     assert.ok(signals[4], 'discard should carry an abort signal')
     assert.ok(signals[5], 'status should carry an abort signal')
+    assert.ok(signals[6], 'repositories should carry an abort signal')
+    assert.ok(signals[7], 'repositories action should carry an abort signal')
     assert.ok(urls[0].endsWith('/git/commit'))
     assert.ok(urls[5].endsWith('/git/status'))
+    assert.ok(urls[6].endsWith('/git/repositories'))
+    assert.ok(urls[7].endsWith('/git/repositories/action'))
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -935,5 +944,57 @@ test('ordinary routes keep caller, storage, then environment timeout precedence'
     assert.deepEqual(scheduled, [45_000, 23_000, 34_000])
   } finally {
     restore()
+  }
+})
+
+test('REST client calls git repository action endpoint with correct payload and method', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: { url: string; method: string; body?: string }[] = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({
+      url: String(input),
+      method: init?.method ?? 'GET',
+      body: init?.body ? String(init.body) : undefined,
+    })
+    return new Response(JSON.stringify({ success: true, action: 'pull', path: 'packages/ui' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  try {
+    const api = createApi('http://host', 'secret')
+    await api.runGitRepositoryAction('my-proj', {
+      path: 'packages/ui',
+      action: 'pull',
+    })
+    await api.executeGitRepositoryAction('my-proj', {
+      path: 'packages/ui',
+      action: 'commit',
+      message: 'feat: explicit commit',
+    })
+    await api.runGitRepositoryAction('my-proj', {
+      path: 'packages/ui',
+      action: 'push',
+    })
+
+    assert.equal(calls.length, 3)
+    assert.equal(calls[0].url, 'http://host/api/v1/projects/my-proj/git/repositories/action')
+    assert.equal(calls[0].method, 'POST')
+    assert.deepEqual(JSON.parse(calls[0].body!), { path: 'packages/ui', action: 'pull' })
+
+    assert.equal(calls[1].url, 'http://host/api/v1/projects/my-proj/git/repositories/action')
+    assert.equal(calls[1].method, 'POST')
+    assert.deepEqual(JSON.parse(calls[1].body!), {
+      path: 'packages/ui',
+      action: 'commit',
+      message: 'feat: explicit commit',
+    })
+
+    assert.equal(calls[2].url, 'http://host/api/v1/projects/my-proj/git/repositories/action')
+    assert.equal(calls[2].method, 'POST')
+    assert.deepEqual(JSON.parse(calls[2].body!), { path: 'packages/ui', action: 'push' })
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })
