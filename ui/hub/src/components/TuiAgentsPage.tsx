@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
-import type { createApi, ManagedTuiSession, SessionOperation, AgentProfile, TuiAccount, QuotaSnapshot, ProxyItem } from '../api'
+import type { createApi, ManagedTuiSession, SessionOperation, AgentProfile, TuiAccount, QuotaSnapshot, ProxyItem, TuiAgentModelCatalog } from '../api'
 import { formatDateTime, formatTime, formatNumber } from '../i18n/format.ts'
 import { validateProxyUrlMessage } from '../providerConfig'
-import { resolveActiveModel } from '../tuiModelPicker'
+import { resolveActiveModel, normalizeCatalog, discoverAgentModelsViaCli, getCliDiscoveryCommand } from '../tuiModelPicker'
 import { TuiModelPickerModal } from './TuiModelPickerModal'
 import {
   Terminal,
@@ -59,6 +59,10 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
   const [transferModalSession, setTransferModalSession] = useState<ManagedTuiSession | null>(null)
   const [transferRunId, setTransferRunId] = useState('')
   const [editProfileModal, setEditProfileModal] = useState<AgentProfile | null>(null)
+  const [profileCatalog, setProfileCatalog] = useState<TuiAgentModelCatalog | null>(null)
+  const [discoveringModels, setDiscoveringModels] = useState(false)
+  const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null)
+  const [customModelMode, setCustomModelMode] = useState(false)
   const [newAccountModal, setNewAccountModal] = useState(false)
   const [newAccountProvider, setNewAccountProvider] = useState('')
   const [newAccountName, setNewAccountName] = useState('')
@@ -275,6 +279,58 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
       setEditFileProxyUrl(stored)
     }
     setEditProfileModal(profile)
+    setDiscoveryNotice(null)
+    setCustomModelMode(false)
+    setProfileCatalog(null)
+
+    if (typeof api.getTuiAgentModels === 'function') {
+      void api
+        .getTuiAgentModels(profile.agentKind)
+        .then((raw: any) => {
+          const normalized = normalizeCatalog(raw, profile.agentKind)
+          setProfileCatalog(normalized)
+          if (profile.defaultModel && normalized.models.length > 0) {
+            const exists = normalized.models.some(
+              m => m.id.toLowerCase() === profile.defaultModel!.trim().toLowerCase(),
+            )
+            if (!exists) {
+              setCustomModelMode(true)
+            }
+          }
+        })
+        .catch(() => {
+          setProfileCatalog(null)
+        })
+    }
+  }
+
+  const handleDiscoverModelsViaCli = async (agentKind: string) => {
+    setDiscoveringModels(true)
+    setDiscoveryNotice(t('tuiAgents.page.discoveringModelsCli'))
+    try {
+      const outcome = await discoverAgentModelsViaCli(api, agentKind, profileCatalog)
+      if (outcome.success && outcome.catalog) {
+        setProfileCatalog(outcome.catalog)
+        setDiscoveryNotice(t('tuiAgents.page.discoverySuccess', { count: outcome.catalog.models.length }))
+        setCustomModelMode(false)
+        if (editProfileModal && !editProfileModal.defaultModel) {
+          const def = outcome.catalog.defaultModel || outcome.catalog.models[0]?.id
+          if (def) {
+            setEditProfileModal({ ...editProfileModal, defaultModel: def })
+          }
+        }
+      } else {
+        if (outcome.catalog) {
+          setProfileCatalog(outcome.catalog)
+        }
+        setDiscoveryNotice(outcome.error || t('tuiAgents.page.discoveryNoModels'))
+      }
+    } catch (e: any) {
+      setDiscoveryNotice(t('tuiAgents.page.discoveryFailed', { error: e?.message || String(e) }))
+    } finally {
+      setDiscoveringModels(false)
+      void loadData()
+    }
   }
 
   const fileProxyLabel = (agentKind: string) => {
@@ -865,11 +921,11 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                       <Cpu size={18} />
                       <span>{kind}</span>
                     </h3>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        openProfileEditor(
-                          profile || {
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const prof = profile || {
                             id: '',
                             agentKind: kind,
                             defaultModel: '',
@@ -879,16 +935,60 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
                             proxyId: '',
                             createdAt: '',
                             updatedAt: '',
-                          },
-                        )
-                      }
-                      style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '4px', border: '1px solid #ccc', cursor: 'pointer' }}
-                    >
-                      {t('tuiAgents.page.btnConfigure')}
-                    </button>
+                          }
+                          openProfileEditor(prof)
+                          setTimeout(() => {
+                            void handleDiscoverModelsViaCli(kind)
+                          }, 50)
+                        }}
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: '11px',
+                          borderRadius: '4px',
+                          border: '1px solid #0284c7',
+                          background: '#f0f9ff',
+                          color: '#0284c7',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
+                        title={t('tuiAgents.page.discoverModelsHint')}
+                      >
+                        <RefreshCw size={11} className={discoveringModels && editProfileModal?.agentKind === kind ? 'spin' : ''} />
+                        <span>{t('tuiAgents.page.btnDiscoverModels')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openProfileEditor(
+                            profile || {
+                              id: '',
+                              agentKind: kind,
+                              defaultModel: '',
+                              defaultEffort: '',
+                              accountId: '',
+                              proxyMode: 'inherit',
+                              proxyId: '',
+                              createdAt: '',
+                              updatedAt: '',
+                            },
+                          )
+                        }
+                        style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '4px', border: '1px solid #ccc', cursor: 'pointer' }}
+                      >
+                        {t('tuiAgents.page.btnConfigure')}
+                      </button>
+                    </div>
                   </div>
                   <div style={{ fontSize: '13px', lineHeight: '1.8' }}>
                     <div><strong>{t('tuiAgents.page.labelDefaultModel')}</strong> {profile?.defaultModel || t('tuiAgents.page.cliDefault')}</div>
+                    <div>
+                      <strong>{t('tuiAgents.page.cliDiscoveryCommand')}:</strong>{' '}
+                      <span style={{ fontFamily: 'monospace', color: '#0284c7' }}>
+                        {getCliDiscoveryCommand(kind)}
+                      </span>
+                    </div>
                     <div><strong>{t('tuiAgents.page.labelDefaultEffort')}</strong> {profile?.defaultEffort || t('tuiAgents.page.default')}</div>
                     <div>
                       <strong>{t('tuiAgents.page.labelFileProxy')}</strong>{' '}
@@ -1353,14 +1453,122 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
             <h3 style={{ margin: '0 0 16px 0' }}>{t('tuiAgents.page.configureProfileTitle', { kind: editProfileModal.agentKind.toUpperCase() })}</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '13px' }}>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formDefaultModel')}</label>
-                <input
-                  type="text"
-                  value={editProfileModal.defaultModel || ''}
-                  onChange={e => setEditProfileModal({ ...editProfileModal, defaultModel: e.target.value })}
-                  placeholder={t('tuiAgents.page.modelPlaceholder')}
-                  style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
-                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                  <label style={{ fontWeight: 500 }}>{t('tuiAgents.page.formDefaultModel')}</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleDiscoverModelsViaCli(editProfileModal.agentKind)}
+                      disabled={discoveringModels}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        padding: '2px 8px',
+                        fontSize: '11px',
+                        borderRadius: '4px',
+                        border: '1px solid #0284c7',
+                        background: '#f0f9ff',
+                        color: '#0284c7',
+                        cursor: discoveringModels ? 'not-allowed' : 'pointer',
+                        fontWeight: 500,
+                      }}
+                      title={t('tuiAgents.page.discoverModelsHint')}
+                    >
+                      <RefreshCw size={12} className={discoveringModels ? 'spin' : ''} />
+                      <span>
+                        {discoveringModels
+                          ? t('tuiAgents.page.discovering')
+                          : t('tuiAgents.page.btnDiscoverModels')}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', padding: '4px 8px', background: '#f8fafc', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#64748b' }}>
+                    <span>{t('tuiAgents.page.cliDiscoveryCommand')}:</span>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 600, color: '#0284c7' }}>
+                      {getCliDiscoveryCommand(editProfileModal.agentKind)}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '10px', color: '#94a3b8' }}>{t('tuiAgents.page.cliDiscoveryCommandNote')}</span>
+                </div>
+
+                {discoveryNotice && (
+                  <div
+                    style={{
+                      fontSize: '11px',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      marginBottom: '6px',
+                      background: discoveryNotice.toLowerCase().includes('failed') ? '#fef2f2' : '#f0fdf4',
+                      color: discoveryNotice.toLowerCase().includes('failed') ? '#991b1b' : '#166534',
+                    }}
+                  >
+                    {discoveryNotice}
+                  </div>
+                )}
+
+                {profileCatalog && profileCatalog.models.length > 0 && !customModelMode ? (
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <select
+                      value={editProfileModal.defaultModel || ''}
+                      onChange={e => {
+                        const val = e.target.value
+                        if (val === '__custom__') {
+                          setCustomModelMode(true)
+                        } else {
+                          setEditProfileModal({ ...editProfileModal, defaultModel: val })
+                        }
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '6px 8px',
+                        borderRadius: '4px',
+                        border: '1px solid #ccc',
+                        boxSizing: 'border-box',
+                      }}
+                    >
+                      <option value="">{t('tuiAgents.page.optDefaultCli')}</option>
+                      {profileCatalog.models.map(m => (
+                        <option key={m.id} value={m.id}>
+                          {m.displayName || m.id}
+                          {m.isDefault ? ` (${t('tuiAgents.modelPicker.defaultBadge')})` : ''}
+                        </option>
+                      ))}
+                      <option value="__custom__">{t('tuiAgents.page.optCustomModel')}</option>
+                    </select>
+                  </div>
+                ) : (
+                  <div>
+                    <input
+                      type="text"
+                      value={editProfileModal.defaultModel || ''}
+                      onChange={e => setEditProfileModal({ ...editProfileModal, defaultModel: e.target.value })}
+                      placeholder={t('tuiAgents.page.modelPlaceholder')}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+                    />
+                    {profileCatalog && profileCatalog.models.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setCustomModelMode(false)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#0284c7',
+                          cursor: 'pointer',
+                          fontSize: '11px',
+                          padding: '2px 0',
+                          marginTop: '2px',
+                          display: 'block',
+                        }}
+                      >
+                        {t('tuiAgents.page.btnSelectFromDiscovered', { count: profileCatalog.models.length })}
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
               <div>
                 <label style={{ display: 'block', marginBottom: '4px', fontWeight: 500 }}>{t('tuiAgents.page.formDefaultEffort')}</label>

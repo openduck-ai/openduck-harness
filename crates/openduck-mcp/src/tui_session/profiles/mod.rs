@@ -213,6 +213,15 @@ pub trait AgentTuiProfile: Send + Sync {
     fn supports_runtime_model_switch(&self) -> bool {
         false
     }
+    fn model_discovery_command(&self) -> Option<&'static str> {
+        match self.kind() {
+            AgentCliKind::Agy => Some("/models"),
+            AgentCliKind::Grok => Some("/models"),
+            AgentCliKind::Claude => Some("/model"),
+            AgentCliKind::Codex => Some("/models"),
+            AgentCliKind::Custom => Some("/models"),
+        }
+    }
     async fn switch_runtime_model(
         &self,
         _backend: &dyn MultiplexerBackend,

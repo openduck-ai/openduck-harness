@@ -391,7 +391,7 @@ async fn test_catalog_routes_get_and_refresh() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["agent"], "agy");
-    assert!(json["models"].as_array().unwrap().len() > 0);
+    assert!(!json["models"].as_array().unwrap().is_empty());
     assert!(json["catalog"].is_object());
 
     // 2. GET /api/v1/tui-agents/grok/models?refresh=true
@@ -514,7 +514,7 @@ async fn test_switch_session_model_unsupported_preserves_active_model() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["success"], false);
     assert_eq!(json["activeModel"], "gemini-2.5-pro");
-    assert!(json["error"].as_str().unwrap().len() > 0);
+    assert!(!json["error"].as_str().unwrap().is_empty());
 
     // 3. Verify session in store still preserves activeModel
     let stored = service.get_session_record(&sess_id).await.unwrap().unwrap();

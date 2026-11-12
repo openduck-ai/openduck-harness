@@ -132,7 +132,7 @@ fn test_static_fallback_models_populated_for_all_standard_agents() {
 fn test_static_defaults_specific_agents() {
     assert_eq!(
         AgentModelCatalog::default_model_for_agent(AgentCliKind::Agy),
-        "gemini-2.5-pro"
+        "gemini-4-argon-medium"
     );
     assert_eq!(
         AgentModelCatalog::default_model_for_agent(AgentCliKind::Grok),
@@ -232,9 +232,9 @@ async fn test_free_text_acceptance_case_insensitive_matching_vs_arbitrary_slug()
     // Upper/mixed case of known ID resolves to canonical ID
     assert_eq!(
         catalog
-            .resolve_model(AgentCliKind::Agy, Some("GEMINI-2.5-PRO"))
+            .resolve_model(AgentCliKind::Agy, Some("GEMINI-4-ARGON-MEDIUM"))
             .await,
-        "gemini-2.5-pro"
+        "gemini-4-argon-medium"
     );
     assert_eq!(
         catalog
@@ -925,18 +925,18 @@ gpt-oss-120b-medium\tGPT-OSS 120B (Medium)
 fn test_parse_agy_output_with_spinners_and_ansi() {
     let raw = "\x1b[32m⠋ Fetching available models...\x1b[0m\r\n\
 \x1b[32m⠙ Fetching available models...\x1b[0m\r\n\
-gemini-2.5-pro    Gemini 2.5 Pro\r\n\
-gemini-2.5-flash  Gemini 2.5 Flash\r\n";
+gemini-4-argon-medium    Gemini 4 Argon (Medium)\r\n\
+gemini-3.8-flash-medium  Gemini 3.8 Flash (Medium)\r\n";
 
     let models = CliModelLoader::parse_agy_output(raw);
     assert_eq!(models.len(), 2);
-    assert_eq!(models[0].id, "gemini-2.5-pro");
-    assert_eq!(models[0].display_name, "Gemini 2.5 Pro");
+    assert_eq!(models[0].id, "gemini-4-argon-medium");
+    assert_eq!(models[0].display_name, "Gemini 4 Argon (Medium)");
     assert!(
         models[0].is_default,
-        "gemini-2.5-pro should be preferred as default"
+        "gemini-4-argon-medium should be preferred as default"
     );
-    assert_eq!(models[1].id, "gemini-2.5-flash");
+    assert_eq!(models[1].id, "gemini-3.8-flash-medium");
     assert!(!models[1].is_default);
 }
 
@@ -1028,6 +1028,82 @@ fn test_parse_grok_output_empty_or_malformed() {
 }
 
 #[test]
+fn test_parse_codex_output_json_debug_models() {
+    let raw = r#"{
+      "models": [
+        {
+          "slug": "gpt-6.1-sol",
+          "display_name": "GPT-6.1-Sol",
+          "description": "Latest workhorse model for coding and everyday work.",
+          "priority": 1
+        },
+        {
+          "slug": "gpt-6-astra",
+          "display_name": "GPT-6-Astra",
+          "description": "Frontier intelligence for the most demanding work.",
+          "priority": 2
+        },
+        {
+          "slug": "gpt-reserve",
+          "display_name": "GPT-Reserve",
+          "priority": 3
+        }
+      ]
+    }"#;
+
+    let models = CliModelLoader::parse_codex_output(raw);
+    assert_eq!(models.len(), 3);
+
+    assert_eq!(models[0].id, "gpt-6.1-sol");
+    assert_eq!(models[0].display_name, "GPT-6.1-Sol");
+    assert_eq!(
+        models[0].description.as_deref(),
+        Some("Latest workhorse model for coding and everyday work.")
+    );
+    assert!(models[0].is_default);
+    assert_eq!(models[0].source, ModelSource::DynamicLoader);
+
+    assert_eq!(models[1].id, "gpt-6-astra");
+    assert_eq!(models[1].display_name, "GPT-6-Astra");
+    assert_eq!(
+        models[1].description.as_deref(),
+        Some("Frontier intelligence for the most demanding work.")
+    );
+    assert!(!models[1].is_default);
+
+    assert_eq!(models[2].id, "gpt-reserve");
+    assert_eq!(models[2].display_name, "GPT-Reserve");
+    assert!(!models[2].is_default);
+
+    let defaults = models.iter().filter(|m| m.is_default).count();
+    assert_eq!(defaults, 1);
+}
+
+#[test]
+fn test_parse_codex_output_text_lines() {
+    let raw = "\
+gpt-6.1-sol\tGPT-6.1 Sol
+gpt-6-astra\tGPT-6 Astra
+gpt-5\tGPT-5
+";
+    let models = CliModelLoader::parse_codex_output(raw);
+    assert_eq!(models.len(), 3);
+    assert_eq!(models[0].id, "gpt-6.1-sol");
+    assert_eq!(models[1].id, "gpt-6-astra");
+    assert_eq!(models[2].id, "gpt-5");
+    assert!(
+        models[2].is_default,
+        "gpt-5 is preferred default in line-by-line fallback"
+    );
+}
+
+#[test]
+fn test_parse_codex_output_empty_or_malformed() {
+    assert!(CliModelLoader::parse_codex_output("").is_empty());
+    assert!(CliModelLoader::parse_codex_output("Usage: codex [OPTIONS] [PROMPT]").is_empty());
+}
+
+#[test]
 fn test_cli_discovery_factory_constructors() {
     let catalog1 = AgentModelCatalog::with_cli_discovery();
     let catalog2 = AgentModelCatalog::default_discovery();
@@ -1045,7 +1121,7 @@ fn test_cli_discovery_factory_constructors() {
 async fn test_production_cli_discovery_resolution() {
     let catalog = AgentModelCatalog::with_cli_discovery();
 
-    // Querying Agy and Grok via production catalog:
+    // Querying Agy, Grok, and Codex via production catalog:
     // Even if CLI commands are unavailable or fail in certain environments,
     // get_models must succeed and return non-empty models (either dynamic or graceful fallback).
     let agy_models = catalog.get_models(AgentCliKind::Agy).await;
@@ -1056,10 +1132,17 @@ async fn test_production_cli_discovery_resolution() {
     assert!(!grok_models.models.is_empty());
     assert!(grok_models.default_model.is_some());
 
-    // Agents without CLI discovery gracefully return static fallbacks
     let codex_models = catalog.get_models(AgentCliKind::Codex).await;
-    assert!(codex_models.is_fallback);
-    assert_eq!(codex_models.default_model.as_deref(), Some("gpt-5"));
+    assert!(!codex_models.models.is_empty());
+    assert!(codex_models.default_model.is_some());
+
+    // Agents without CLI discovery gracefully return static fallbacks
+    let claude_models = catalog.get_models(AgentCliKind::Claude).await;
+    assert!(claude_models.is_fallback);
+    assert_eq!(
+        claude_models.default_model.as_deref(),
+        Some("claude-3-7-sonnet")
+    );
 }
 
 #[tokio::test]
@@ -1130,4 +1213,68 @@ async fn test_discovery_does_not_block_cached_reads_or_other_agents() {
     assert_eq!(cached, original);
     assert!(unrelated.is_fallback);
     assert_eq!(refreshed.models[0].id, "refreshed-flash");
+}
+
+#[tokio::test]
+async fn test_agent_discovery_commands() {
+    assert_eq!(
+        AgentModelCatalog::default_discovery_command_for_agent(AgentCliKind::Agy),
+        "/models"
+    );
+    assert_eq!(
+        AgentModelCatalog::default_discovery_command_for_agent(AgentCliKind::Grok),
+        "/models"
+    );
+    assert_eq!(
+        AgentModelCatalog::default_discovery_command_for_agent(AgentCliKind::Claude),
+        "/model"
+    );
+    assert_eq!(
+        AgentModelCatalog::default_discovery_command_for_agent(AgentCliKind::Codex),
+        "/models"
+    );
+    assert_eq!(
+        AgentModelCatalog::default_discovery_command_for_agent(AgentCliKind::Custom),
+        "/models"
+    );
+
+    let catalog = AgentModelCatalog::new();
+    let agy_entry = catalog.get_models(AgentCliKind::Agy).await;
+    assert_eq!(agy_entry.discovery_command.as_deref(), Some("/models"));
+    assert_eq!(
+        agy_entry.cli_discovery_command.as_deref(),
+        Some("agy models")
+    );
+    assert_eq!(agy_entry.cli_discovery_command.as_deref(), Some("agy models"));
+
+    let claude_entry = catalog.get_models(AgentCliKind::Claude).await;
+    assert_eq!(claude_entry.discovery_command.as_deref(), Some("/model"));
+    assert_eq!(
+        claude_entry.cli_discovery_command.as_deref(),
+        Some("claude")
+    );
+    assert_eq!(claude_entry.cli_discovery_command.as_deref(), Some("claude"));
+
+    let codex_entry = catalog.get_models(AgentCliKind::Codex).await;
+    assert_eq!(codex_entry.discovery_command.as_deref(), Some("/models"));
+    assert_eq!(
+        codex_entry.cli_discovery_command.as_deref(),
+        Some("codex debug models")
+    );
+    assert_eq!(codex_entry.cli_discovery_command.as_deref(), Some("codex debug models"));
+}
+
+#[tokio::test]
+async fn test_production_cli_loader_invokes_agent_models() {
+    let loader = CliModelLoader::new();
+    // Test real CLI discovery if agy binary is present
+    if which::which("agy").is_ok() {
+        if let Ok(models) = loader.load_models(AgentCliKind::Agy).await {
+            assert!(!models.is_empty(), "Real agy models should discover models");
+            assert!(
+                models.iter().any(|m| m.id.contains("gemini")),
+                "Should include Gemini models"
+            );
+        }
+    }
 }

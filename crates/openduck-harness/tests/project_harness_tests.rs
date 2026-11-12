@@ -403,11 +403,13 @@ fn provider_entry(model: &str) -> ProjectProviderEntry {
 
 #[test]
 fn test_resolve_task_providers_prefers_request_then_task_then_project() {
-    let mut policy = PolicyConfig::default();
-    policy.provider = Some("anthropic".into());
-    policy.model = Some("claude".into());
-    policy.secondary_provider = Some("openai".into());
-    policy.secondary_model = Some("gpt-4o".into());
+    let policy = PolicyConfig {
+        provider: Some("anthropic".into()),
+        model: Some("claude".into()),
+        secondary_provider: Some("openai".into()),
+        secondary_model: Some("gpt-4o".into()),
+        ..PolicyConfig::default()
+    };
 
     let mut providers = HashMap::new();
     providers.insert("gemini".into(), provider_entry("gemini-flash"));

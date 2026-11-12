@@ -5,6 +5,12 @@ import {
   normalizeCatalog,
   performModelSwitch,
   performCatalogRefresh,
+  discoverAgentModelsViaSession,
+  getModelDiscoveryCommand,
+  getCliDiscoveryCommand,
+  discoverAgentModelsViaCli,
+  parseModelsFromTuiOutput,
+  stripAnsi,
 } from './tuiModelPicker.ts'
 
 test('resolveActiveModel prioritizes activeModel over currentModel over model', () => {
@@ -288,4 +294,398 @@ test('project and global routing dispatch to appropriate switch method based on 
   assert.equal(routedEndpoint, 'global')
   assert.equal(payloadSessionId, 'sess-global-1')
   assert.equal(payloadModel, 'grok-4')
+})
+
+test('discoverAgentModelsViaSession launches ephemeral session, sends /models, refreshes catalog, and cleans up', async () => {
+  const calls: string[] = []
+  let stoppedSessionId = ''
+  let promptCommand = ''
+
+  const fakeApi = {
+    startManagedTuiSession: async (data: any) => {
+      calls.push(`start:${data.agent}:${data.sessionName}`)
+      return { session: { id: 'ephemeral-sess-1', sessionName: data.sessionName } }
+    },
+    promptTuiSession: async (name: string, payload: any) => {
+      calls.push(`prompt:${name}:${payload.prompt}`)
+      promptCommand = payload.prompt
+      return { output: 'models' }
+    },
+    refreshTuiAgentModels: async (agentKind: string) => {
+      calls.push(`refresh:${agentKind}`)
+      return {
+        agent: agentKind,
+        models: [
+          { id: 'grok-4', displayName: 'Grok 4', isDefault: true },
+          { id: 'grok-beta', displayName: 'Grok Beta', isDefault: false },
+        ],
+        defaultModel: 'grok-4',
+      }
+    },
+    stopManagedTuiSession: async (id: string, reason?: string) => {
+      calls.push(`stop:${id}:${reason}`)
+      stoppedSessionId = id
+      return { success: true }
+    },
+  }
+
+  const outcome = await discoverAgentModelsViaSession(fakeApi, 'grok', null)
+  assert.equal(outcome.success, true)
+  assert.equal(outcome.catalog?.models.length, 2)
+  assert.equal(outcome.catalog?.models[0].id, 'grok-4')
+  assert.equal(promptCommand, '/models')
+  assert.equal(stoppedSessionId, 'ephemeral-sess-1')
+  assert.equal(calls.some(c => c.startsWith('start:grok:discover_grok_')), true)
+  assert.equal(calls.includes('refresh:grok'), true)
+  assert.equal(calls.includes('stop:ephemeral-sess-1:discovery_complete'), true)
+})
+
+test('discoverAgentModelsViaSession handles launch failure gracefully by falling back to refresh', async () => {
+  let stopped = false
+  const fakeApi = {
+    startManagedTuiSession: async () => {
+      throw new Error('tmux server unavailable')
+    },
+    refreshTuiAgentModels: async (agentKind: string) => ({
+      agent: agentKind,
+      models: [{ id: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', isDefault: true }],
+    }),
+    stopManagedTuiSession: async () => {
+      stopped = true
+      return { success: true }
+    },
+  }
+
+  const outcome = await discoverAgentModelsViaSession(fakeApi, 'agy', null)
+  assert.equal(outcome.success, true)
+  assert.equal(outcome.catalog?.models[0].id, 'gemini-2.5-flash')
+  assert.equal(stopped, false)
+})
+
+test('discoverAgentModelsViaSession guarantees cleanup of ephemeral session even if refresh throws', async () => {
+  let cleanedUpId = ''
+  const fakeApi = {
+    startManagedTuiSession: async (data: any) => ({
+      session: { id: 'temp-sess-fail-1', sessionName: data.sessionName },
+    }),
+    promptTuiSession: async () => ({ output: '' }),
+    refreshTuiAgentModels: async () => {
+      throw new Error('Backend timeout fetching models')
+    },
+    stopManagedTuiSession: async (id: string) => {
+      cleanedUpId = id
+      return { success: true }
+    },
+  }
+
+  const fallbackCatalog = {
+    agent: 'codex',
+    models: [{ id: 'o3-mini', displayName: 'o3-mini', isDefault: true, source: 'static_fallback' as const }],
+    defaultModel: 'o3-mini',
+    supportsFreeText: true,
+    isFallback: true,
+    cachedAtUnixSecs: 0,
+  }
+
+  const outcome = await discoverAgentModelsViaSession(fakeApi, 'codex', fallbackCatalog)
+  assert.equal(outcome.success, false)
+  assert.match(outcome.error ?? '', /Backend timeout/)
+  assert.equal(outcome.catalog?.models[0].id, 'o3-mini')
+  assert.equal(cleanedUpId, 'temp-sess-fail-1')
+})
+
+test('discoverAgentModelsViaSession reports progress and captures live terminal screen interactions', async () => {
+  const progressReports: Array<{ status: string; screen?: string }> = []
+  let screenCalls = 0
+
+  const fakeApi = {
+    startManagedTuiSession: async (data: any) => ({
+      session: { id: 'sess-progress-1', sessionName: data.sessionName },
+      screen: '> OpenAI Codex TUI (v1.0)\nType /help for options.',
+    }),
+    getManagedTuiSession: async (id: string) => {
+      screenCalls++
+      return {
+        session: { id },
+        screen: `> OpenAI Codex TUI (v1.0)\n/models\nListing available models... (${screenCalls})`,
+      }
+    },
+    promptTuiSession: async () => ({ output: 'ok' }),
+    refreshTuiAgentModels: async (agent: string) => ({
+      agent,
+      models: [
+        { id: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol', isDefault: true },
+        { id: 'gpt-6-astra', displayName: 'GPT-6-Astra', isDefault: false },
+      ],
+      defaultModel: 'gpt-6.1-sol',
+    }),
+    stopManagedTuiSession: async () => ({ success: true }),
+  }
+
+  const outcome = await discoverAgentModelsViaSession(
+    fakeApi,
+    'codex',
+    null,
+    p => progressReports.push({ status: p.status, screen: p.screen }),
+  )
+
+  assert.equal(outcome.success, true)
+  assert.equal(outcome.catalog?.models.length, 2)
+  assert.ok(progressReports.length >= 3)
+  assert.ok(outcome.screen?.includes('OpenAI Codex TUI'))
+  assert.ok(outcome.screen?.includes('gpt-6.1-sol'))
+  assert.ok(progressReports.some(p => p.status.includes('Interacting with codex') || p.status.includes('TUI')))
+})
+
+test('getModelDiscoveryCommand returns correct command per agent kind and respects overrides', () => {
+  assert.equal(getModelDiscoveryCommand('agy'), '/models')
+  assert.equal(getModelDiscoveryCommand('antigravity'), '/models')
+  assert.equal(getModelDiscoveryCommand('claude'), '/model')
+  assert.equal(getModelDiscoveryCommand('claude-code'), '/model')
+  assert.equal(getModelDiscoveryCommand('grok'), '/models')
+  assert.equal(getModelDiscoveryCommand('codex'), '/models')
+  assert.equal(getModelDiscoveryCommand('custom'), '/models')
+
+  // Explicit override takes precedence
+  assert.equal(getModelDiscoveryCommand('claude', '/models'), '/models')
+  assert.equal(getModelDiscoveryCommand('agy', '/custom-cmd'), '/custom-cmd')
+  assert.equal(getModelDiscoveryCommand('codex', 'none'), 'none')
+  assert.equal(getModelDiscoveryCommand('codex', ''), '/models')
+  assert.equal(getModelDiscoveryCommand('claude', '  '), '/model')
+  assert.equal(getModelDiscoveryCommand('codex', 'auto'), '/models')
+  assert.equal(getModelDiscoveryCommand('claude', 'default'), '/model')
+})
+
+test('discoverAgentModelsViaSession sends agent-specific commands (e.g. /model for claude, /models for agy)', async () => {
+  const sentPrompts: string[] = []
+
+  const fakeApi = {
+    startManagedTuiSession: async (data: any) => ({
+      session: { id: `sess-${data.agent}`, sessionName: data.sessionName },
+    }),
+    promptTuiSession: async (_name: string, payload: any) => {
+      sentPrompts.push(payload.prompt)
+      return { output: 'ok' }
+    },
+    refreshTuiAgentModels: async (agent: string) => ({
+      agent,
+      models: [{ id: 'model-1', displayName: 'Model 1', isDefault: true }],
+    }),
+    stopManagedTuiSession: async () => ({ success: true }),
+  }
+
+  // Claude agent sends /model by default
+  await discoverAgentModelsViaSession(fakeApi, 'claude', null)
+  assert.equal(sentPrompts[0], '/model')
+
+  // Agy agent sends /models by default
+  await discoverAgentModelsViaSession(fakeApi, 'agy', null)
+  assert.equal(sentPrompts[1], '/models')
+
+  // Custom discoveryCommand option overrides default
+  await discoverAgentModelsViaSession(fakeApi, 'claude', null, {
+    discoveryCommand: '/choose-model',
+  })
+  assert.equal(sentPrompts[2], '/choose-model')
+
+  // 'none' skips sending prompt completely
+  const promptCountBefore = sentPrompts.length
+  await discoverAgentModelsViaSession(fakeApi, 'custom', null, {
+    discoveryCommand: 'none',
+  })
+  assert.equal(sentPrompts.length, promptCountBefore)
+})
+
+test('parseModelsFromTuiOutput extracts models from bulleted, tabular, and JSON TUI responses', () => {
+  const agyOutput = `
+> /models
+Fetching models...
+gemini-2.5-flash\tGemini 2.5 Flash\tFast balanced model
+* gemini-2.5-pro (default)\tGemini 2.5 Pro\tDeep reasoning model
+claude-3-7-sonnet\tClaude 3.7 Sonnet
+`
+  const agyModels = parseModelsFromTuiOutput(agyOutput, 'agy')
+  assert.equal(agyModels.length, 3)
+  assert.equal(agyModels[0].id, 'gemini-2.5-flash')
+  assert.equal(agyModels[0].displayName, 'Gemini 2.5 Flash')
+  assert.equal(agyModels[0].description, 'Fast balanced model')
+  assert.equal(agyModels[1].id, 'gemini-2.5-pro')
+  assert.equal(agyModels[1].isDefault, true)
+  assert.equal(agyModels[2].id, 'claude-3-7-sonnet')
+
+  const codexOutput = `
+OpenAI Codex (v0.167.0)
+Available models:
+  * gpt-5 (default) - Flagship reasoning model
+  - gpt-4o - Fast multimodal model
+  - o3-mini - High intelligence reasoning model
+`
+  const codexModels = parseModelsFromTuiOutput(codexOutput, 'codex')
+  assert.equal(codexModels.length, 3)
+  assert.equal(codexModels[0].id, 'gpt-5')
+  assert.equal(codexModels[0].isDefault, true)
+  assert.equal(codexModels[1].id, 'gpt-4o')
+  assert.equal(codexModels[2].id, 'o3-mini')
+
+  const jsonOutput = `
+{"models": [
+  {"slug": "claude-3-7-sonnet", "display_name": "Claude 3.7 Sonnet", "priority": 1},
+  {"slug": "claude-3-5-haiku", "display_name": "Claude 3.5 Haiku", "priority": 2}
+]}
+`
+  const jsonModels = parseModelsFromTuiOutput(jsonOutput, 'claude')
+  assert.equal(jsonModels.length, 2)
+  assert.equal(jsonModels[0].id, 'claude-3-7-sonnet')
+  assert.equal(jsonModels[0].isDefault, true)
+  assert.equal(jsonModels[1].id, 'claude-3-5-haiku')
+
+  // Real Claude Code live interactive terminal screen from /model
+  const realClaudeScreen = `
+   Select model
+   Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.
+
+   ❯ 1. Default (recommended) ✔  Use the default model (currently Opus 5.5) · $4/$20 per Mtok
+     2. Opus                     Opus 5.5 · Best for everyday, complex tasks · $4/$20 per Mtok
+     3. Fable                    Fable 5.1 · Most capable for your hardest and longest-running tasks · $10/$50 per Mtok
+     4. Sonnet                   Sonnet 5.5 · Efficient for routine tasks · $2/$10 per Mtok
+     5. Haiku                    Haiku 4.5 · Fastest for quick answers · $1/$5 per Mtok
+
+   Enter to set as default · s to use this session only · Esc to cancel
+`
+  const realClaudeModels = parseModelsFromTuiOutput(realClaudeScreen, 'claude')
+  assert.equal(realClaudeModels.length, 4)
+  assert.equal(realClaudeModels[0].id, 'Opus')
+  assert.equal(realClaudeModels[0].displayName, 'Opus 5.5')
+  assert.equal(realClaudeModels[1].id, 'Fable')
+  assert.equal(realClaudeModels[2].id, 'Sonnet')
+  assert.equal(realClaudeModels[3].id, 'Haiku')
+})
+
+test('discoverAgentModelsViaSession fetches model catalog directly from executed TUI agent response', async () => {
+  let promptSentWithWait: boolean | undefined
+  let promptTimeoutSecs: number | undefined
+
+  const fakeApi = {
+    startManagedTuiSession: async (data: any) => ({
+      session: { id: 'sess-live-exec-1', sessionName: data.sessionName },
+    }),
+    promptManagedTuiSession: async (_id: string, payload: any) => {
+      promptSentWithWait = payload.wait
+      promptTimeoutSecs = payload.timeoutSecs
+      return {
+        response: `
+Available models:
+  * gemini-2.5-pro (default) - Google frontier model
+  - gemini-2.5-flash - Google fast model
+  - claude-3-7-sonnet - Anthropic hybrid reasoning
+`,
+        screenSnapshot: 'Session active',
+      }
+    },
+    getManagedTuiSession: async (id: string) => ({
+      session: { id },
+      screen: 'Turn complete',
+    }),
+    refreshTuiAgentModels: async () => {
+      throw new Error('Backend refresh should not be reached when TUI response contains models')
+    },
+    stopManagedTuiSession: async () => ({ success: true }),
+  }
+
+  const outcome = await discoverAgentModelsViaSession(fakeApi, 'agy', null)
+  assert.equal(outcome.success, true)
+  assert.equal(promptSentWithWait, true)
+  assert.equal(promptTimeoutSecs, 15)
+  assert.equal(outcome.catalog?.models.length, 3)
+  assert.equal(outcome.catalog?.models[0].id, 'gemini-2.5-pro')
+  assert.equal(outcome.catalog?.models[0].isDefault, true)
+  assert.equal(outcome.catalog?.defaultModel, 'gemini-2.5-pro')
+  assert.equal(outcome.catalog?.models[0].source, 'dynamic_loader')
+  assert.ok(outcome.screen?.includes('Discovered 3 model(s) from TUI agent response'))
+})
+
+test('getCliDiscoveryCommand returns correct non-interactive CLI command per agent', () => {
+  assert.equal(getCliDiscoveryCommand('agy'), 'agy models')
+  assert.equal(getCliDiscoveryCommand('antigravity'), 'agy models')
+  assert.equal(getCliDiscoveryCommand('grok'), 'grok models')
+  assert.equal(getCliDiscoveryCommand('grok-build'), 'grok models')
+  assert.equal(getCliDiscoveryCommand('codex'), 'codex debug models')
+  assert.equal(getCliDiscoveryCommand('openai-codex'), 'codex debug models')
+  assert.equal(getCliDiscoveryCommand('claude'), 'claude')
+  assert.equal(getCliDiscoveryCommand('custom'), 'custom models')
+
+  // Explicit override
+  assert.equal(getCliDiscoveryCommand('codex', 'codex models'), 'codex models')
+  assert.equal(getCliDiscoveryCommand('agy', 'custom-cmd'), 'custom-cmd')
+  assert.equal(getCliDiscoveryCommand('agy', ''), 'agy models')
+  assert.equal(getCliDiscoveryCommand('agy', 'auto'), 'agy models')
+})
+
+test('discoverAgentModelsViaCli refreshes models via backend API directly without TUI session', async () => {
+  let refreshedKind: string | null = null
+  const fakeApi = {
+    refreshTuiAgentModels: async (agentKind: string) => {
+      refreshedKind = agentKind
+      return {
+        agent: agentKind,
+        models: [
+          { id: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol', isDefault: true },
+          { id: 'gpt-6-astra', displayName: 'GPT-6-Astra' },
+        ],
+        defaultModel: 'gpt-6.1-sol',
+      }
+    },
+  }
+
+  const outcome = await discoverAgentModelsViaCli(fakeApi, 'codex', null)
+  assert.equal(outcome.success, true)
+  assert.equal(refreshedKind, 'codex')
+  assert.equal(outcome.catalog?.models.length, 2)
+  assert.equal(outcome.catalog?.models[0].id, 'gpt-6.1-sol')
+  assert.equal(outcome.catalog?.defaultModel, 'gpt-6.1-sol')
+})
+
+test('discoverAgentModelsViaCli falls back to getTuiAgentModels with refresh option', async () => {
+  let queriedKind: string | null = null
+  let queriedRefresh: boolean | undefined = undefined
+  const fakeApi = {
+    getTuiAgentModels: async (agentKind: string, options?: { refresh?: boolean }) => {
+      queriedKind = agentKind
+      queriedRefresh = options?.refresh
+      return {
+        agent: agentKind,
+        models: [
+          { id: 'gemini-4-argon-medium', displayName: 'Gemini 4 Argon (Medium)', isDefault: true },
+        ],
+      }
+    },
+  }
+
+  const outcome = await discoverAgentModelsViaCli(fakeApi, 'agy', null)
+  assert.equal(outcome.success, true)
+  assert.equal(queriedKind, 'agy')
+  assert.equal(queriedRefresh, true)
+  assert.equal(outcome.catalog?.models.length, 1)
+  assert.equal(outcome.catalog?.models[0].id, 'gemini-4-argon-medium')
+})
+
+test('discoverAgentModelsViaCli handles errors gracefully without throwing', async () => {
+  const fakeApi = {
+    refreshTuiAgentModels: async () => {
+      throw new Error('Network timeout')
+    },
+  }
+
+  const fallbackCatalog = {
+    agent: 'codex',
+    models: [{ id: 'gpt-5', displayName: 'GPT-5' }],
+    defaultModel: 'gpt-5',
+    supportsFreeText: true,
+    isFallback: true,
+  }
+
+  const outcome = await discoverAgentModelsViaCli(fakeApi, 'codex', fallbackCatalog)
+  assert.equal(outcome.success, false)
+  assert.equal(outcome.error, 'Network timeout')
+  assert.equal(outcome.catalog, fallbackCatalog)
 })

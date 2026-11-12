@@ -51,6 +51,12 @@ pub struct AgentModelCatalogEntry {
     /// Default model slug if identified.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// Default interactive command used to query or switch models inside this agent's TUI session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovery_command: Option<String>,
+    /// Non-interactive CLI command used for dynamic discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_discovery_command: Option<String>,
     /// Whether this CLI accepts custom arbitrary model slugs via free-text input.
     pub supports_free_text: bool,
     /// Indicates whether these models are static fallbacks due to missing or failed dynamic loader.
@@ -136,7 +142,8 @@ impl AgentModelCatalog {
         let loader = Arc::new(CliModelLoader::with_timeout(command_timeout));
         if let Ok(mut loaders) = catalog.inner.loaders.write() {
             loaders.insert(agent_key(AgentCliKind::Agy), loader.clone());
-            loaders.insert(agent_key(AgentCliKind::Grok), loader);
+            loaders.insert(agent_key(AgentCliKind::Grok), loader.clone());
+            loaders.insert(agent_key(AgentCliKind::Codex), loader);
         }
         catalog
     }
@@ -170,8 +177,8 @@ impl AgentModelCatalog {
         match agent {
             AgentCliKind::Agy => vec![
                 CatalogModelEntry {
-                    id: "gemini-2.5-pro".to_string(),
-                    display_name: "Gemini 2.5 Pro".to_string(),
+                    id: "gemini-4-argon-medium".to_string(),
+                    display_name: "Gemini 4 Argon (Medium)".to_string(),
                     description: Some(
                         "Google flagship balanced reasoning & coding model".to_string(),
                     ),
@@ -179,16 +186,86 @@ impl AgentModelCatalog {
                     source: ModelSource::StaticFallback,
                 },
                 CatalogModelEntry {
-                    id: "gemini-2.5-flash".to_string(),
-                    display_name: "Gemini 2.5 Flash".to_string(),
+                    id: "gemini-4-argon-high".to_string(),
+                    display_name: "Gemini 4 Argon (High)".to_string(),
+                    description: Some("Google flagship deep reasoning model".to_string()),
+                    is_default: false,
+                    source: ModelSource::StaticFallback,
+                },
+                CatalogModelEntry {
+                    id: "gemini-4-argon-low".to_string(),
+                    display_name: "Gemini 4 Argon (Low)".to_string(),
+                    description: Some("Google fast balanced reasoning model".to_string()),
+                    is_default: false,
+                    source: ModelSource::StaticFallback,
+                },
+                CatalogModelEntry {
+                    id: "gemini-3.8-flash-high".to_string(),
+                    display_name: "Gemini 3.8 Flash (High)".to_string(),
+                    description: Some("Google lightweight high-effort reasoning model".to_string()),
+                    is_default: false,
+                    source: ModelSource::StaticFallback,
+                },
+                CatalogModelEntry {
+                    id: "gemini-3.8-flash-medium".to_string(),
+                    display_name: "Gemini 3.8 Flash (Medium)".to_string(),
                     description: Some("Google fast lightweight multimodal model".to_string()),
                     is_default: false,
                     source: ModelSource::StaticFallback,
                 },
                 CatalogModelEntry {
-                    id: "gemini-2.0-flash".to_string(),
-                    display_name: "Gemini 2.0 Flash".to_string(),
+                    id: "gemini-3.8-flash-low".to_string(),
+                    display_name: "Gemini 3.8 Flash (Low)".to_string(),
                     description: Some("Google next-gen low-latency model".to_string()),
+                    is_default: false,
+                    source: ModelSource::StaticFallback,
+                },
+                CatalogModelEntry {
+                    id: "claude-opus-5-5-low".to_string(),
+                    display_name: "Claude Opus 5.5 (Low)".to_string(),
+                    description: Some("Anthropic frontier fast reasoning model".to_string()),
+                    is_default: false,
+                    source: ModelSource::StaticFallback,
+                },
+                CatalogModelEntry {
+                    id: "claude-opus-5-5-medium".to_string(),
+                    display_name: "Claude Opus 5.5 (Medium)".to_string(),
+                    description: Some("Anthropic frontier balanced reasoning model".to_string()),
+                    is_default: false,
+                    source: ModelSource::StaticFallback,
+                },
+                CatalogModelEntry {
+                    id: "claude-opus-5-5-high".to_string(),
+                    display_name: "Claude Opus 5.5 (High)".to_string(),
+                    description: Some("Anthropic frontier deep reasoning model".to_string()),
+                    is_default: false,
+                    source: ModelSource::StaticFallback,
+                },
+                CatalogModelEntry {
+                    id: "claude-sonnet-5-5-low".to_string(),
+                    display_name: "Claude Sonnet 5.5 (Low)".to_string(),
+                    description: Some("Anthropic high-speed coding model".to_string()),
+                    is_default: false,
+                    source: ModelSource::StaticFallback,
+                },
+                CatalogModelEntry {
+                    id: "claude-sonnet-5-5-medium".to_string(),
+                    display_name: "Claude Sonnet 5.5 (Medium)".to_string(),
+                    description: Some("Anthropic balanced coding model".to_string()),
+                    is_default: false,
+                    source: ModelSource::StaticFallback,
+                },
+                CatalogModelEntry {
+                    id: "claude-sonnet-5-5-high".to_string(),
+                    display_name: "Claude Sonnet 5.5 (High)".to_string(),
+                    description: Some("Anthropic deep reasoning coding model".to_string()),
+                    is_default: false,
+                    source: ModelSource::StaticFallback,
+                },
+                CatalogModelEntry {
+                    id: "gpt-oss-120b-medium".to_string(),
+                    display_name: "GPT-OSS 120B (Medium)".to_string(),
+                    description: Some("Open-weight balanced reasoning model".to_string()),
                     is_default: false,
                     source: ModelSource::StaticFallback,
                 },
@@ -289,7 +366,7 @@ impl AgentModelCatalog {
     /// Returns the static default model slug for an agent CLI kind.
     pub fn default_model_for_agent(agent: AgentCliKind) -> &'static str {
         match agent {
-            AgentCliKind::Agy => "gemini-2.5-pro",
+            AgentCliKind::Agy => "gemini-4-argon-medium",
             AgentCliKind::Grok => "grok-4",
             AgentCliKind::Codex => "gpt-5",
             AgentCliKind::Claude => "claude-3-7-sonnet",
@@ -308,12 +385,36 @@ impl AgentModelCatalog {
         }
     }
 
+    /// Resolves the canonical interactive TUI command used to list or switch models for an agent CLI.
+    pub fn default_discovery_command_for_agent(agent: AgentCliKind) -> &'static str {
+        match agent {
+            AgentCliKind::Agy => "/models",
+            AgentCliKind::Grok => "/models",
+            AgentCliKind::Claude => "/model",
+            AgentCliKind::Codex => "/models",
+            AgentCliKind::Custom => "/models",
+        }
+    }
+
+    /// Resolves the canonical non-interactive CLI command used to query models for an agent CLI.
+    pub fn cli_discovery_command_for_agent(agent: AgentCliKind) -> &'static str {
+        match agent {
+            AgentCliKind::Agy => "agy models",
+            AgentCliKind::Grok => "grok models",
+            AgentCliKind::Codex => "codex debug models",
+            AgentCliKind::Claude => "claude",
+            AgentCliKind::Custom => "models",
+        }
+    }
+
     /// Builds a static fallback catalog entry for the agent.
     fn create_fallback_entry(agent: AgentCliKind) -> AgentModelCatalogEntry {
         AgentModelCatalogEntry {
             agent,
             models: Self::static_fallback_models(agent),
             default_model: Some(Self::default_model_for_agent(agent).to_string()),
+            discovery_command: Some(Self::default_discovery_command_for_agent(agent).to_string()),
+            cli_discovery_command: Some(Self::cli_discovery_command_for_agent(agent).to_string()),
             supports_free_text: Self::supports_free_text(agent),
             is_fallback: true,
             cached_at_unix_secs: current_unix_secs(),
@@ -393,6 +494,12 @@ impl AgentModelCatalog {
                 agent,
                 models: discovered,
                 default_model,
+                discovery_command: Some(
+                    Self::default_discovery_command_for_agent(agent).to_string(),
+                ),
+                cli_discovery_command: Some(
+                    Self::cli_discovery_command_for_agent(agent).to_string(),
+                ),
                 supports_free_text: Self::supports_free_text(agent),
                 is_fallback: false,
                 cached_at_unix_secs: current_unix_secs(),
@@ -456,10 +563,10 @@ impl Default for CliModelLoader {
 }
 
 impl CliModelLoader {
-    /// Default execution timeout when running CLI model list commands (5 seconds).
-    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+    /// Default execution timeout when running CLI model list commands (30 seconds).
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-    /// Creates a new CLI model loader with the default 5-second timeout.
+    /// Creates a new CLI model loader with the default 30-second timeout.
     pub fn new() -> Self {
         Self::with_timeout(Self::DEFAULT_TIMEOUT)
     }
@@ -484,7 +591,7 @@ impl CliModelLoader {
             return Vec::new();
         }
         if let Some(models) = parse_json_models(&stripped) {
-            return finalize_discovered_models(models, Some("gemini-2.5-pro"));
+            return finalize_discovered_models(models, Some("gemini-4-argon-medium"));
         }
 
         let mut models = Vec::new();
@@ -502,11 +609,11 @@ impl CliModelLoader {
             let Some((id, display_name, tagged_default)) = split_model_id_and_name(item) else {
                 continue;
             };
-            let is_default = tagged_default || id == "gemini-2.5-pro";
-            push_discovered_model(&mut models, id, display_name, is_default);
+            let is_default = tagged_default || id == "gemini-4-argon-medium";
+            push_discovered_model(&mut models, id, display_name, None, is_default);
         }
 
-        finalize_discovered_models(models, Some("gemini-2.5-pro"))
+        finalize_discovered_models(models, Some("gemini-4-argon-medium"))
     }
 
     /// Parses `grok models` non-interactive output into structured catalog entries.
@@ -569,10 +676,112 @@ impl CliModelLoader {
                 || default_slug
                     .as_deref()
                     .is_some_and(|slug| slug.eq_ignore_ascii_case(&id));
-            push_discovered_model(&mut models, id, display_name, is_default);
+            push_discovered_model(&mut models, id, display_name, None, is_default);
         }
 
         finalize_discovered_models(models, default_slug.as_deref())
+    }
+
+    /// Parses `codex debug models` output (or `codex models`) into structured catalog entries.
+    ///
+    /// Codex CLI outputs a JSON payload via `codex debug models` containing
+    /// `{"models": [{"slug": "...", "display_name": "...", "description": "...", "priority": 1, ...}]}`.
+    /// Also supports line-by-line model listings as a fallback.
+    pub fn parse_codex_output(output: &str) -> Vec<CatalogModelEntry> {
+        let stripped = strip_ansi_codes(output);
+        if is_cli_help_output(&stripped) {
+            return Vec::new();
+        }
+        if let Some(models) = parse_json_models(&stripped) {
+            return finalize_discovered_models(models, Some("gpt-5"));
+        }
+
+        let mut models = Vec::new();
+        for raw_line in stripped.lines() {
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() || is_noise_line(trimmed) || is_cli_flag_line(trimmed) {
+                continue;
+            }
+
+            let item = strip_list_prefix(trimmed);
+            if item.is_empty() || is_cli_flag_line(item) {
+                continue;
+            }
+
+            let Some((id, display_name, tagged_default)) = split_model_id_and_name(item) else {
+                continue;
+            };
+            let is_default = tagged_default || id == "gpt-5";
+            push_discovered_model(&mut models, id, display_name, None, is_default);
+        }
+
+        finalize_discovered_models(models, Some("gpt-5"))
+    }
+
+    /// Parses Claude CLI output into structured catalog entries.
+    pub fn parse_claude_output(output: &str) -> Vec<CatalogModelEntry> {
+        let stripped = strip_ansi_codes(output);
+        if is_cli_help_output(&stripped) {
+            return Vec::new();
+        }
+        if let Some(models) = parse_json_models(&stripped) {
+            return finalize_discovered_models(models, Some("claude-3-7-sonnet"));
+        }
+
+        let mut models = Vec::new();
+        for raw_line in stripped.lines() {
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() || is_noise_line(trimmed) || is_cli_flag_line(trimmed) {
+                continue;
+            }
+
+            let item = strip_list_prefix(trimmed);
+            if item.is_empty() || is_cli_flag_line(item) {
+                continue;
+            }
+
+            let Some((id, display_name, tagged_default)) = split_model_id_and_name(item) else {
+                continue;
+            };
+            let is_default = tagged_default || id == "claude-3-7-sonnet";
+            push_discovered_model(&mut models, id, display_name, None, is_default);
+        }
+
+        finalize_discovered_models(models, Some("claude-3-7-sonnet"))
+    }
+
+    /// Parses generic or custom agent TUI output into structured catalog entries.
+    pub fn parse_generic_output(
+        output: &str,
+        default_model: Option<&str>,
+    ) -> Vec<CatalogModelEntry> {
+        let stripped = strip_ansi_codes(output);
+        if is_cli_help_output(&stripped) {
+            return Vec::new();
+        }
+        if let Some(models) = parse_json_models(&stripped) {
+            return finalize_discovered_models(models, default_model);
+        }
+
+        let mut models = Vec::new();
+        for raw_line in stripped.lines() {
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() || is_noise_line(trimmed) || is_cli_flag_line(trimmed) {
+                continue;
+            }
+
+            let item = strip_list_prefix(trimmed);
+            if item.is_empty() || is_cli_flag_line(item) {
+                continue;
+            }
+
+            if let Some((id, display_name, tagged_default)) = split_model_id_and_name(item) {
+                let is_default = tagged_default || default_model.is_some_and(|d| d == id);
+                push_discovered_model(&mut models, id, display_name, None, is_default);
+            }
+        }
+
+        finalize_discovered_models(models, default_model)
     }
 
     #[cfg(test)]
@@ -613,6 +822,20 @@ impl CliModelLoader {
         cmd.env("FORCE_COLOR", "0");
         cmd.env("PAGER", "cat");
 
+        if let Some(proxy) = resolve_proxy_for_agent(agent) {
+            if !proxy.trim().is_empty() && proxy != "direct" {
+                cmd.env("HTTPS_PROXY", &proxy);
+                cmd.env("https_proxy", &proxy);
+                cmd.env("HTTP_PROXY", &proxy);
+                cmd.env("http_proxy", &proxy);
+                cmd.env("ALL_PROXY", &proxy);
+                cmd.env("all_proxy", &proxy);
+            }
+        }
+        if let Ok(no_proxy) = std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy")) {
+            cmd.env("NO_PROXY", no_proxy);
+        }
+
         let child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn `{default_cmd}`: {e}"))?;
@@ -639,19 +862,19 @@ impl CliModelLoader {
         &self,
         agent: AgentCliKind,
         default_cmd: &str,
+        args: &[&str],
         parse: fn(&str) -> Vec<CatalogModelEntry>,
     ) -> anyhow::Result<Vec<CatalogModelEntry>> {
-        let captured = self
-            .capture_command(agent, default_cmd, &["models"])
-            .await?;
+        let captured = self.capture_command(agent, default_cmd, args).await?;
         let combined = combine_command_output(&captured.stdout, &captured.stderr);
         let models = parse(&combined);
         if models.is_empty() {
+            let cmd_str = format!("{default_cmd} {}", args.join(" "));
             if captured.success {
-                anyhow::bail!("no models found in `{default_cmd} models` output");
+                anyhow::bail!("no models found in `{cmd_str}` output");
             }
             anyhow::bail!(
-                "`{default_cmd}` exited with status {}: {}",
+                "`{cmd_str}` exited with status {}: {}",
                 captured.status,
                 captured.stderr
             );
@@ -672,16 +895,69 @@ impl ModelLoader for CliModelLoader {
     async fn load_models(&self, agent: AgentCliKind) -> anyhow::Result<Vec<CatalogModelEntry>> {
         match agent {
             AgentCliKind::Agy => {
-                self.load_cli_models(AgentCliKind::Agy, "agy", Self::parse_agy_output)
-                    .await
+                self.load_cli_models(
+                    AgentCliKind::Agy,
+                    "agy",
+                    &["models"],
+                    Self::parse_agy_output,
+                )
+                .await
             }
             AgentCliKind::Grok => {
-                self.load_cli_models(AgentCliKind::Grok, "grok", Self::parse_grok_output)
+                self.load_cli_models(
+                    AgentCliKind::Grok,
+                    "grok",
+                    &["models"],
+                    Self::parse_grok_output,
+                )
+                .await
+            }
+            AgentCliKind::Codex => {
+                match self
+                    .load_cli_models(
+                        AgentCliKind::Codex,
+                        "codex",
+                        &["debug", "models"],
+                        Self::parse_codex_output,
+                    )
                     .await
+                {
+                    Ok(models) if !models.is_empty() => Ok(models),
+                    _ => {
+                        self.load_cli_models(
+                            AgentCliKind::Codex,
+                            "codex",
+                            &["models"],
+                            Self::parse_codex_output,
+                        )
+                        .await
+                    }
+                }
             }
             _ => anyhow::bail!("CLI model discovery not supported for agent: {agent}"),
         }
     }
+}
+
+fn resolve_proxy_for_agent(agent: AgentCliKind) -> Option<String> {
+    let settings = openduck_harness::types::discover_global_harness_settings(None);
+    let key = agent_key(agent);
+    settings
+        .tui_sessions
+        .get(key)
+        .and_then(|defaults| defaults.https_proxy.clone())
+        .or_else(|| {
+            settings
+                .tui_sessions
+                .get("default")
+                .and_then(|defaults| defaults.https_proxy.clone())
+        })
+        .or_else(|| std::env::var("HTTPS_PROXY").ok())
+        .or_else(|| std::env::var("https_proxy").ok())
+        .or_else(|| std::env::var("ALL_PROXY").ok())
+        .or_else(|| std::env::var("all_proxy").ok())
+        .or_else(|| std::env::var("HTTP_PROXY").ok())
+        .or_else(|| std::env::var("http_proxy").ok())
 }
 
 fn resolve_cli_bin(agent: AgentCliKind) -> Option<PathBuf> {
@@ -697,9 +973,10 @@ fn resolve_cli_bin(agent: AgentCliKind) -> Option<PathBuf> {
                 return Some(p);
             }
             if let Some(home) = user_home() {
-                let p = home.join(".local/bin/agy");
-                if p.is_file() {
-                    return Some(p);
+                for cand in [home.join(".local/bin/agy"), home.join(".gemini/bin/agy")] {
+                    if cand.is_file() {
+                        return Some(cand);
+                    }
                 }
             }
             if let Some(p) =
@@ -730,6 +1007,36 @@ fn resolve_cli_bin(agent: AgentCliKind) -> Option<PathBuf> {
             }
             None
         }
+        AgentCliKind::Codex => {
+            if let Ok(explicit) = std::env::var("CODEX_COMMAND") {
+                let p = PathBuf::from(explicit);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+            if let Ok(p) = which::which("codex") {
+                return Some(p);
+            }
+            if let Some(home) = user_home() {
+                for cand in [
+                    home.join(".local/bin/codex"),
+                    home.join(".codex/bin/codex"),
+                    home.join(".npm-global/bin/codex"),
+                ] {
+                    if cand.is_file() {
+                        return Some(cand);
+                    }
+                }
+            }
+            if let Some(p) = std::env::var_os("LOCALAPPDATA")
+                .map(|p| PathBuf::from(p).join("codex/bin/codex.exe"))
+            {
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
@@ -747,6 +1054,7 @@ fn is_cli_help_output(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("usage: agy")
         || lower.contains("usage: grok")
+        || lower.contains("usage: codex")
         || (lower.contains("list available models and exit")
             && (lower.contains("--help") || lower.contains("options:")))
 }
@@ -817,7 +1125,27 @@ fn looks_like_model_id(id: &str) -> bool {
     {
         return false;
     }
-    id.contains(['-', '.', '/', ':', '_'])
+    let lower = id.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "opus"
+            | "sonnet"
+            | "haiku"
+            | "fable"
+            | "gemini"
+            | "claude"
+            | "grok"
+            | "codex"
+            | "gpt"
+            | "llama"
+            | "mistral"
+            | "deepseek"
+            | "qwen"
+            | "phi"
+    ) {
+        return true;
+    }
+    id.contains(['-', '.', '/', ':', '_']) || id.chars().any(|c| c.is_ascii_digit())
 }
 
 fn split_model_id_and_name(item: &str) -> Option<(String, String, bool)> {
@@ -861,6 +1189,7 @@ fn push_discovered_model(
     models: &mut Vec<CatalogModelEntry>,
     id: String,
     display_name: String,
+    description: Option<String>,
     is_default: bool,
 ) {
     if let Some(existing) = models
@@ -871,13 +1200,16 @@ fn push_discovered_model(
         {
             existing.display_name = display_name;
         }
+        if existing.description.is_none() && description.is_some() {
+            existing.description = description;
+        }
         existing.is_default |= is_default;
         return;
     }
     models.push(CatalogModelEntry {
         id,
         display_name,
-        description: None,
+        description,
         is_default,
         source: ModelSource::DynamicLoader,
     });
@@ -965,19 +1297,37 @@ fn collect_json_models(value: &serde_json::Value, models: &mut Vec<CatalogModelE
                     .filter(|s| !s.is_empty())
                     .map(ToString::to_string)
                     .unwrap_or_else(|| format_display_name(id));
+                let description = map
+                    .get("description")
+                    .or_else(|| map.get("desc"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string);
+                let priority_default = map
+                    .get("priority")
+                    .and_then(|v| v.as_i64())
+                    .map(|p| p == 1)
+                    .unwrap_or(false);
                 let is_default = map
                     .get("default")
                     .or_else(|| map.get("is_default"))
                     .or_else(|| map.get("isDefault"))
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                push_discovered_model(models, id.to_string(), display_name, is_default);
+                    .unwrap_or(priority_default);
+                push_discovered_model(
+                    models,
+                    id.to_string(),
+                    display_name,
+                    description,
+                    is_default,
+                );
             }
         }
         serde_json::Value::String(s) => {
             let id = s.trim();
             if looks_like_model_id(id) {
-                push_discovered_model(models, id.to_string(), format_display_name(id), false);
+                push_discovered_model(models, id.to_string(), format_display_name(id), None, false);
             }
         }
         _ => {}

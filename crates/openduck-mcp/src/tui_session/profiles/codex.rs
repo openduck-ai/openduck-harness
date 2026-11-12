@@ -208,6 +208,7 @@ fn resolve_codex_bin() -> Result<PathBuf> {
     let fallbacks = [
         user_home().map(|h| h.join(".local/bin/codex")),
         user_home().map(|h| h.join(".codex/bin/codex")),
+        user_home().map(|h| h.join(".npm-global/bin/codex")),
     ];
     for candidate in fallbacks.into_iter().flatten() {
         if candidate.is_file() {

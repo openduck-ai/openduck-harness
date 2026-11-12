@@ -15,7 +15,9 @@ use tokio_stream::StreamExt;
 
 use super::models::{AccountRecord, AgentProfileRecord, QuotaSnapshotRecord};
 use super::service::TuiManagementService;
-use openduck_mcp::tui_session::{AgentCliKind, AgentModelCatalogEntry};
+use openduck_mcp::tui_session::{
+    AgentCliKind, AgentModelCatalog, AgentModelCatalogEntry, CliModelLoader,
+};
 
 fn bad(err: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
     (
@@ -209,6 +211,10 @@ fn catalog_to_json(entry: &AgentModelCatalogEntry) -> serde_json::Value {
         "models": entry.models,
         "defaultModel": entry.default_model,
         "default_model": entry.default_model,
+        "discoveryCommand": entry.discovery_command,
+        "discovery_command": entry.discovery_command,
+        "cliDiscoveryCommand": entry.cli_discovery_command,
+        "cli_discovery_command": entry.cli_discovery_command,
         "supportsFreeText": entry.supports_free_text,
         "supports_free_text": entry.supports_free_text,
         "isFallback": entry.is_fallback,
@@ -384,6 +390,94 @@ pub async fn get_tui_session_operations(
         .await
         .map_err(bad)?;
     Ok(Json(serde_json::json!({ "operations": ops })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptSessionBody {
+    pub prompt: String,
+    pub wait: Option<bool>,
+    pub timeout_secs: Option<u64>,
+}
+
+pub async fn prompt_tui_session(
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<PromptSessionBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let service = TuiManagementService::global().await;
+    let timeout = Duration::from_secs(body.timeout_secs.unwrap_or(60));
+    let turn = service
+        .send_prompt(&id, &body.prompt, body.wait.unwrap_or(true), timeout, None)
+        .await
+        .map_err(bad)?;
+    Ok(Json(serde_json::to_value(turn).map_err(bad)?))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeysSessionBody {
+    pub keys: Vec<String>,
+}
+
+pub async fn keys_tui_session(
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<KeysSessionBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let service = TuiManagementService::global().await;
+    service.send_keys(&id, &body.keys).await.map_err(bad)?;
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseAgentModelsBody {
+    pub output: String,
+}
+
+pub async fn parse_tui_agent_models(
+    AxumPath(agent): AxumPath<String>,
+    Json(body): Json<ParseAgentModelsBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let service = TuiManagementService::global().await;
+    let kind = resolve_agent_kind(&service, &agent).await?;
+
+    let discovered = match kind {
+        AgentCliKind::Agy => CliModelLoader::parse_agy_output(&body.output),
+        AgentCliKind::Grok => CliModelLoader::parse_grok_output(&body.output),
+        AgentCliKind::Codex => CliModelLoader::parse_codex_output(&body.output),
+        AgentCliKind::Claude => CliModelLoader::parse_claude_output(&body.output),
+        AgentCliKind::Custom => CliModelLoader::parse_generic_output(&body.output, None),
+    };
+
+    if discovered.is_empty() {
+        let entry = service.catalog.get_models(kind).await;
+        Ok(Json(catalog_to_json(&entry)))
+    } else {
+        let default_model = discovered
+            .iter()
+            .find(|m| m.is_default)
+            .or_else(|| discovered.first())
+            .map(|m| m.id.clone());
+
+        let entry = AgentModelCatalogEntry {
+            agent: kind,
+            models: discovered,
+            default_model,
+            discovery_command: Some(
+                AgentModelCatalog::default_discovery_command_for_agent(kind).to_string(),
+            ),
+            cli_discovery_command: Some(
+                AgentModelCatalog::cli_discovery_command_for_agent(kind).to_string(),
+            ),
+            supports_free_text: AgentModelCatalog::supports_free_text(kind),
+            is_fallback: false,
+            cached_at_unix_secs: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        };
+        Ok(Json(catalog_to_json(&entry)))
+    }
 }
 
 pub async fn list_tui_operations(
@@ -715,10 +809,16 @@ where
             post(refresh_tui_agent_models),
         )
         .route(
+            "/api/v1/tui-agents/{id}/parse-models",
+            post(parse_tui_agent_models),
+        )
+        .route(
             "/api/v1/tui-sessions",
             get(list_sessions_route).post(start_managed_session_route),
         )
         .route("/api/v1/tui-sessions/{id}", get(get_tui_session))
+        .route("/api/v1/tui-sessions/{id}/prompt", post(prompt_tui_session))
+        .route("/api/v1/tui-sessions/{id}/keys", post(keys_tui_session))
         .route(
             "/api/v1/tui-sessions/{id}/model",
             post(switch_tui_session_model),

@@ -315,6 +315,36 @@ export function createApi(baseUrl: string, secret = '', options?: ApiOptions) {
       `/api/v1/tui-sessions/${encodeURIComponent(id)}/extend`,
       { additionalMins },
     )
+  api.promptManagedTuiSession = (id: string, payload: { prompt: string; wait?: boolean; timeoutSecs?: number }) =>
+    postJson<any>(
+      baseUrl,
+      secret,
+      `/api/v1/tui-sessions/${encodeURIComponent(id)}/prompt`,
+      payload,
+    )
+  api.keysManagedTuiSession = (id: string, keys: string[]) =>
+    postJson<{ success: boolean }>(
+      baseUrl,
+      secret,
+      `/api/v1/tui-sessions/${encodeURIComponent(id)}/keys`,
+      { keys },
+    )
+
+  const originalPromptTuiSession = api.promptTuiSession
+  api.promptTuiSession = (arg1: string, arg2: any, arg3?: any) => {
+    if (arg3 !== undefined) {
+      return originalPromptTuiSession(arg1, arg2, arg3)
+    }
+    return api.promptManagedTuiSession(arg1, arg2)
+  }
+
+  api.parseTuiAgentModels = (agent: string, output: string) =>
+    postJson<TuiAgentModelCatalog>(
+      baseUrl,
+      secret,
+      `/api/v1/tui-agents/${encodeURIComponent(agent)}/parse-models`,
+      { output },
+    )
 
   api.listTuiAccounts = () =>
     getJson<{ accounts: TuiAccount[] }>(baseUrl, secret, '/api/v1/tui-accounts')

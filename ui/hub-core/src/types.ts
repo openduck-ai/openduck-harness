@@ -466,6 +466,10 @@ export interface TuiAgentModelCatalog {
   models: TuiCatalogModelEntry[]
   defaultModel?: string | null
   default_model?: string | null
+  discoveryCommand?: string | null
+  discovery_command?: string | null
+  cliDiscoveryCommand?: string | null
+  cli_discovery_command?: string | null
   supportsFreeText?: boolean
   supports_free_text?: boolean
   isFallback?: boolean

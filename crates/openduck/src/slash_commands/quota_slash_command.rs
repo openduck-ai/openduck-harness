@@ -138,14 +138,13 @@ pub async fn handle_quota_slash_command(params_str: &str) -> String {
                 Err(e) => format!("❌ Failed to set quota for agent **{normalized}**: {:#}", e),
             }
         }
-        _ => format!(
-            "**Usage / Quota Management Commands:**\n\n\
-             - `/quota` or `/usage` — View current agent quotas, usage & limits\n\
-             - `/quota refresh [agent]` — Refresh quota from provider/logs\n\
-             - `/quota reset <agent>` — Reset agent quota to 100% valid and unblock\n\
-             - `/quota set <agent> <0-100%>` — Set remaining quota percentage\n\
-             - `/quota block <agent>` — Manually suspend agent until reset\n"
-        ),
+        _ => "**Usage / Quota Management Commands:**\n\n\
+              - `/quota` or `/usage` — View current agent quotas, usage & limits\n\
+              - `/quota refresh [agent]` — Refresh quota from provider/logs\n\
+              - `/quota reset <agent>` — Reset agent quota to 100% valid and unblock\n\
+              - `/quota set <agent> <0-100%>` — Set remaining quota percentage\n\
+              - `/quota block <agent>` — Manually suspend agent until reset\n"
+            .to_string(),
     }
 }
 
