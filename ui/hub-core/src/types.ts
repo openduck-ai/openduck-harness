@@ -559,6 +559,7 @@ export interface GitRepositoryActionRequest {
   path: string
   action: GitRepositoryActionType
   message?: string
+  paths?: string[]
 }
 
 export interface GitRepositoryActionResponse {

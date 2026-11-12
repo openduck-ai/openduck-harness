@@ -1356,9 +1356,19 @@ fn project_dir(slug: &str) -> Result<PathBuf, (StatusCode, Json<serde_json::Valu
 
 async fn git_status(
     AxumPath(slug): AxumPath<String>,
+    Query(query): Query<super::git::GitStatusQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let result = super::git::status(&path).await.map_err(bad)?;
+    let target = query.repo.as_deref().or(query.path.as_deref());
+    let repo_path = match target {
+        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
+            super::git::resolve_discovered_repo(&path, rel.trim())
+                .await
+                .map_err(bad)?
+        }
+        _ => path,
+    };
+    let result = super::git::status(&repo_path).await.map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
 }
 
@@ -1388,7 +1398,18 @@ async fn git_log(
     Query(query): Query<super::git::GitLogQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let result = super::git::log(&path, query.limit).await.map_err(bad)?;
+    let target = query.path.as_deref().or(query.repo.as_deref());
+    let repo_path = match target {
+        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
+            super::git::resolve_discovered_repo(&path, rel.trim())
+                .await
+                .map_err(bad)?
+        }
+        _ => path,
+    };
+    let result = super::git::log(&repo_path, query.limit)
+        .await
+        .map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
 }
 
@@ -1397,8 +1418,17 @@ async fn git_diff(
     Query(query): Query<super::git::GitDiffQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
+    let target = query.repo.as_deref().or(query.repo_path.as_deref());
+    let repo_path = match target {
+        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
+            super::git::resolve_discovered_repo(&path, rel.trim())
+                .await
+                .map_err(bad)?
+        }
+        _ => path,
+    };
     let rel = query.path.as_deref().unwrap_or("");
-    let result = super::git::diff(&path, rel, query.staged.unwrap_or(false))
+    let result = super::git::diff(&repo_path, rel, query.staged.unwrap_or(false))
         .await
         .map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
@@ -1409,7 +1439,18 @@ async fn git_show(
     Query(query): Query<super::git::GitShowQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let result = super::git::show(&path, &query.sha).await.map_err(bad)?;
+    let target = query.path.as_deref().or(query.repo.as_deref());
+    let repo_path = match target {
+        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
+            super::git::resolve_discovered_repo(&path, rel.trim())
+                .await
+                .map_err(bad)?
+        }
+        _ => path,
+    };
+    let result = super::git::show(&repo_path, &query.sha)
+        .await
+        .map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
 }
 
@@ -1418,7 +1459,17 @@ async fn git_stage(
     Json(req): Json<super::git::GitPathsRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let result = super::git::stage(&path, &req.paths).await.map_err(bad)?;
+    let repo_path = match req.repo.as_deref() {
+        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
+            super::git::resolve_discovered_repo(&path, rel.trim())
+                .await
+                .map_err(bad)?
+        }
+        _ => path,
+    };
+    let result = super::git::stage(&repo_path, &req.paths)
+        .await
+        .map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
 }
 
@@ -1427,7 +1478,17 @@ async fn git_unstage(
     Json(req): Json<super::git::GitPathsRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let result = super::git::unstage(&path, &req.paths).await.map_err(bad)?;
+    let repo_path = match req.repo.as_deref() {
+        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
+            super::git::resolve_discovered_repo(&path, rel.trim())
+                .await
+                .map_err(bad)?
+        }
+        _ => path,
+    };
+    let result = super::git::unstage(&repo_path, &req.paths)
+        .await
+        .map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
 }
 
@@ -1436,7 +1497,17 @@ async fn git_discard(
     Json(req): Json<super::git::GitPathsRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let result = super::git::discard(&path, &req.paths).await.map_err(bad)?;
+    let repo_path = match req.repo.as_deref() {
+        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
+            super::git::resolve_discovered_repo(&path, rel.trim())
+                .await
+                .map_err(bad)?
+        }
+        _ => path,
+    };
+    let result = super::git::discard(&repo_path, &req.paths)
+        .await
+        .map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
 }
 
@@ -1445,7 +1516,15 @@ async fn git_commit(
     Json(req): Json<super::git::GitCommitRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let result = super::git::commit(&path, &req.message, &req.paths)
+    let repo_path = match req.repo.as_deref() {
+        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
+            super::git::resolve_discovered_repo(&path, rel.trim())
+                .await
+                .map_err(bad)?
+        }
+        _ => path,
+    };
+    let result = super::git::commit(&repo_path, &req.message, &req.paths)
         .await
         .map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
@@ -1456,7 +1535,15 @@ async fn git_commit_message(
     Json(req): Json<super::git::GitCommitMessageRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let result = super::git::suggest_commit_message(&path, &req.paths)
+    let repo_path = match req.repo.as_deref() {
+        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
+            super::git::resolve_discovered_repo(&path, rel.trim())
+                .await
+                .map_err(bad)?
+        }
+        _ => path,
+    };
+    let result = super::git::suggest_commit_message(&repo_path, &req.paths)
         .await
         .map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))

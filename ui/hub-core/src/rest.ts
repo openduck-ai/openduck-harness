@@ -495,10 +495,12 @@ export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}
         `/api/v1/projects/${encodeURIComponent(slug)}/tui-sessions/${encodeURIComponent(id)}/model`,
         { method: 'POST', body: JSON.stringify({ model }) },
       ),
-    getGitStatus: (slug: string) =>
-      request<GitStatusResponse>(
-        `/api/v1/projects/${encodeURIComponent(slug)}/git/status`,
-      ),
+    getGitStatus: (slug: string, repo?: string) => {
+      const qs = repo && repo !== '.' ? `?repo=${encodeURIComponent(repo)}` : ''
+      return request<GitStatusResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/git/status${qs}`,
+      )
+    },
     getGitRepositories: (slug: string) =>
       request<GitRepositoriesResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/git/repositories`,
@@ -513,46 +515,91 @@ export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}
         `/api/v1/projects/${encodeURIComponent(slug)}/git/repositories/action`,
         { method: 'POST', body: JSON.stringify(body) },
       ),
-    getGitLog: (slug: string, limit?: number) =>
-      request<GitLogResponse>(
-        `/api/v1/projects/${encodeURIComponent(slug)}/git/log${
-          typeof limit === 'number' ? `?limit=${encodeURIComponent(String(limit))}` : ''
-        }`,
-      ),
-    getGitDiff: (slug: string, path: string, staged = false) =>
+    getGitLog: (slug: string, limit?: number, path?: string) => {
+      const params = new URLSearchParams()
+      if (typeof limit === 'number') params.set('limit', String(limit))
+      if (path && path !== '.') params.set('path', path)
+      const qs = params.toString()
+      return request<GitLogResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/git/log${qs ? `?${qs}` : ''}`,
+      )
+    },
+    getGitDiff: (slug: string, path: string, staged = false, repo?: string) =>
       request<GitDiffResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/git/diff?path=${encodeURIComponent(path)}${
           staged ? '&staged=true' : ''
+        }${repo && repo !== '.' ? `&repo=${encodeURIComponent(repo)}` : ''}`,
+      ),
+    getGitShow: (slug: string, sha: string, path?: string) =>
+      request<GitShowResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/git/show?sha=${encodeURIComponent(sha)}${
+          path && path !== '.' ? `&path=${encodeURIComponent(path)}` : ''
         }`,
       ),
-    getGitShow: (slug: string, sha: string) =>
-      request<GitShowResponse>(
-        `/api/v1/projects/${encodeURIComponent(slug)}/git/show?sha=${encodeURIComponent(sha)}`,
-      ),
-    stageGitFiles: (slug: string, paths: string[]) =>
+    stageGitFiles: (slug: string, paths: string[], repo?: string) =>
       request<GitStatusResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/git/stage`,
-        { method: 'POST', body: JSON.stringify({ paths }) },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            paths,
+            repo: repo && repo !== '.' ? repo : undefined,
+          }),
+        },
       ),
-    unstageGitFiles: (slug: string, paths: string[]) =>
+    unstageGitFiles: (slug: string, paths: string[], repo?: string) =>
       request<GitStatusResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/git/unstage`,
-        { method: 'POST', body: JSON.stringify({ paths }) },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            paths,
+            repo: repo && repo !== '.' ? repo : undefined,
+          }),
+        },
       ),
-    discardGitFiles: (slug: string, paths: string[]) =>
+    discardGitFiles: (slug: string, paths: string[], repo?: string) =>
       request<GitStatusResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/git/discard`,
-        { method: 'POST', body: JSON.stringify({ paths }) },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            paths,
+            repo: repo && repo !== '.' ? repo : undefined,
+          }),
+        },
       ),
-    commitGitChanges: (slug: string, message: string, paths: string[] = []) =>
+    commitGitChanges: (
+      slug: string,
+      message: string,
+      paths: string[] = [],
+      repo?: string,
+    ) =>
       request<GitCommitResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/git/commit`,
-        { method: 'POST', body: JSON.stringify({ message, paths }) },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            message,
+            paths,
+            repo: repo && repo !== '.' ? repo : undefined,
+          }),
+        },
       ),
-    generateGitCommitMessage: (slug: string, paths: string[] = []) =>
+    generateGitCommitMessage: (
+      slug: string,
+      paths: string[] = [],
+      repo?: string,
+    ) =>
       request<GitCommitMessageResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/git/commit-message`,
-        { method: 'POST', body: JSON.stringify({ paths }) },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            paths,
+            repo: repo && repo !== '.' ? repo : undefined,
+          }),
+        },
       ),
     getHarnessOverview: () => request<HarnessOverview>('/api/v1/harness/overview'),
     listActiveHarnessJobs: () => request<HarnessActiveJob[]>('/api/v1/harness/jobs'),

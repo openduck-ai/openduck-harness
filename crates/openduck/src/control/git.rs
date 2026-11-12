@@ -414,6 +414,8 @@ pub struct GitShowResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GitLogQuery {
     pub limit: Option<usize>,
+    pub path: Option<String>,
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -421,12 +423,23 @@ pub struct GitLogQuery {
 pub struct GitDiffQuery {
     pub path: Option<String>,
     pub staged: Option<bool>,
+    pub repo: Option<String>,
+    pub repo_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusQuery {
+    pub repo: Option<String>,
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitShowQuery {
     pub sha: String,
+    pub path: Option<String>,
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -434,6 +447,8 @@ pub struct GitShowQuery {
 pub struct GitPathsRequest {
     #[serde(default)]
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -442,6 +457,8 @@ pub struct GitCommitRequest {
     pub message: String,
     #[serde(default)]
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -488,6 +505,8 @@ pub struct GitCommitResponse {
 pub struct GitCommitMessageRequest {
     #[serde(default)]
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -965,6 +984,60 @@ async fn is_actual_repo_root(candidate: &Path) -> bool {
     candidate_canonical == layout.toplevel
 }
 
+fn should_skip_discovery_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "target"
+            | ".cargo"
+            | ".rustup"
+            | ".next"
+            | ".nuxt"
+            | ".turbo"
+            | ".cache"
+            | "dist"
+            | "build"
+            | "out"
+            | ".venv"
+            | "venv"
+            | "env"
+            | "__pycache__"
+            | ".idea"
+            | ".vscode"
+            | ".tox"
+            | ".gradle"
+    )
+}
+
+fn collect_submodule_paths(repo_root: &Path) -> Vec<PathBuf> {
+    let gitmodules_path = repo_root.join(".gitmodules");
+    let Ok(content) = std::fs::read_to_string(gitmodules_path) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("path") {
+            let rest = rest.trim_start();
+            if let Some(val) = rest.strip_prefix('=') {
+                let sub_path = val.trim().replace('\\', "/");
+                let clean = sub_path
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .trim_matches('/');
+                if !clean.is_empty() {
+                    let sub_dir = repo_root.join(clean);
+                    if looks_like_git_root(&sub_dir) {
+                        paths.push(sub_dir);
+                    }
+                }
+            }
+        }
+    }
+    paths
+}
+
 fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
     if path_has_git_component(root) {
         return Vec::new();
@@ -977,10 +1050,23 @@ fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
     }
 
     let mut candidates = Vec::new();
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back(root.to_path_buf());
+    let mut seen = std::collections::HashSet::new();
 
-    while let Some(dir) = queue.pop_front() {
+    if looks_like_git_root(root) {
+        candidates.push(root.to_path_buf());
+        seen.insert(root.to_path_buf());
+        for sub in collect_submodule_paths(root) {
+            if seen.insert(sub.clone()) {
+                candidates.push(sub);
+            }
+        }
+    }
+
+    let mut queue = std::collections::VecDeque::new();
+    const MAX_DISCOVERY_DEPTH: usize = 8;
+    queue.push_back((root.to_path_buf(), 0usize));
+
+    while let Some((dir, depth)) = queue.pop_front() {
         if path_has_git_component(&dir) {
             continue;
         }
@@ -994,8 +1080,19 @@ fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
             }
         }
 
-        if looks_like_git_root(&dir) {
-            candidates.push(dir.clone());
+        if !is_root && looks_like_git_root(&dir) {
+            if seen.insert(dir.clone()) {
+                candidates.push(dir.clone());
+            }
+            for sub in collect_submodule_paths(&dir) {
+                if seen.insert(sub.clone()) {
+                    candidates.push(sub);
+                }
+            }
+        }
+
+        if depth >= MAX_DISCOVERY_DEPTH {
+            continue;
         }
 
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1007,6 +1104,10 @@ fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
             if file_name == ".git" {
                 continue;
             }
+            let name_str = file_name.to_string_lossy();
+            if should_skip_discovery_dir(&name_str) {
+                continue;
+            }
             let entry_path = entry.path();
             let Ok(entry_meta) = std::fs::symlink_metadata(&entry_path) else {
                 continue;
@@ -1015,13 +1116,13 @@ fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
                 // If it is a symlink, check if it points to a git repository or git worktree root.
                 // Do NOT queue it for BFS traversal (avoids recursive symlink loops or deep external traversals),
                 // but DO record the symlinked directory itself as a candidate if it looks like a git root.
-                if looks_like_git_root(&entry_path) {
+                if looks_like_git_root(&entry_path) && seen.insert(entry_path.clone()) {
                     candidates.push(entry_path);
                 }
                 continue;
             }
             if entry_meta.is_dir() {
-                queue.push_back(entry_path);
+                queue.push_back((entry_path, depth + 1));
             }
         }
     }
@@ -1158,26 +1259,6 @@ pub async fn resolve_discovered_repo(project_root: &Path, rel_path: &str) -> Res
 
     if !is_actual_repo_root(&target_canonical).await {
         bail!("Path is not a git repository root: {rel_path}");
-    }
-
-    let discovered = discover_repositories(project_root).await?;
-    let mut is_discovered = false;
-    for entry in &discovered.repositories {
-        let entry_dir = if entry.path == "." {
-            project_root.to_path_buf()
-        } else {
-            project_root.join(&entry.path)
-        };
-        if let Ok(entry_canon) = entry_dir.canonicalize() {
-            if entry_canon == target_canonical {
-                is_discovered = true;
-                break;
-            }
-        }
-    }
-
-    if !is_discovered {
-        bail!("Repository at '{rel_path}' is not among discovered repositories in project");
     }
 
     Ok(target_canonical)
@@ -3245,6 +3326,45 @@ detached
     }
 
     #[tokio::test]
+    async fn nested_repository_log_and_show_resolution() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        run_plain_git(root, &["commit", "--allow-empty", "-m", "root commit"]);
+
+        let nested = root.join("packages").join("nested-app");
+        fs::create_dir_all(&nested).unwrap();
+        init_repo(&nested);
+        fs::write(nested.join("app.rs"), "fn main() {}\n").unwrap();
+        stage(&nested, &["app.rs".to_string()]).await.unwrap();
+        commit(&nested, "feat: nested app initial commit", &[])
+            .await
+            .unwrap();
+
+        let nested_resolved = resolve_discovered_repo(root, "packages/nested-app")
+            .await
+            .unwrap();
+        assert_eq!(nested_resolved, nested.canonicalize().unwrap());
+
+        let nested_log = log(&nested_resolved, Some(10)).await.unwrap();
+        assert!(nested_log.is_repo);
+        assert_eq!(nested_log.commits.len(), 1);
+        assert_eq!(
+            nested_log.commits[0].subject,
+            "feat: nested app initial commit"
+        );
+
+        let nested_show = show(&nested_resolved, &nested_log.commits[0].sha)
+            .await
+            .unwrap();
+        assert_eq!(
+            nested_show.commit.subject,
+            "feat: nested app initial commit"
+        );
+        assert!(nested_show.diff.contains("app.rs"));
+    }
+
+    #[tokio::test]
     async fn repository_action_no_remote_failure() {
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -3627,5 +3747,81 @@ detached
         let nested_status = status(&nested_repo).await.unwrap();
         assert!(!nested_status.files.iter().any(|f| f.path == "file1.txt"));
         assert!(nested_status.files.iter().any(|f| f.path == "file2.txt"));
+    }
+
+    #[tokio::test]
+    async fn nested_repo_stage_unstage_discard_and_commit() {
+        let dir = tempdir().unwrap();
+        let project_root = dir.path();
+        let nested_dir = project_root.join("packages").join("service");
+        fs::create_dir_all(&nested_dir).unwrap();
+        init_repo(&nested_dir);
+        run_plain_git(&nested_dir, &["commit", "--allow-empty", "-m", "init"]);
+
+        // Also create a dummy node_modules and target directory with lots of folders to verify discovery skipping
+        let node_modules_dir = project_root.join("node_modules").join("dummy").join("deep");
+        let target_dir = project_root.join("target").join("debug").join("build");
+        fs::create_dir_all(&node_modules_dir).unwrap();
+        fs::create_dir_all(&target_dir).unwrap();
+
+        // 1. Repository discovery lists the nested repository fast without getting stuck in ignored dirs
+        let repos = discover_repositories(project_root).await.unwrap();
+        assert!(
+            repos
+                .repositories
+                .iter()
+                .any(|r| r.path == "packages/service"),
+            "Discovered repos: {:?}",
+            repos.repositories
+        );
+
+        // 2. Resolve nested repo via resolve_discovered_repo
+        let resolved = resolve_discovered_repo(project_root, "packages/service")
+            .await
+            .unwrap();
+        assert_eq!(resolved, nested_dir.canonicalize().unwrap());
+
+        // 3. Stage and unstage in nested repository
+        fs::write(nested_dir.join("test.txt"), "hello nested\n").unwrap();
+        let status_staged = stage(&resolved, &["test.txt".to_string()]).await.unwrap();
+        assert!(status_staged
+            .files
+            .iter()
+            .any(|f| f.path == "test.txt" && f.staged));
+
+        let status_unstaged = unstage(&resolved, &["test.txt".to_string()]).await.unwrap();
+        assert!(status_unstaged
+            .files
+            .iter()
+            .any(|f| f.path == "test.txt" && !f.staged));
+
+        // 4. Commit in nested repository
+        stage(&resolved, &["test.txt".to_string()]).await.unwrap();
+        let commit_res = commit(&resolved, "feat: nested file", &["test.txt".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(commit_res.subject, "feat: nested file");
+
+        let status_after_commit = status(&resolved).await.unwrap();
+        assert!(!status_after_commit
+            .files
+            .iter()
+            .any(|f| f.path == "test.txt"));
+
+        // 5. Discard in nested repository
+        fs::write(nested_dir.join("temp.txt"), "temporary\n").unwrap();
+        assert!(status(&resolved)
+            .await
+            .unwrap()
+            .files
+            .iter()
+            .any(|f| f.path == "temp.txt"));
+        discard(&resolved, &["temp.txt".to_string()]).await.unwrap();
+        assert!(!status(&resolved)
+            .await
+            .unwrap()
+            .files
+            .iter()
+            .any(|f| f.path == "temp.txt"));
     }
 }

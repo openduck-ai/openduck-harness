@@ -209,6 +209,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
   const [selectedRepoPath, setSelectedRepoPath] = useState<string>('.')
   const [status, setStatus] = useState<Awaited<ReturnType<typeof api.getGitStatus>> | null>(null)
   const [history, setHistory] = useState<GitLogResponse | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [selectedSha, setSelectedSha] = useState<string | null>(null)
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set())
   const [activePath, setActivePath] = useState<string | null>(null)
@@ -233,33 +234,44 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     setLoading(true)
     setError(null)
     try {
-      const [nextStatus, nextLog, reposResult] = await Promise.all([
-        api.getGitStatus(slug).catch(() => null),
-        api.getGitLog(slug, 150).catch(() => null),
+      const [nextStatus, reposResult] = await Promise.all([
+        api.getGitStatus(slug, selectedRepoPath).catch(() => null),
         api.getGitRepositories(slug).catch(() => null),
       ])
       const repos = reposResult?.repositories ?? []
       setRepositories(repos)
-      setStatus(nextStatus)
+
+      let targetRepo = selectedRepoPath
+      if (repos.length > 0 && !repos.some(r => r.path === targetRepo)) {
+        targetRepo = repos.some(r => r.path === '.') ? '.' : repos[0].path
+        setSelectedRepoPath(targetRepo)
+      }
+
+      let activeStatus = nextStatus
+      if (targetRepo !== selectedRepoPath) {
+        activeStatus =
+          (await api.getGitStatus(slug, targetRepo).catch(() => null)) ??
+          repos.find(r => r.path === targetRepo)?.status ??
+          null
+      } else if (!activeStatus && repos.length > 0) {
+        activeStatus = repos.find(r => r.path === targetRepo)?.status ?? null
+      }
+
+      setStatus(activeStatus)
+
+      const nextLog = await api.getGitLog(slug, 150, targetRepo).catch(() => null)
       setHistory(nextLog)
 
-      setSelectedRepoPath(current => {
-        if (repos.length > 0 && !repos.some(r => r.path === current)) {
-          return repos.some(r => r.path === '.') ? '.' : repos[0].path
-        }
-        return current
-      })
-
-      if (nextStatus) {
+      if (activeStatus) {
         setSelectedPaths(current => {
-          const valid = new Set(nextStatus.files.map(file => file.path))
+          const valid = new Set(activeStatus.files.map(file => file.path))
           return new Set([...current].filter(path => valid.has(path)))
         })
       } else {
         setSelectedPaths(new Set())
       }
 
-      if (!nextStatus && repos.length === 0) {
+      if (!activeStatus && repos.length === 0) {
         setError({ kind: 'fallback', key: 'git.page.noRepositories' })
       }
     } catch (cause) {
@@ -274,7 +286,26 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     } finally {
       setLoading(false)
     }
-  }, [api, slug])
+  }, [api, slug, selectedRepoPath])
+
+  useEffect(() => {
+    let cancelled = false
+    setHistoryLoading(true)
+    api
+      .getGitLog(slug, 150, selectedRepoPath)
+      .then(res => {
+        if (!cancelled) setHistory(res)
+      })
+      .catch(() => {
+        if (!cancelled) setHistory(null)
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [api, slug, selectedRepoPath])
 
   useEffect(() => {
     void load()
@@ -291,7 +322,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
   }, [repositories, selectedRepoPath])
 
   const isRootRepo = selectedRepoPath === '.'
-  const currentStatus = isRootRepo ? status : activeRepo?.status ?? null
+  const currentStatus = status ?? activeRepo?.status ?? null
   const files = currentStatus?.files ?? []
   const selectedFiles = useMemo(
     () => files.filter(file => selectedPaths.has(file.path)),
@@ -308,7 +339,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
   }, [files, activePath, selectedSha])
 
   useEffect(() => {
-    if (!isRootRepo || !activePath || selectedSha) return
+    if (!activePath || selectedSha) return
     const file = files.find(entry => entry.path === activePath)
     if (!file) {
       setDiff('')
@@ -316,7 +347,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     }
     let cancelled = false
     void api
-      .getGitDiff(slug, file.path, file.staged && !file.unstaged)
+      .getGitDiff(slug, file.path, file.staged && !file.unstaged, selectedRepoPath)
       .then(result => {
         if (cancelled) return
         setDiff(result.diff)
@@ -330,7 +361,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     return () => {
       cancelled = true
     }
-  }, [api, slug, activePath, files, selectedSha, isRootRepo])
+  }, [api, slug, activePath, files, selectedSha, selectedRepoPath])
 
   useEffect(() => {
     if (!selectedSha) {
@@ -339,7 +370,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     }
     let cancelled = false
     void api
-      .getGitShow(slug, selectedSha)
+      .getGitShow(slug, selectedSha, selectedRepoPath)
       .then(result => {
         if (cancelled) return
         setShow(result)
@@ -351,7 +382,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     return () => {
       cancelled = true
     }
-  }, [api, slug, selectedSha])
+  }, [api, slug, selectedSha, selectedRepoPath])
 
   const togglePath = (path: string) => {
     setSelectedPaths(current => {
@@ -383,9 +414,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
 
   const targetPaths = selectedFiles.length > 0 ? selectedFiles.map(file => file.path) : []
   const hasStaged = files.some(file => file.staged)
-  const canCommit = isRootRepo
-    ? message.trim().length > 0 && (targetPaths.length > 0 || hasStaged)
-    : message.trim().length > 0 && files.length > 0
+  const canCommit = message.trim().length > 0 && (targetPaths.length > 0 || hasStaged)
 
   const handleRepoAction = async (repoPath: string, action: 'pull' | 'push') => {
     if (pendingRepoAction || mutating || loading) return
@@ -431,7 +460,14 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     setError(null)
     setNotice(null)
     try {
-      const req = executeRowAction(repoPath, 'commit', { message: trimmed })
+      const pathsToCommit =
+        repoPath === selectedRepoPath && targetPaths.length > 0
+          ? targetPaths
+          : undefined
+      const req = executeRowAction(repoPath, 'commit', {
+        message: trimmed,
+        paths: pathsToCommit,
+      })
       const res = await api.runGitRepositoryAction(slug, req)
       const subject = res.commit?.subject?.trim() ?? res.message ?? trimmed
       setNotice({
@@ -458,12 +494,12 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
 
   const stageSelected = () => {
     if (targetPaths.length === 0) return
-    void runMutation(() => api.stageGitFiles(slug, targetPaths))
+    void runMutation(() => api.stageGitFiles(slug, targetPaths, selectedRepoPath))
   }
 
   const unstageSelected = () => {
     if (targetPaths.length === 0) return
-    void runMutation(() => api.unstageGitFiles(slug, targetPaths))
+    void runMutation(() => api.unstageGitFiles(slug, targetPaths, selectedRepoPath))
   }
 
   const discardSelected = () => {
@@ -475,14 +511,14 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     ) {
       return
     }
-    void runMutation(() => api.discardGitFiles(slug, targetPaths))
+    void runMutation(() => api.discardGitFiles(slug, targetPaths, selectedRepoPath))
   }
 
   const generateMessage = async () => {
     setGenerating(true)
     setError(null)
     try {
-      const result = await api.generateGitCommitMessage(slug, targetPaths)
+      const result = await api.generateGitCommitMessage(slug, targetPaths, selectedRepoPath)
       setMessage(result.message)
       setMessageSource(result.source)
     } catch (cause) {
@@ -494,24 +530,20 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
 
   const commitChanges = async () => {
     if (!message.trim()) return
-    if (isRootRepo) {
-      await runMutation(async () => {
-        const result = await api.commitGitChanges(slug, message, targetPaths)
-        const sha = result.sha.trim()
-        const subject = result.subject.trim()
-        setNotice({
-          kind: 'commit',
-          sha: sha.slice(0, 7),
-          subject,
-        })
-        setMessage('')
-        setMessageSource('')
-        setSelectedSha(null)
-        setSelectedPaths(new Set())
+    await runMutation(async () => {
+      const result = await api.commitGitChanges(slug, message, targetPaths, selectedRepoPath)
+      const sha = result.sha.trim()
+      const subject = result.subject.trim()
+      setNotice({
+        kind: 'commit',
+        sha: sha.slice(0, 7),
+        subject,
       })
-    } else {
-      await handleRepoCommit(selectedRepoPath, message)
-    }
+      setMessage('')
+      setMessageSource('')
+      setSelectedSha(null)
+      setSelectedPaths(new Set())
+    })
   }
 
   if (error && !status && !history && repositories.length === 0) {
@@ -527,7 +559,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
 
   const branchLabel = currentStatus?.detached
     ? t('git.page.detachedHead')
-    : currentStatus?.branch ?? (isRootRepo ? history?.branch : undefined) ?? t('git.page.unknownBranch')
+    : currentStatus?.branch ?? history?.branch ?? t('git.page.unknownBranch')
   const dirtyCount = files.length
 
   return (
@@ -671,32 +703,7 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
 
       <div className="git-body">
         <div className="git-history-pane">
-          {isRootRepo ? (
-            <>
-              <button
-                type="button"
-                className={`git-working-tree ${selectedSha === null ? 'selected' : ''}`}
-                onClick={() => setSelectedSha(null)}
-              >
-                {t('git.page.workingTree')}
-                <small>
-                  {dirtyCount > 0 ? t('git.page.changesCount', { count: dirtyCount }) : t('git.page.noLocalChanges')}
-                </small>
-              </button>
-              {loading && !history ? (
-                <p className="muted">{t('git.page.loadingHistory')}</p>
-              ) : (
-                <GitGraph
-                  commits={history?.commits ?? []}
-                  selectedSha={selectedSha}
-                  onSelect={sha => setSelectedSha(sha)}
-                />
-              )}
-              {history?.truncated && (
-                <p className="muted git-truncated">{t('git.page.recentCommits')}</p>
-              )}
-            </>
-          ) : (
+          {!isRootRepo && (
             <div className="git-nested-repo-card">
               <div className="git-nested-repo-card-header">
                 <FolderGit2 size={16} />
@@ -765,10 +772,32 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
               </div>
             </div>
           )}
+          <button
+            type="button"
+            className={`git-working-tree ${selectedSha === null ? 'selected' : ''}`}
+            onClick={() => setSelectedSha(null)}
+          >
+            {t('git.page.workingTree')}
+            <small>
+              {dirtyCount > 0 ? t('git.page.changesCount', { count: dirtyCount }) : t('git.page.noLocalChanges')}
+            </small>
+          </button>
+          {(loading || historyLoading) && !history ? (
+            <p className="muted">{t('git.page.loadingHistory')}</p>
+          ) : (
+            <GitGraph
+              commits={history?.commits ?? []}
+              selectedSha={selectedSha}
+              onSelect={sha => setSelectedSha(sha)}
+            />
+          )}
+          {history?.truncated && (
+            <p className="muted git-truncated">{t('git.page.recentCommits')}</p>
+          )}
         </div>
 
         <div className="git-detail-pane">
-          {selectedSha && show && isRootRepo ? (
+          {selectedSha && show ? (
             <div className="git-commit-view">
               <div className="git-commit-header">
                 <h3>{show.commit.subject}</h3>
@@ -790,85 +819,71 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
             <>
               <div className="git-changes-header">
                 <h3>{t('git.page.changes')}</h3>
-                {isRootRepo ? (
-                  <div className="git-changes-actions">
-                    <button type="button" className="secondary mini-btn" onClick={selectAll} disabled={files.length === 0}>
-                      {t('git.page.selectAll')}
-                    </button>
-                    <button type="button" className="secondary mini-btn" onClick={selectNone} disabled={selectedPaths.size === 0}>
-                      {t('git.page.clear')}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary mini-btn"
-                      onClick={stageSelected}
-                      disabled={mutating || targetPaths.length === 0}
-                    >
-                      <Plus size={13} />
-                      {t('git.page.stage')}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary mini-btn"
-                      onClick={unstageSelected}
-                      disabled={mutating || targetPaths.length === 0}
-                    >
-                      <Minus size={13} />
-                      {t('git.page.unstage')}
-                    </button>
-                    <button
-                      type="button"
-                      className="danger mini-btn"
-                      onClick={discardSelected}
-                      disabled={mutating || targetPaths.length === 0}
-                    >
-                      <RotateCcw size={13} />
-                      {t('git.page.discard')}
-                    </button>
-                  </div>
-                ) : (
-                  <div className="git-changes-actions">
-                    <button
-                      type="button"
-                      className="secondary mini-btn"
-                      data-repo-path={selectedRepoPath}
-                      data-action="pull"
-                      onClick={() => void handleRepoAction(selectedRepoPath, 'pull')}
-                      disabled={Boolean(pendingRepoAction) || mutating || loading}
-                    >
-                      <ArrowDown size={13} />
-                      {pendingRepoAction?.path === selectedRepoPath && pendingRepoAction?.action === 'pull'
-                        ? t('git.page.pulling')
-                        : t('git.page.pull')}
-                    </button>
-                    <button
-                      type="button"
-                      className="mini-btn"
-                      data-repo-path={selectedRepoPath}
-                      data-action="commit"
-                      onClick={() => openCommitModal(selectedRepoPath)}
-                      disabled={Boolean(pendingRepoAction) || mutating || loading || dirtyCount === 0}
-                    >
-                      <Check size={13} />
-                      {pendingRepoAction?.path === selectedRepoPath && pendingRepoAction?.action === 'commit'
-                        ? t('git.page.committing')
-                        : t('git.page.commit')}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary mini-btn"
-                      data-repo-path={selectedRepoPath}
-                      data-action="push"
-                      onClick={() => void handleRepoAction(selectedRepoPath, 'push')}
-                      disabled={Boolean(pendingRepoAction) || mutating || loading}
-                    >
-                      <ArrowUp size={13} />
-                      {pendingRepoAction?.path === selectedRepoPath && pendingRepoAction?.action === 'push'
-                        ? t('git.page.pushing')
-                        : t('git.page.push')}
-                    </button>
-                  </div>
-                )}
+                <div className="git-changes-actions">
+                  <button type="button" className="secondary mini-btn" onClick={selectAll} disabled={files.length === 0}>
+                    {t('git.page.selectAll')}
+                  </button>
+                  <button type="button" className="secondary mini-btn" onClick={selectNone} disabled={selectedPaths.size === 0}>
+                    {t('git.page.clear')}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary mini-btn"
+                    onClick={stageSelected}
+                    disabled={mutating || targetPaths.length === 0}
+                  >
+                    <Plus size={13} />
+                    {t('git.page.stage')}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary mini-btn"
+                    onClick={unstageSelected}
+                    disabled={mutating || targetPaths.length === 0}
+                  >
+                    <Minus size={13} />
+                    {t('git.page.unstage')}
+                  </button>
+                  <button
+                    type="button"
+                    className="danger mini-btn"
+                    onClick={discardSelected}
+                    disabled={mutating || targetPaths.length === 0}
+                  >
+                    <RotateCcw size={13} />
+                    {t('git.page.discard')}
+                  </button>
+                  {!isRootRepo && (
+                    <>
+                      <button
+                        type="button"
+                        className="secondary mini-btn"
+                        data-repo-path={selectedRepoPath}
+                        data-action="pull"
+                        onClick={() => void handleRepoAction(selectedRepoPath, 'pull')}
+                        disabled={Boolean(pendingRepoAction) || mutating || loading}
+                      >
+                        <ArrowDown size={13} />
+                        {pendingRepoAction?.path === selectedRepoPath && pendingRepoAction?.action === 'pull'
+                          ? t('git.page.pulling')
+                          : t('git.page.pull')}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary mini-btn"
+                        data-repo-path={selectedRepoPath}
+                        data-action="push"
+                        onClick={() => void handleRepoAction(selectedRepoPath, 'push')}
+                        disabled={Boolean(pendingRepoAction) || mutating || loading}
+                      >
+                        <ArrowUp size={13} />
+                        {pendingRepoAction?.path === selectedRepoPath && pendingRepoAction?.action === 'push'
+                          ? t('git.page.pushing')
+                          : t('git.page.push')}
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
 
               {files.length === 0 ? (
@@ -891,14 +906,12 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                           }
                         }}
                       >
-                        {isRootRepo && (
-                          <input
-                            type="checkbox"
-                            checked={selectedPaths.has(file.path)}
-                            onChange={() => togglePath(file.path)}
-                            onClick={event => event.stopPropagation()}
-                          />
-                        )}
+                        <input
+                          type="checkbox"
+                          checked={selectedPaths.has(file.path)}
+                          onChange={() => togglePath(file.path)}
+                          onClick={event => event.stopPropagation()}
+                        />
                         <span className={`git-file-badge ${statusClass(file)}`}>{statusBadge(file)}</span>
                         <span className="git-file-path">
                           {file.path}
@@ -912,18 +925,16 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                 </ul>
               )}
 
-              {isRootRepo && (
-                <GitDiffView
-                  diff={activePath ? diff : ''}
-                  truncated={diffTruncated}
-                  showFileList={false}
-                  empty={
-                    activePath
-                      ? t('git.page.noFileDiff')
-                      : t('git.page.selectFile')
-                  }
-                />
-              )}
+              <GitDiffView
+                diff={activePath ? diff : ''}
+                truncated={diffTruncated}
+                showFileList={false}
+                empty={
+                  activePath
+                    ? t('git.page.noFileDiff')
+                    : t('git.page.selectFile')
+                }
+              />
 
               <div className="git-commit-composer">
                 <div className="git-commit-composer-header">
@@ -932,17 +943,15 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                       ? t('git.page.commit')
                       : t('git.page.commitRepo', { path: selectedRepoPath })}
                   </h3>
-                  {isRootRepo && (
-                    <button
-                      type="button"
-                      className="secondary mini-btn"
-                      onClick={() => void generateMessage()}
-                      disabled={generating || files.length === 0}
-                    >
-                      <Sparkles size={13} />
-                      {generating ? t('git.page.generating') : t('git.page.generateMessage')}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="secondary mini-btn"
+                    onClick={() => void generateMessage()}
+                    disabled={generating || files.length === 0}
+                  >
+                    <Sparkles size={13} />
+                    {generating ? t('git.page.generating') : t('git.page.generateMessage')}
+                  </button>
                 </div>
                 <textarea
                   className="git-commit-input"
@@ -972,11 +981,13 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                   <Check size={13} />
                   {mutating || pendingRepoAction?.action === 'commit'
                     ? t('git.page.committing')
-                    : isRootRepo
-                      ? targetPaths.length > 0
-                        ? t(targetPaths.length === 1 ? 'git.page.commitFiles_one' : 'git.page.commitFiles_other', { count: targetPaths.length })
-                        : t('git.page.commitStaged')
-                      : t('git.page.commitRepo', { path: selectedRepoPath })}
+                    : targetPaths.length > 0
+                      ? t(targetPaths.length === 1 ? 'git.page.commitFiles_one' : 'git.page.commitFiles_other', { count: targetPaths.length })
+                      : hasStaged
+                        ? t('git.page.commitStaged')
+                        : isRootRepo
+                          ? t('git.page.commit')
+                          : t('git.page.commitRepo', { path: selectedRepoPath })}
                 </button>
               </div>
             </>

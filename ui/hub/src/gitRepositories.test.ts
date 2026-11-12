@@ -432,3 +432,184 @@ test('renderGitNotice renders feedback notice directly without Committed prefix'
   )
   assert.equal(rootCommitRendered, 'Committed a1b2c3d — refactor: cleanup')
 })
+
+test('git log and show requests include repository path for sub directory repositories', () => {
+  const selectedRepo = 'packages/sub-app'
+  const mockApi = {
+    calls: [] as { method: string; args: unknown[] }[],
+    getGitLog(slug: string, limit?: number, path?: string) {
+      this.calls.push({ method: 'getGitLog', args: [slug, limit, path] })
+      return Promise.resolve({
+        isRepo: true,
+        head: 'sub1234',
+        branch: 'feature-nested',
+        detached: false,
+        commits: [
+          {
+            sha: 'sub1234567890',
+            shortSha: 'sub1234',
+            parents: [],
+            authorName: 'Nested Author',
+            authorEmail: 'author@nested.org',
+            date: '2026-11-12T00:00:00Z',
+            decorations: [],
+            subject: 'feat: sub directory commit',
+          },
+        ],
+        truncated: false,
+      })
+    },
+    getGitShow(slug: string, sha: string, path?: string) {
+      this.calls.push({ method: 'getGitShow', args: [slug, sha, path] })
+      return Promise.resolve({
+        commit: {
+          sha,
+          shortSha: sha.slice(0, 7),
+          parents: [],
+          authorName: 'Nested Author',
+          authorEmail: 'author@nested.org',
+          date: '2026-11-12T00:00:00Z',
+          decorations: [],
+          subject: 'feat: sub directory commit',
+        },
+        body: 'Details of nested commit',
+        diff: 'diff --git a/file.ts b/file.ts',
+        truncated: false,
+      })
+    },
+  }
+
+  // Calling getGitLog for nested repo supplies nested path
+  void mockApi.getGitLog('test-project', 150, selectedRepo)
+  assert.equal(mockApi.calls.length, 1)
+  assert.deepEqual(mockApi.calls[0], {
+    method: 'getGitLog',
+    args: ['test-project', 150, 'packages/sub-app'],
+  })
+
+  // Calling getGitShow for nested repo commit supplies nested path
+  void mockApi.getGitShow('test-project', 'sub1234567890', selectedRepo)
+  assert.equal(mockApi.calls.length, 2)
+  assert.deepEqual(mockApi.calls[1], {
+    method: 'getGitShow',
+    args: ['test-project', 'sub1234567890', 'packages/sub-app'],
+  })
+})
+
+test('nested repository stage, unstage, commit, and message requests include repository path', () => {
+  const selectedRepo = 'packages/nested-service'
+  const targetPaths = ['src/index.ts', 'src/types.ts']
+  const calls: Array<{ method: string; args: unknown[] }> = []
+
+  const mockApi = {
+    getGitStatus: (slug: string, repo?: string) => {
+      calls.push({ method: 'getGitStatus', args: [slug, repo] })
+      return Promise.resolve({
+        isRepo: true,
+        detached: false,
+        ahead: 0,
+        behind: 0,
+        files: [],
+      })
+    },
+    stageGitFiles: (slug: string, paths: string[], repo?: string) => {
+      calls.push({ method: 'stageGitFiles', args: [slug, paths, repo] })
+      return Promise.resolve({
+        isRepo: true,
+        detached: false,
+        ahead: 0,
+        behind: 0,
+        files: [],
+      })
+    },
+    unstageGitFiles: (slug: string, paths: string[], repo?: string) => {
+      calls.push({ method: 'unstageGitFiles', args: [slug, paths, repo] })
+      return Promise.resolve({
+        isRepo: true,
+        detached: false,
+        ahead: 0,
+        behind: 0,
+        files: [],
+      })
+    },
+    discardGitFiles: (slug: string, paths: string[], repo?: string) => {
+      calls.push({ method: 'discardGitFiles', args: [slug, paths, repo] })
+      return Promise.resolve({
+        isRepo: true,
+        detached: false,
+        ahead: 0,
+        behind: 0,
+        files: [],
+      })
+    },
+    commitGitChanges: (
+      slug: string,
+      message: string,
+      paths: string[] = [],
+      repo?: string,
+    ) => {
+      calls.push({ method: 'commitGitChanges', args: [slug, message, paths, repo] })
+      return Promise.resolve({
+        sha: 'abc1234567',
+        subject: message,
+      })
+    },
+    generateGitCommitMessage: (slug: string, paths: string[] = [], repo?: string) => {
+      calls.push({ method: 'generateGitCommitMessage', args: [slug, paths, repo] })
+      return Promise.resolve({
+        message: 'feat: update nested service',
+        source: 'heuristic',
+      })
+    },
+  }
+
+  void mockApi.getGitStatus('test-slug', selectedRepo)
+  void mockApi.stageGitFiles('test-slug', targetPaths, selectedRepo)
+  void mockApi.unstageGitFiles('test-slug', targetPaths, selectedRepo)
+  void mockApi.discardGitFiles('test-slug', targetPaths, selectedRepo)
+  void mockApi.commitGitChanges('test-slug', 'chore: update files', targetPaths, selectedRepo)
+  void mockApi.generateGitCommitMessage('test-slug', targetPaths, selectedRepo)
+
+  assert.equal(calls.length, 6)
+  assert.deepEqual(calls[0], {
+    method: 'getGitStatus',
+    args: ['test-slug', 'packages/nested-service'],
+  })
+  assert.deepEqual(calls[1], {
+    method: 'stageGitFiles',
+    args: ['test-slug', targetPaths, 'packages/nested-service'],
+  })
+  assert.deepEqual(calls[2], {
+    method: 'unstageGitFiles',
+    args: ['test-slug', targetPaths, 'packages/nested-service'],
+  })
+  assert.deepEqual(calls[3], {
+    method: 'discardGitFiles',
+    args: ['test-slug', targetPaths, 'packages/nested-service'],
+  })
+  assert.deepEqual(calls[4], {
+    method: 'commitGitChanges',
+    args: ['test-slug', 'chore: update files', targetPaths, 'packages/nested-service'],
+  })
+  assert.deepEqual(calls[5], {
+    method: 'generateGitCommitMessage',
+    args: ['test-slug', targetPaths, 'packages/nested-service'],
+  })
+})
+
+test('executeRowAction and executeComposerCommit support explicit paths', () => {
+  const rowReq = executeRowAction('packages/core', 'commit', {
+    message: 'fix: edge case',
+    paths: ['index.ts'],
+  })
+  assert.equal(rowReq.path, 'packages/core')
+  assert.equal(rowReq.action, 'commit')
+  assert.equal(rowReq.message, 'fix: edge case')
+  assert.deepEqual(rowReq.paths, ['index.ts'])
+
+  const composerReq = executeComposerCommit('packages/core', 'feat: add feature', ['lib.ts'])
+  assert.equal(composerReq.path, 'packages/core')
+  assert.equal(composerReq.action, 'commit')
+  assert.equal(composerReq.message, 'feat: add feature')
+  assert.deepEqual(composerReq.paths, ['lib.ts'])
+})

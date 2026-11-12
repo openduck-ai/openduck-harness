@@ -13,13 +13,18 @@ export function buildRepositoryActionRequest(
   path: string,
   action: GitRepositoryActionType,
   message?: string,
+  paths?: string[],
 ): GitRepositoryActionRequest {
   if (action === 'commit') {
     const trimmed = message?.trim()
     if (!trimmed) {
       throw new Error('Commit message is required')
     }
-    return { path, action, message: trimmed }
+    const req: GitRepositoryActionRequest = { path, action, message: trimmed }
+    if (paths && paths.length > 0) {
+      req.paths = paths
+    }
+    return req
   }
   return { path, action }
 }
@@ -51,16 +56,17 @@ export function countRepositoryDirtyFiles(status: GitStatusResponse): number {
 export function executeRowAction(
   rowPath: string,
   action: GitRepositoryActionType,
-  options?: { message?: string },
+  options?: { message?: string; paths?: string[] },
 ): GitRepositoryActionRequest {
-  return buildRepositoryActionRequest(rowPath, action, options?.message)
+  return buildRepositoryActionRequest(rowPath, action, options?.message, options?.paths)
 }
 
 export function executeComposerCommit(
   selectedRepoPath: string,
   message: string,
+  paths?: string[],
 ): GitRepositoryActionRequest {
-  return buildRepositoryActionRequest(selectedRepoPath, 'commit', message)
+  return buildRepositoryActionRequest(selectedRepoPath, 'commit', message, paths)
 }
 
 export function resolveActionTargetRepo(

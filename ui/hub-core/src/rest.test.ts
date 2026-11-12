@@ -998,3 +998,33 @@ test('REST client calls git repository action endpoint with correct payload and 
     globalThis.fetch = originalFetch
   }
 })
+
+test('REST client calls git log, diff, and show with subdirectory repo path', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: { url: string; method: string }[] = []
+
+  globalThis.fetch = async (input, init) => {
+    calls.push({
+      url: String(input),
+      method: init?.method ?? 'GET',
+    })
+    return new Response(JSON.stringify({ isRepo: true, commits: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  try {
+    const api = createApi('http://host', 'secret')
+    await api.getGitLog('my-proj', 100, 'packages/nested')
+    await api.getGitShow('my-proj', 'c0ffee', 'packages/nested')
+    await api.getGitDiff('my-proj', 'src/index.ts', false, 'packages/nested')
+
+    assert.equal(calls.length, 3)
+    assert.equal(calls[0].url, 'http://host/api/v1/projects/my-proj/git/log?limit=100&path=packages%2Fnested')
+    assert.equal(calls[1].url, 'http://host/api/v1/projects/my-proj/git/show?sha=c0ffee&path=packages%2Fnested')
+    assert.equal(calls[2].url, 'http://host/api/v1/projects/my-proj/git/diff?path=src%2Findex.ts&repo=packages%2Fnested')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
