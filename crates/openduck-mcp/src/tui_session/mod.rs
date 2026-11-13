@@ -115,7 +115,7 @@ pub struct TuiAgentPromptParams {
     /// Wait for turn completion before returning (default true)
     #[serde(default = "default_true")]
     pub wait: bool,
-    /// Timeout in seconds if wait is true (default 600)
+    /// Execution wait budget in seconds after submission if wait is true (default 600); expiry does not stop the turn
     #[serde(default)]
     pub timeout_secs: Option<u64>,
 }
@@ -311,7 +311,7 @@ impl TuiAgentServer {
     /// Submit a prompt to an active agent CLI TUI session via bracketed paste.
     #[tool(
         name = "tui_agent_prompt",
-        description = "Injects a prompt or command into the agent's TUI composer, presses Enter, and reads the response."
+        description = "Sends a prompt to an idle agent session. Busy sessions reject new prompts. Submission has a separate 10s budget. With wait=false, or if wait=true returns working, poll tui_agent_read until the previous turn completes and state is idle_prompt before sending another prompt. Handle approval, quota and exit states separately. Never blindly resend after uncertain submission."
     )]
     pub async fn tui_agent_prompt(
         &self,

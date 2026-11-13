@@ -510,7 +510,7 @@ impl HarnessToolExtension for TuiAgentHarnessExtension {
             },
             ToolDefinition {
                 name: "tui_agent_prompt".into(),
-                description: "Sends a prompt to an existing interactive agent CLI session (codex, grok, agy, claude), waits for it to complete its turn, and returns the response.".into(),
+                description: "Sends a prompt to an idle interactive agent CLI session (codex, grok, agy, claude). Busy sessions reject new prompts. Submission has a separate 10s budget. With wait=false, or if wait=true returns working, poll tui_agent_read until the previous turn completes and state is idle_prompt before sending another prompt. Handle approval, quota and exit states separately. Never blindly resend after uncertain submission.".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -528,7 +528,7 @@ impl HarnessToolExtension for TuiAgentHarnessExtension {
                         },
                         "timeout_secs": {
                             "type": "integer",
-                            "description": "Timeout in seconds to wait for turn completion (defaults to 600s)."
+                            "description": "Execution wait budget in seconds after submission (defaults to 600s); expiry does not stop the turn."
                         }
                     },
                     "required": ["session_id", "prompt"]
@@ -621,7 +621,7 @@ impl HarnessToolExtension for TuiAgentHarnessExtension {
                         },
                         "timeout_secs": {
                             "type": "integer",
-                            "description": "Timeout in seconds to wait for turn completion (defaults to 600s)."
+                            "description": "Execution wait budget in seconds after submission (defaults to 600s); expiry does not stop the turn."
                         }
                     },
                     "required": ["agent", "prompt"]

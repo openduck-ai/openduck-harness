@@ -14,6 +14,8 @@ use super::profiles::{
 };
 use super::screen::{strip_ansi_codes, QuiescenceDetector};
 
+const MAX_SUBMISSION_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct TuiSessionHandle {
     pub config: TuiSessionConfig,
     pub backend: Arc<dyn MultiplexerBackend>,
@@ -27,11 +29,17 @@ pub struct TuiSessionHandle {
     pub last_state: Mutex<TuiPaneState>,
     pub active_model: Mutex<Option<String>>,
     pub interaction: Mutex<()>,
+    pub prompt_operation: Mutex<()>,
+    pub last_submission: Mutex<Option<Instant>>,
 }
 
 impl TuiSessionHandle {
     pub async fn switch_model(&self, new_model: &str) -> Result<String> {
-        let _interaction = self.interaction.lock().await;
+        let _prompt_operation = self
+            .prompt_operation
+            .try_lock()
+            .map_err(|_| self.busy_error())?;
+        let _interaction = self.interaction.try_lock().map_err(|_| self.busy_error())?;
         if !self.backend.is_alive(&self.config.session_id).await? {
             let mut exited = self.exited_at_unix_secs.lock().await;
             if exited.is_none() {
@@ -191,70 +199,72 @@ impl TuiSessionHandle {
         wait: bool,
         timeout: Duration,
     ) -> Result<TuiTurnResult> {
-        let _interaction = self.interaction.lock().await;
-        if !self.backend.is_alive(&self.config.session_id).await? {
-            let mut exited = self.exited_at_unix_secs.lock().await;
-            if exited.is_none() {
-                *exited = Some(chrono::Utc::now().timestamp() as u64);
-            }
-            return Err(anyhow!(
-                "Session '{}' is not running",
-                self.config.session_id
-            ));
-        }
-
-        self.last_activity_unix_secs
-            .store(chrono::Utc::now().timestamp() as u64, Ordering::Relaxed);
         let start_time = Instant::now();
-
-        let state = self.settle_startup(timeout).await?;
-        match state {
-            TuiPaneState::IdlePrompt => {}
-            TuiPaneState::WaitingApproval { prompt_snippet } => {
+        let _prompt_operation = self
+            .prompt_operation
+            .try_lock()
+            .map_err(|_| self.busy_error())?;
+        let interaction = self.interaction.try_lock().map_err(|_| self.busy_error())?;
+        if self.config.kind == AgentCliKind::Agy && prompt.trim().is_empty() {
+            return Err(anyhow!("agy prompt must not be empty"));
+        }
+        let mut submission_attempted = false;
+        let submission = tokio::time::timeout(MAX_SUBMISSION_TIMEOUT, async {
+            if !self.backend.is_alive(&self.config.session_id).await? {
+                *self.exited_at_unix_secs.lock().await =
+                    Some(chrono::Utc::now().timestamp() as u64);
                 return Err(anyhow!(
-                    "Session '{}' is waiting for approval: {}. Inspect with tui_agent_read or confirm with tui_agent_keys before sending a prompt.",
-                    self.config.session_id,
-                    prompt_snippet
-                ));
-            }
-            TuiPaneState::QuotaExceeded { message } => {
-                return Err(anyhow!(
-                    "Session '{}' hit quota limit: {message}. Agent is suspended until quota resets.",
+                    "Session '{}' is not running",
                     self.config.session_id
                 ));
             }
-            _ => {
-                return Err(anyhow!(
-                    "Session '{}': input composer did not become ready ({state:?}); prompt was not submitted",
-                    self.config.session_id
-                ));
+            self.last_activity_unix_secs
+                .store(chrono::Utc::now().timestamp() as u64, Ordering::Relaxed);
+            self.wait_for_prompt_ready().await?;
+            if self.config.kind == AgentCliKind::Agy {
+                self.wait_for_agy_composer(true, MAX_SUBMISSION_TIMEOUT)
+                    .await?;
             }
-        }
-
-        if self.config.kind == AgentCliKind::Agy {
-            if prompt.trim().is_empty() {
-                return Err(anyhow!("agy prompt must not be empty"));
-            }
-            self.wait_for_agy_composer(true, timeout.saturating_sub(start_time.elapsed()))
-                .await?;
-        }
-
-        // Inject prompt using bracketed paste mode to prevent early submission on newlines
-        self.backend
-            .paste_text(&self.config.session_id, prompt, true)
-            .await
-            .context("Failed to paste prompt into TUI session")?;
-
-        if self.config.kind == AgentCliKind::Agy {
-            self.submit_agy_prompt(timeout.saturating_sub(start_time.elapsed()))
-                .await?;
-        } else {
-            tokio::time::sleep(Duration::from_millis(80)).await;
+            // Backend cancellation cannot establish whether a paste or Enter reached the pane.
+            submission_attempted = true;
+            *self.last_submission.lock().await = Some(Instant::now());
             self.backend
-                .send_keys(&self.config.session_id, &["Enter".to_string()])
-                .await
-                .context("Failed to send Enter key to TUI session")?;
+                .paste_text(&self.config.session_id, prompt, true)
+                .await?;
+            if self.config.kind == AgentCliKind::Agy {
+                self.submit_agy_prompt(MAX_SUBMISSION_TIMEOUT).await?;
+            } else {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                self.backend
+                    .send_keys(&self.config.session_id, &["Enter".to_string()])
+                    .await?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+        match submission {
+            Ok(Ok(())) => {}
+            result => {
+                let detail = match result {
+                    Ok(Err(error)) => error.to_string(),
+                    Err(_) => {
+                        "input composer did not become ready or submission exceeded 10s".to_string()
+                    }
+                    Ok(Ok(())) => unreachable!(),
+                };
+                let outcome = if submission_attempted {
+                    "prompt may be pasted or submitted; inspect with tui_agent_read before resending"
+                } else {
+                    "prompt was not submitted"
+                };
+                return Err(anyhow!(
+                    "Session '{}': {detail}; {outcome}",
+                    self.config.session_id
+                ));
+            }
         }
+        drop(interaction);
+        let execution_start = Instant::now();
 
         if !wait {
             let screen = self
@@ -287,7 +297,7 @@ impl TuiSessionHandle {
         // Brief settling delay before first check
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        while start_time.elapsed() < timeout {
+        while execution_start.elapsed() < timeout {
             if !self.backend.is_alive(&self.config.session_id).await? {
                 final_state = TuiPaneState::Exited { exit_code: None };
                 let mut exited = self.exited_at_unix_secs.lock().await;
@@ -374,6 +384,69 @@ impl TuiSessionHandle {
         })
     }
 
+    fn busy_error(&self) -> anyhow::Error {
+        anyhow!(
+            "Session '{}' is busy; prompt was not submitted. Poll with tui_agent_read until the previous turn has completed and state is idle_prompt",
+            self.config.session_id
+        )
+    }
+
+    async fn wait_for_prompt_ready(&self) -> Result<()> {
+        let mut detector = QuiescenceDetector::new(Duration::from_millis(800));
+        let mut approved_screen = None;
+        loop {
+            let screen = self
+                .backend
+                .capture_screen(&self.config.session_id, false, Some(100))
+                .await?;
+            let state = self.profile.classify_screen(&screen);
+            *self.last_screen.lock().await = screen.clone();
+            *self.last_state.lock().await = state.clone();
+            match state {
+                TuiPaneState::IdlePrompt => {
+                    let last_submission = *self.last_submission.lock().await;
+                    if last_submission.is_none()
+                        || (last_submission
+                            .is_some_and(|at| at.elapsed() >= Duration::from_secs(1))
+                            && detector.observe(&screen, true, false))
+                    {
+                        return Ok(());
+                    }
+                }
+                TuiPaneState::Working { .. } => return Err(self.busy_error()),
+                TuiPaneState::WaitingApproval { prompt_snippet } => {
+                    detector.mark_activity();
+                    if !self.config.auto_approve {
+                        return Err(anyhow!("Session '{}' is waiting for approval: {prompt_snippet}. Inspect with tui_agent_read or confirm with tui_agent_keys before sending a prompt", self.config.session_id));
+                    }
+                    let clean = strip_ansi_codes(&screen);
+                    if approved_screen.as_ref() != Some(&clean) {
+                        self.backend
+                            .send_keys(&self.config.session_id, &suggested_approval_keys(&screen))
+                            .await?;
+                        approved_screen = Some(clean);
+                    }
+                }
+                TuiPaneState::QuotaExceeded { message } => {
+                    return Err(anyhow!(
+                        "Session '{}' hit quota limit: {message}",
+                        self.config.session_id
+                    ))
+                }
+                TuiPaneState::Exited { .. } => {
+                    return Err(anyhow!(
+                        "Session '{}' is not running",
+                        self.config.session_id
+                    ))
+                }
+                TuiPaneState::Initializing => {
+                    detector.mark_activity();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn wait_for_agy_composer(&self, expect_empty: bool, timeout: Duration) -> Result<String> {
         let deadline = Instant::now() + timeout;
         let mut previous = None;
@@ -455,7 +528,9 @@ impl TuiSessionHandle {
     }
 
     pub async fn send_keys(&self, keys: &[String]) -> Result<()> {
-        let _interaction = self.interaction.lock().await;
+        let _interaction = tokio::time::timeout(MAX_SUBMISSION_TIMEOUT, self.interaction.lock())
+            .await
+            .map_err(|_| anyhow!("Session interaction is busy; keys were not sent"))?;
         self.last_activity_unix_secs
             .store(chrono::Utc::now().timestamp() as u64, Ordering::Relaxed);
         self.backend.send_keys(&self.config.session_id, keys).await
@@ -707,6 +782,8 @@ impl TuiSessionManager {
             last_state: Mutex::new(TuiPaneState::Initializing),
             active_model: Mutex::new(config.model.clone()),
             interaction: Mutex::new(()),
+            prompt_operation: Mutex::new(()),
+            last_submission: Mutex::new(None),
         });
 
         self.sessions

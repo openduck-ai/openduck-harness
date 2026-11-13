@@ -47,6 +47,8 @@ async fn mock_session(
         last_state: Mutex::new(TuiPaneState::Initializing),
         active_model: Mutex::new(None),
         interaction: Mutex::new(()),
+        prompt_operation: Mutex::new(()),
+        last_submission: Mutex::new(None),
     }
 }
 
@@ -122,10 +124,15 @@ async fn test_agy_waits_for_ready_composer_before_pasting() {
     let handle = mock_agy_session(backend.clone(), dir.path()).await;
     backend.set_screen("agy_submit", "Starting agy...");
 
-    let error = handle
-        .send_prompt("review the project", false, Duration::from_millis(200))
-        .await
-        .unwrap_err();
+    let started = std::time::Instant::now();
+    let error = tokio::time::timeout(
+        Duration::from_secs(12),
+        handle.send_prompt("review the project", false, Duration::from_secs(1200)),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(started.elapsed() >= Duration::from_secs(10));
     assert!(error.to_string().contains("did not become ready"));
     let pane = backend.get_pane("agy_submit").unwrap();
     assert!(pane.pasted.is_empty());
@@ -133,25 +140,22 @@ async fn test_agy_waits_for_ready_composer_before_pasting() {
 }
 
 #[tokio::test]
-async fn test_send_prompt_waits_for_working_session_to_become_idle() {
+async fn test_send_prompt_rejects_working_session_without_pasting() {
     let dir = tempdir().unwrap();
     let backend = Arc::new(MockMultiplexerBackend::new());
     let handle = mock_session(backend.clone(), dir.path(), AgentCliKind::Grok, "grok_wait").await;
     backend.set_screen("grok_wait", "Thinking...\nRunning tool");
-
-    let backend_for_idle = backend.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        backend_for_idle.set_screen("grok_wait", ">\nAsk Grok");
-    });
-
-    handle
-        .send_prompt("continue", false, Duration::from_secs(3))
-        .await
-        .unwrap();
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        handle.send_prompt("continue", false, Duration::from_secs(1200)),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(error.to_string().contains("tui_agent_read"));
     let pane = backend.get_pane("grok_wait").unwrap();
-    assert_eq!(pane.pasted.len(), 1);
-    assert_eq!(pane.pasted[0].0, "continue");
+    assert!(pane.pasted.is_empty());
+    assert!(pane.keys_sent.is_empty());
 }
 
 #[tokio::test]
@@ -1182,4 +1186,111 @@ fn test_runtime_model_switch_capability_by_profile() {
     assert!(profile_for_kind(AgentCliKind::Claude).supports_runtime_model_switch());
     assert!(!profile_for_kind(AgentCliKind::Codex).supports_runtime_model_switch());
     assert!(!profile_for_kind(AgentCliKind::Custom).supports_runtime_model_switch());
+}
+
+#[tokio::test]
+async fn test_waiting_turn_rejects_prompts_but_allows_escape() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = Arc::new(
+        mock_session(
+            backend.clone(),
+            dir.path(),
+            AgentCliKind::Grok,
+            "interruptible",
+        )
+        .await,
+    );
+    backend.preconfigure_pane(
+        "interruptible",
+        ">\nAsk Grok",
+        vec!["Thinking...\nRunning tool".to_string()],
+    );
+    let running_handle = handle.clone();
+    let running = tokio::spawn(async move {
+        running_handle
+            .send_prompt("first", true, Duration::from_secs(1200))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if backend
+                .get_pane("interruptible")
+                .unwrap()
+                .keys_sent
+                .contains(&"Enter".to_string())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        handle.send_prompt("second", false, Duration::from_secs(1200)),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(error.to_string().contains("busy"));
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        handle.send_keys(&["Escape".to_string()]),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let pane = backend.get_pane("interruptible").unwrap();
+    assert_eq!(pane.pasted, vec![("first".to_string(), true)]);
+    assert_eq!(pane.keys_sent, vec!["Enter", "Escape"]);
+    backend.set_screen("interruptible", ">\nAsk Grok");
+    let turn = tokio::time::timeout(Duration::from_secs(3), running)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.state, TuiPaneState::IdlePrompt);
+}
+
+#[tokio::test]
+async fn test_interaction_contention_does_not_queue_prompt() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_agy_session(backend.clone(), dir.path()).await;
+    let _interaction = handle.interaction.lock().await;
+    let error = tokio::time::timeout(
+        Duration::from_millis(100),
+        handle.send_prompt("continue", false, Duration::from_secs(1200)),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(error.to_string().contains("prompt was not submitted"));
+    assert!(backend.get_pane("agy_submit").unwrap().pasted.is_empty());
+}
+
+#[tokio::test]
+async fn test_execution_timeout_does_not_stop_async_work() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_session(backend.clone(), dir.path(), AgentCliKind::Grok, "budget").await;
+    backend.preconfigure_pane(
+        "budget",
+        ">\nAsk Grok",
+        vec!["Thinking...\nRunning tool".to_string()],
+    );
+    let turn = handle
+        .send_prompt("first", true, Duration::from_millis(400))
+        .await
+        .unwrap();
+    assert!(matches!(turn.state, TuiPaneState::Working { .. }));
+    let error = handle
+        .send_prompt("second", false, Duration::from_secs(1200))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("busy"));
+    assert_eq!(backend.get_pane("budget").unwrap().keys_sent, vec!["Enter"]);
 }
