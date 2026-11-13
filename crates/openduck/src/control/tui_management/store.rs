@@ -770,28 +770,7 @@ impl SqliteTuiStore {
         builder.push(" ORDER BY observed_at DESC");
 
         let rows = builder.build().fetch_all(&self.pool).await?;
-        let quotas = rows
-            .into_iter()
-            .map(|r| QuotaSnapshotRecord {
-                id: r.get("id"),
-                pool_id: r.get("pool_id"),
-                account_id: r.get("account_id"),
-                agent_kind: r.get("agent_kind"),
-                model_pattern: r.get("model_pattern"),
-                quota_type: r.get("quota_type"),
-                unit: r.get("unit"),
-                used_amount: r.get("used_amount"),
-                limit_amount: r.get("limit_amount"),
-                remaining_percent: r.get("remaining_percent"),
-                window_start: r.get("window_start"),
-                window_end: r.get("window_end"),
-                reset_at: r.get("reset_at"),
-                source: r.get("source"),
-                status: r.get("status"),
-                observed_at: r.get("observed_at"),
-            })
-            .collect();
-        Ok(quotas)
+        Ok(rows.into_iter().map(quota_from_row).collect())
     }
 
     pub async fn upsert_quota(&self, q: &QuotaSnapshotRecord) -> Result<()> {
@@ -834,24 +813,45 @@ impl SqliteTuiStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| QuotaSnapshotRecord {
-            id: r.get("id"),
-            pool_id: r.get("pool_id"),
-            account_id: r.get("account_id"),
-            agent_kind: r.get("agent_kind"),
-            model_pattern: r.get("model_pattern"),
-            quota_type: r.get("quota_type"),
-            unit: r.get("unit"),
-            used_amount: r.get("used_amount"),
-            limit_amount: r.get("limit_amount"),
-            remaining_percent: r.get("remaining_percent"),
-            window_start: r.get("window_start"),
-            window_end: r.get("window_end"),
-            reset_at: r.get("reset_at"),
-            source: r.get("source"),
-            status: r.get("status"),
-            observed_at: r.get("observed_at"),
-        }))
+        Ok(row.map(quota_from_row))
+    }
+
+    /// Exact `(agent, model, account)` snapshot. `account_id` `None` matches only
+    /// rows whose account is NULL, so one model's record cannot hide another.
+    pub async fn find_quota_by_agent_model(
+        &self,
+        agent_kind: &str,
+        model_pattern: &str,
+        account_id: Option<&str>,
+    ) -> Result<Option<QuotaSnapshotRecord>> {
+        let row = match account_id {
+            Some(account_id) => {
+                sqlx::query(
+                    "SELECT * FROM tui_quotas
+                     WHERE agent_kind = ? AND model_pattern = ? AND account_id = ?
+                     ORDER BY observed_at DESC
+                     LIMIT 1",
+                )
+                .bind(agent_kind)
+                .bind(model_pattern)
+                .bind(account_id)
+                .fetch_optional(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT * FROM tui_quotas
+                     WHERE agent_kind = ? AND model_pattern = ? AND account_id IS NULL
+                     ORDER BY observed_at DESC
+                     LIMIT 1",
+                )
+                .bind(agent_kind)
+                .bind(model_pattern)
+                .fetch_optional(&self.pool)
+                .await?
+            }
+        };
+        Ok(row.map(quota_from_row))
     }
 
     pub async fn delete_quota(&self, id: &str) -> Result<()> {
@@ -898,5 +898,183 @@ impl SqliteTuiStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+}
+
+fn quota_from_row(r: SqliteRow) -> QuotaSnapshotRecord {
+    QuotaSnapshotRecord {
+        id: r.get("id"),
+        pool_id: r.get("pool_id"),
+        account_id: r.get("account_id"),
+        agent_kind: r.get("agent_kind"),
+        model_pattern: r.get("model_pattern"),
+        quota_type: r.get("quota_type"),
+        unit: r.get("unit"),
+        used_amount: r.get("used_amount"),
+        limit_amount: r.get("limit_amount"),
+        remaining_percent: r.get("remaining_percent"),
+        window_start: r.get("window_start"),
+        window_end: r.get("window_end"),
+        reset_at: r.get("reset_at"),
+        source: r.get("source"),
+        status: r.get("status"),
+        observed_at: r.get("observed_at"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QuotaSnapshotRecord, SqliteTuiStore};
+
+    fn quota(
+        id: &str,
+        agent: &str,
+        model: Option<&str>,
+        account: Option<&str>,
+        status: &str,
+        observed_at: &str,
+    ) -> QuotaSnapshotRecord {
+        QuotaSnapshotRecord {
+            id: id.to_string(),
+            pool_id: format!("pool_{agent}"),
+            account_id: account.map(str::to_string),
+            agent_kind: Some(agent.to_string()),
+            model_pattern: model.map(str::to_string),
+            quota_type: "weekly".to_string(),
+            unit: "percent".to_string(),
+            used_amount: if status == "exhausted" { 100.0 } else { 10.0 },
+            limit_amount: Some(100.0),
+            remaining_percent: if status == "exhausted" {
+                Some(0.0)
+            } else {
+                Some(90.0)
+            },
+            window_start: None,
+            window_end: None,
+            reset_at: Some("2026-12-01T00:00:00Z".to_string()),
+            source: "test".to_string(),
+            status: status.to_string(),
+            observed_at: observed_at.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn model_scoped_quotas_persist_and_query_independently() {
+        let store = SqliteTuiStore::open(":memory:")
+            .await
+            .expect("memory store");
+        store
+            .upsert_quota(&quota(
+                "q-a",
+                "agy",
+                Some("zeta-model"),
+                None,
+                "exhausted",
+                "2026-11-13T00:00:00Z",
+            ))
+            .await
+            .expect("insert zeta");
+        store
+            .upsert_quota(&quota(
+                "q-b",
+                "agy",
+                Some("mid-model"),
+                None,
+                "valid",
+                "2026-11-13T00:01:00Z",
+            ))
+            .await
+            .expect("insert mid");
+        store
+            .upsert_quota(&quota(
+                "q-account",
+                "agy",
+                Some("zeta-model"),
+                Some("acct-1"),
+                "valid",
+                "2026-11-13T00:02:00Z",
+            ))
+            .await
+            .expect("insert account scope");
+        store
+            .upsert_quota(&quota(
+                "q-grok",
+                "grok",
+                Some("*"),
+                None,
+                "exhausted",
+                "2026-11-13T00:03:00Z",
+            ))
+            .await
+            .expect("insert grok");
+
+        let zeta = store
+            .find_quota_by_agent_model("agy", "zeta-model", None)
+            .await
+            .expect("query zeta")
+            .expect("zeta row");
+        assert_eq!(zeta.id, "q-a");
+        assert_eq!(zeta.status, "exhausted");
+
+        let mid = store
+            .find_quota_by_agent_model("agy", "mid-model", None)
+            .await
+            .expect("query mid")
+            .expect("mid row");
+        assert_eq!(mid.id, "q-b");
+        assert_eq!(mid.status, "valid");
+
+        let account_zeta = store
+            .find_quota_by_agent_model("agy", "zeta-model", Some("acct-1"))
+            .await
+            .expect("query account")
+            .expect("account row");
+        assert_eq!(account_zeta.id, "q-account");
+        assert_eq!(account_zeta.status, "valid");
+
+        assert!(store
+            .find_quota_by_agent_model("agy", "zeta-model", Some("acct-2"))
+            .await
+            .expect("other account")
+            .is_none());
+        assert!(store
+            .find_quota_by_agent_model("agy", "missing-model", None)
+            .await
+            .expect("missing model")
+            .is_none());
+
+        let latest_agy = store
+            .find_quota_by_agent("agy")
+            .await
+            .expect("agent lookup")
+            .expect("latest agy");
+        assert_eq!(latest_agy.id, "q-account");
+
+        store
+            .upsert_quota(&quota(
+                "q-a",
+                "agy",
+                Some("zeta-model"),
+                None,
+                "valid",
+                "2026-11-13T00:04:00Z",
+            ))
+            .await
+            .expect("replace zeta");
+        let replaced = store
+            .find_quota_by_agent_model("agy", "zeta-model", None)
+            .await
+            .expect("requery zeta")
+            .expect("replaced zeta");
+        assert_eq!(replaced.status, "valid");
+        assert_eq!(
+            store
+                .find_quota_by_agent_model("agy", "mid-model", None)
+                .await
+                .expect("mid survives")
+                .expect("mid")
+                .id,
+            "q-b"
+        );
     }
 }

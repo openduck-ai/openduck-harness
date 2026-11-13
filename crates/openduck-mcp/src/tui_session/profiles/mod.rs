@@ -163,6 +163,10 @@ pub struct TuiTurnResult {
     pub extraction_source: String,
     pub duration_ms: u64,
     pub attach_command: String,
+    #[serde(default)]
+    pub unchanged_for_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stall_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

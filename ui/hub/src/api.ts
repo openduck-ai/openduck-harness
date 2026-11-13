@@ -183,23 +183,30 @@ export interface TuiAccount {
   updatedAt: string
 }
 
+/** CamelCase `QuotaSnapshotRecord`. Option fields are JSON null, not omitted. */
 export interface QuotaSnapshot {
   id: string
   poolId: string
-  accountId?: string
-  agentKind?: string
-  modelPattern?: string
+  accountId: string | null
+  agentKind: string | null
+  modelPattern: string | null
   quotaType: string
   unit: string
   usedAmount: number
-  limitAmount?: number
-  remainingPercent?: number
-  windowStart?: string
-  windowEnd?: string
-  resetAt?: string
+  limitAmount: number | null
+  remainingPercent: number | null
+  windowStart: string | null
+  windowEnd: string | null
+  resetAt: string | null
   source: string
   status: string
   observedAt: string
+}
+
+/** GET list responses omit `success`. Per-agent POST refresh sets it. */
+export interface TuiQuotasResponse {
+  success?: boolean
+  quotas: QuotaSnapshot[]
 }
 
 export function createApi(baseUrl: string, secret = '', options?: ApiOptions) {
@@ -350,21 +357,28 @@ export function createApi(baseUrl: string, secret = '', options?: ApiOptions) {
     getJson<{ accounts: TuiAccount[] }>(baseUrl, secret, '/api/v1/tui-accounts')
   api.upsertTuiAccount = (account: Partial<TuiAccount>) =>
     postJson<{ success: boolean; account: TuiAccount }>(baseUrl, secret, '/api/v1/tui-accounts', account)
-  api.listTuiQuotas = (accountId: string) =>
-    getJson<{ quotas: QuotaSnapshot[] }>(baseUrl, secret, `/api/v1/tui-accounts/${encodeURIComponent(accountId)}/quotas`)
-  api.refreshTuiQuotas = (accountId: string) =>
-    postJson<{ success: boolean; quotas: QuotaSnapshot[] }>(
+  api.listTuiQuotas = (accountId: string): Promise<TuiQuotasResponse> =>
+    getJson<TuiQuotasResponse>(baseUrl, secret, `/api/v1/tui-accounts/${encodeURIComponent(accountId)}/quotas`)
+  api.refreshTuiQuotas = (accountId: string): Promise<TuiQuotasResponse> =>
+    postJson<TuiQuotasResponse>(
       baseUrl,
       secret,
       `/api/v1/tui-accounts/${encodeURIComponent(accountId)}/quotas/refresh`,
     )
-  api.listAllTuiQuotas = () =>
-    getJson<{ quotas: QuotaSnapshot[] }>(baseUrl, secret, '/api/v1/tui-quotas')
-  api.refreshTuiAgentQuotas = (agentKind: string) =>
-    postJson<{ success: boolean; quotas: QuotaSnapshot[] }>(
+  api.getTuiQuotas = (): Promise<TuiQuotasResponse> =>
+    getJson<TuiQuotasResponse>(baseUrl, secret, '/api/v1/tui-quotas')
+  api.listAllTuiQuotas = (): Promise<TuiQuotasResponse> => api.getTuiQuotas()
+  api.getTuiAgentQuotas = (id: string): Promise<TuiQuotasResponse> =>
+    getJson<TuiQuotasResponse>(
       baseUrl,
       secret,
-      `/api/v1/tui-agents/${encodeURIComponent(agentKind)}/quotas/refresh`,
+      `/api/v1/tui-agents/${encodeURIComponent(id)}/quotas`,
+    )
+  api.refreshTuiAgentQuotas = (id: string): Promise<TuiQuotasResponse> =>
+    postJson<TuiQuotasResponse>(
+      baseUrl,
+      secret,
+      `/api/v1/tui-agents/${encodeURIComponent(id)}/quotas/refresh`,
     )
 
   api.getTuiAgentModels = async (agentKind: string, options?: { refresh?: boolean }): Promise<TuiAgentModelCatalog> => {

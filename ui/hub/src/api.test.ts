@@ -115,3 +115,161 @@ test('createApi exposes TUI model catalog and switch methods', async () => {
     globalThis.fetch = originalFetch
   }
 })
+
+const quotaSnapshot = {
+  id: 'q1',
+  poolId: 'pool',
+  accountId: null,
+  agentKind: 'grok',
+  modelPattern: null,
+  quotaType: 'weekly',
+  unit: 'percent',
+  usedAmount: 1.5,
+  limitAmount: null,
+  remainingPercent: null,
+  windowStart: null,
+  windowEnd: null,
+  resetAt: null,
+  source: 'cli_status',
+  status: 'unknown',
+  observedAt: '2026-01-01T00:00:00Z',
+}
+
+test('tui quota client lists all and per-agent snapshots and refreshes one agent', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Request[] = []
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init)
+    calls.push(request)
+    const url = new URL(request.url)
+    if (request.method === 'POST' && url.pathname.endsWith('/quotas/refresh')) {
+      return new Response(JSON.stringify({ success: true, quotas: [{ ...quotaSnapshot, remainingPercent: 80 }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({ quotas: [quotaSnapshot] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  try {
+    const api = createApi('http://host', 'secret')
+    const agentId = 'codex/team+1'
+
+    const all = await api.getTuiQuotas()
+    assert.equal(all.success, undefined)
+    assert.equal(all.quotas.length, 1)
+    assert.equal(all.quotas[0].accountId, null)
+    assert.equal(all.quotas[0].agentKind, 'grok')
+    assert.equal(all.quotas[0].modelPattern, null)
+    assert.equal(all.quotas[0].limitAmount, null)
+    assert.equal(all.quotas[0].remainingPercent, null)
+    assert.equal(all.quotas[0].windowStart, null)
+    assert.equal(all.quotas[0].windowEnd, null)
+    assert.equal(all.quotas[0].resetAt, null)
+    assert.equal(calls[0].method, 'GET')
+    assert.equal(calls[0].url, 'http://host/api/v1/tui-quotas')
+    assert.equal(calls[0].headers.get('X-Secret-Key'), 'secret')
+    assert.equal(calls[0].headers.get('Accept'), 'application/json')
+
+    const legacy = await api.listAllTuiQuotas()
+    assert.equal(legacy.success, undefined)
+    assert.equal(legacy.quotas[0].id, 'q1')
+    assert.equal(calls[1].method, 'GET')
+    assert.equal(calls[1].url, 'http://host/api/v1/tui-quotas')
+
+    const agent = await api.getTuiAgentQuotas(agentId)
+    assert.equal(agent.success, undefined)
+    assert.equal(agent.quotas[0].remainingPercent, null)
+    assert.equal(calls[2].method, 'GET')
+    assert.equal(calls[2].url, `http://host/api/v1/tui-agents/${encodeURIComponent(agentId)}/quotas`)
+
+    const refreshed = await api.refreshTuiAgentQuotas(agentId)
+    assert.equal(refreshed.success, true)
+    assert.equal(refreshed.quotas[0].remainingPercent, 80)
+    assert.equal(calls[3].method, 'POST')
+    assert.equal(calls[3].url, `http://host/api/v1/tui-agents/${encodeURIComponent(agentId)}/quotas/refresh`)
+    assert.equal(calls[3].headers.get('X-Secret-Key'), 'secret')
+    assert.equal(calls[3].headers.get('Content-Type'), 'application/json')
+    assert.equal(await calls[3].text(), '')
+
+    const accountId = 'acc/id+1'
+    const accountList = await api.listTuiQuotas(accountId)
+    assert.equal(accountList.quotas[0].id, 'q1')
+    assert.equal(calls[4].method, 'GET')
+    assert.equal(calls[4].url, `http://host/api/v1/tui-accounts/${encodeURIComponent(accountId)}/quotas`)
+
+    const accountRefresh = await api.refreshTuiQuotas(accountId)
+    assert.equal(accountRefresh.success, true)
+    assert.equal(accountRefresh.quotas[0].remainingPercent, 80)
+    assert.equal(calls[5].method, 'POST')
+    assert.equal(calls[5].url, `http://host/api/v1/tui-accounts/${encodeURIComponent(accountId)}/quotas/refresh`)
+
+    assert.equal(
+      calls.some((call) => call.method === 'POST' && new URL(call.url).pathname === '/api/v1/tui-quotas'),
+      false,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('tui quota client surfaces HTTP errors for list and refresh', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Request[] = []
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init)
+    calls.push(request)
+    const url = new URL(request.url)
+    if (request.method === 'GET' && url.pathname === '/api/v1/tui-quotas') {
+      return new Response(JSON.stringify({ error: 'quota store unavailable' }), { status: 400 })
+    }
+    if (request.method === 'GET' && url.pathname.endsWith('/quotas')) {
+      return new Response(null, { status: 404 })
+    }
+    if (request.method === 'POST' && url.pathname.endsWith('/quotas/refresh')) {
+      return new Response('plain failure', { status: 502 })
+    }
+    return new Response('unexpected', { status: 500 })
+  }
+  try {
+    const api = createApi('http://host', 'secret')
+    await assert.rejects(() => api.getTuiQuotas(), (err: unknown) => {
+      assert.ok(err instanceof Error)
+      assert.equal(err.message, 'quota store unavailable')
+      return true
+    })
+    await assert.rejects(() => api.getTuiAgentQuotas('agy/custom agent'), (err: unknown) => {
+      assert.ok(err instanceof Error)
+      assert.equal(err.message, 'Request failed (404)')
+      return true
+    })
+    await assert.rejects(() => api.refreshTuiAgentQuotas('agy/custom agent'), (err: unknown) => {
+      assert.ok(err instanceof Error)
+      assert.equal(err.message, 'plain failure')
+      return true
+    })
+    await assert.rejects(() => api.listAllTuiQuotas(), /quota store unavailable/)
+    await assert.rejects(() => api.refreshTuiQuotas('acc 1'), /plain failure/)
+
+    assert.equal(calls[0].method, 'GET')
+    assert.equal(calls[0].url, 'http://host/api/v1/tui-quotas')
+    assert.equal(calls[1].method, 'GET')
+    assert.equal(calls[1].url, `http://host/api/v1/tui-agents/${encodeURIComponent('agy/custom agent')}/quotas`)
+    assert.equal(calls[2].method, 'POST')
+    assert.equal(
+      calls[2].url,
+      `http://host/api/v1/tui-agents/${encodeURIComponent('agy/custom agent')}/quotas/refresh`,
+    )
+    assert.equal(calls[3].method, 'GET')
+    assert.equal(calls[4].method, 'POST')
+    assert.equal(calls[4].url, `http://host/api/v1/tui-accounts/${encodeURIComponent('acc 1')}/quotas/refresh`)
+    assert.equal(
+      calls.some((call) => call.method === 'POST' && new URL(call.url).pathname === '/api/v1/tui-quotas'),
+      false,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
