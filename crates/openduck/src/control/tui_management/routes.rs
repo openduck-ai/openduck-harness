@@ -685,12 +685,11 @@ pub async fn get_tui_agent_quotas(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let service = TuiManagementService::global().await;
     let _ = service.check_agent_quota(&agent_id, None).await;
-    let quota = service
+    let quotas = service
         .store
-        .find_quota_by_agent(&agent_id)
+        .list_quotas_by_agent(&agent_id)
         .await
         .map_err(bad)?;
-    let quotas = quota.into_iter().collect::<Vec<_>>();
     Ok(Json(serde_json::json!({ "quotas": quotas })))
 }
 
@@ -698,11 +697,10 @@ pub async fn refresh_tui_agent_quotas(
     AxumPath(agent_id): AxumPath<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let service = TuiManagementService::global().await;
-    let quota = service
-        .refresh_quotas_for_agent(&agent_id)
+    let quotas = service
+        .refresh_all_quotas_for_agent(&agent_id)
         .await
         .map_err(bad)?;
-    let quotas = quota.into_iter().collect::<Vec<_>>();
     Ok(Json(
         serde_json::json!({ "success": true, "quotas": quotas }),
     ))

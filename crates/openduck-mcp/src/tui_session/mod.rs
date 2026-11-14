@@ -122,6 +122,9 @@ pub struct TuiAgentPromptParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TuiAgentReadParams {
+    /// Wait for completion or an actionable state (default 30 seconds, maximum 60; 0 for an immediate snapshot).
+    #[serde(default)]
+    pub wait_secs: Option<u64>,
     /// Session ID
     pub session_id: String,
     /// Number of scrollback lines to capture (default 120)
@@ -344,7 +347,7 @@ impl TuiAgentServer {
     /// Read the live screen and state of an agent TUI session.
     #[tool(
         name = "tui_agent_read",
-        description = "Inspects the current screen snapshot, pane state (idle_prompt, working, waiting_approval), and latest output from an agent TUI session."
+        description = "Waits up to 30 seconds (maximum 60; extended automatically when a working screen stays unchanged) for completion, approval, quota or exit, then returns the latest output and screen. Unchanged screens are omitted. Continue waiting while working; do not interrupt merely because it takes time. Use wait_secs=0 only for an immediate inspection. If stallHint is present, the screen has been unchanged for 5+ minutes: inspect it instead of waiting again."
     )]
     pub async fn tui_agent_read(
         &self,
@@ -358,7 +361,11 @@ impl TuiAgentServer {
             .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e.to_string(), None))?;
 
         let turn = handle
-            .read_state(params.scrollback_lines, params.include_ansi)
+            .read_for_tool_with(
+                params.scrollback_lines,
+                params.include_ansi,
+                params.wait_secs,
+            )
             .await
             .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
 

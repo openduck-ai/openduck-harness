@@ -49,6 +49,7 @@ async fn mock_session(
         interaction: Mutex::new(()),
         prompt_operation: Mutex::new(()),
         last_submission: Mutex::new(None),
+        last_tool_read: Mutex::new(None),
     }
 }
 
@@ -1293,4 +1294,53 @@ async fn test_execution_timeout_does_not_stop_async_work() {
         .unwrap_err();
     assert!(error.to_string().contains("busy"));
     assert_eq!(backend.get_pane("budget").unwrap().keys_sent, vec!["Enter"]);
+}
+
+#[tokio::test]
+async fn test_tool_read_waits_for_completion_and_suppresses_unchanged_screen() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_agy_session(backend.clone(), dir.path()).await;
+    backend.set_screen("agy_submit", "Generating...\nesc to cancel");
+    let updater = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        backend.set_screen(
+            "agy_submit",
+            "Completed\n────────────────────\n>\n────────────────────\n? for shortcuts",
+        );
+    });
+    let turn = handle.read_for_tool(None, false, 5).await.unwrap();
+    updater.await.unwrap();
+    assert_eq!(turn.state, TuiPaneState::IdlePrompt);
+    assert!(turn.screen_snapshot.contains("Completed"));
+    let repeated = handle.read_for_tool(None, false, 0).await.unwrap();
+    assert!(repeated.screen_snapshot.contains("Screen unchanged"));
+}
+
+#[tokio::test]
+async fn test_tool_read_timeout_preserves_working_session() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_agy_session(backend.clone(), dir.path()).await;
+    backend.set_screen("agy_submit", "Generating...\nesc to cancel");
+    let turn = handle.read_for_tool(None, false, 1).await.unwrap();
+    assert!(matches!(turn.state, TuiPaneState::Working { .. }));
+    let pane = backend.get_pane("agy_submit").unwrap();
+    assert!(pane.keys_sent.is_empty());
+    assert!(pane.pasted.is_empty());
+}
+
+#[tokio::test]
+async fn test_tool_read_reports_unchanged_duration_and_ignores_counters() {
+    let dir = tempdir().unwrap();
+    let backend = Arc::new(MockMultiplexerBackend::new());
+    let handle = mock_agy_session(backend.clone(), dir.path()).await;
+    backend.set_screen("agy_submit", "Generating... 1s\nesc to cancel");
+    let first = handle.read_for_tool(None, false, 0).await.unwrap();
+    assert_eq!(first.unchanged_for_secs, 0);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    backend.set_screen("agy_submit", "Generating... 2s\nesc to cancel");
+    let second = handle.read_for_tool(None, false, 0).await.unwrap();
+    assert!(second.unchanged_for_secs >= 1);
+    assert!(second.stall_hint.is_none());
 }

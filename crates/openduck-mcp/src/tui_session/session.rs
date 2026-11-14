@@ -15,6 +15,27 @@ use super::profiles::{
 use super::screen::{strip_ansi_codes, QuiescenceDetector};
 
 const MAX_SUBMISSION_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_READ_WAIT_SECS: u64 = 30;
+const MAX_READ_WAIT_SECS: u64 = 60;
+const ESCALATED_READ_WAIT_AFTER: Duration = Duration::from_secs(30);
+const STALL_THRESHOLD: Duration = Duration::from_secs(300);
+
+pub struct ToolReadMark {
+    state: String,
+    screen: String,
+    fingerprint: String,
+    changed_at: Instant,
+}
+
+/// Drops digits, whitespace and spinner glyphs so elapsed-time counters and animations don't look like progress.
+fn screen_fingerprint(screen: &str) -> String {
+    screen
+        .chars()
+        .filter(|c| {
+            !c.is_ascii_digit() && !c.is_whitespace() && !('\u{2800}'..='\u{28ff}').contains(c)
+        })
+        .collect()
+}
 
 pub struct TuiSessionHandle {
     pub config: TuiSessionConfig,
@@ -31,6 +52,7 @@ pub struct TuiSessionHandle {
     pub interaction: Mutex<()>,
     pub prompt_operation: Mutex<()>,
     pub last_submission: Mutex<Option<Instant>>,
+    pub last_tool_read: Mutex<Option<ToolReadMark>>,
 }
 
 impl TuiSessionHandle {
@@ -285,6 +307,8 @@ impl TuiSessionHandle {
                 extraction_source: "none (wait=false)".to_string(),
                 duration_ms: start_time.elapsed().as_millis() as u64,
                 attach_command: self.backend.attach_command(&self.config.session_id),
+                unchanged_for_secs: 0,
+                stall_hint: None,
             });
         }
 
@@ -381,6 +405,8 @@ impl TuiSessionHandle {
             extraction_source: source,
             duration_ms: start_time.elapsed().as_millis() as u64,
             attach_command: self.backend.attach_command(&self.config.session_id),
+            unchanged_for_secs: 0,
+            stall_hint: None,
         })
     }
 
@@ -582,8 +608,119 @@ impl TuiSessionHandle {
             screen_snapshot: screen,
             extraction_source: "read_poll".to_string(),
             duration_ms: 0,
+            unchanged_for_secs: 0,
+            stall_hint: None,
             attach_command: self.backend.attach_command(&self.config.session_id),
         })
+    }
+
+    pub async fn read_for_tool(
+        &self,
+        scrollback_lines: Option<i32>,
+        include_ansi: bool,
+        wait_secs: u64,
+    ) -> Result<TuiTurnResult> {
+        self.read_for_tool_with(scrollback_lines, include_ansi, Some(wait_secs))
+            .await
+    }
+
+    /// With `wait_secs = None` the budget is 30s, escalating to the 60s maximum once a
+    /// working session's screen has been unchanged for at least 30s.
+    pub async fn read_for_tool_with(
+        &self,
+        scrollback_lines: Option<i32>,
+        include_ansi: bool,
+        wait_secs: Option<u64>,
+    ) -> Result<TuiTurnResult> {
+        let started = Instant::now();
+        let (mut changed_at, mut last_fingerprint, previously_working) = {
+            let previous = self.last_tool_read.lock().await;
+            match previous.as_ref() {
+                Some(mark) => (
+                    mark.changed_at,
+                    Some(mark.fingerprint.clone()),
+                    mark.state == "working",
+                ),
+                None => (started, None, false),
+            }
+        };
+        let wait_secs = wait_secs
+            .unwrap_or_else(|| {
+                if previously_working && changed_at.elapsed() >= ESCALATED_READ_WAIT_AFTER {
+                    MAX_READ_WAIT_SECS
+                } else {
+                    DEFAULT_READ_WAIT_SECS
+                }
+            })
+            .min(MAX_READ_WAIT_SECS);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs);
+        let mut turn = tokio::time::timeout(
+            Duration::from_secs(if wait_secs == 0 {
+                10
+            } else {
+                wait_secs.min(10)
+            }),
+            self.read_state(scrollback_lines, include_ansi),
+        )
+        .await
+        .map_err(|_| anyhow!("Session read timed out; the agent has not been interrupted"))??;
+        let mut response = std::mem::take(&mut turn.response);
+        let mut observe = |screen: &str, changed_at: &mut Instant| {
+            let fingerprint = screen_fingerprint(screen);
+            if last_fingerprint.as_ref() != Some(&fingerprint) {
+                *changed_at = Instant::now();
+                last_fingerprint = Some(fingerprint);
+            }
+        };
+        observe(&turn.screen_snapshot, &mut changed_at);
+        while matches!(
+            turn.state,
+            TuiPaneState::Working { .. } | TuiPaneState::Initializing
+        ) && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep_until(
+                deadline.min(tokio::time::Instant::now() + Duration::from_secs(1)),
+            )
+            .await;
+            let next =
+                tokio::time::timeout_at(deadline, self.read_state(scrollback_lines, include_ansi))
+                    .await;
+            match next {
+                Ok(result) => {
+                    turn = result?;
+                    response.push_str(&turn.response);
+                    observe(&turn.screen_snapshot, &mut changed_at);
+                }
+                Err(_) => break,
+            }
+        }
+        turn.response = response;
+        turn.duration_ms = started.elapsed().as_millis() as u64;
+        let unchanged_for = changed_at.elapsed();
+        turn.unchanged_for_secs = unchanged_for.as_secs();
+        if matches!(turn.state, TuiPaneState::Working { .. }) && unchanged_for >= STALL_THRESHOLD {
+            turn.stall_hint = Some(format!(
+                "Screen has not changed for {} minutes while the session reports working; it may be stuck. Inspect the screen, consider tui_agent_keys to answer a hidden prompt, or stop the session. Do not resend the prompt.",
+                unchanged_for.as_secs() / 60
+            ));
+        }
+        let mut previous = self.last_tool_read.lock().await;
+        let state_label = turn.state.label().to_string();
+        let screen = turn.screen_snapshot.clone();
+        if previous
+            .as_ref()
+            .is_some_and(|mark| mark.state == state_label && mark.screen == screen)
+        {
+            turn.screen_snapshot = "Screen unchanged since the previous tool read. If still working, continue waiting; elapsed time alone is not a reason to interrupt.".to_string();
+        }
+        *previous = Some(ToolReadMark {
+            state: state_label,
+            screen,
+            fingerprint: last_fingerprint.unwrap_or_default(),
+            changed_at,
+        });
+        turn.extraction_source = "read_wait".to_string();
+        Ok(turn)
     }
 
     pub async fn stop(&self) -> Result<()> {
@@ -784,6 +921,7 @@ impl TuiSessionManager {
             interaction: Mutex::new(()),
             prompt_operation: Mutex::new(()),
             last_submission: Mutex::new(None),
+            last_tool_read: Mutex::new(None),
         });
 
         self.sessions

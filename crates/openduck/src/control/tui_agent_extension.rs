@@ -7,6 +7,88 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::control::tui_management::{
+    QuotaSnapshotRecord, TuiManagementService, DEFAULT_QUOTA_STALE_AFTER_SECONDS,
+};
+use chrono::{DateTime, Utc};
+
+const QUOTA_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[async_trait::async_trait]
+trait QuotaGate: Send + Sync {
+    async fn refresh(&self, agent: &str) -> Result<()>;
+    async fn cached(&self, agent: &str) -> Result<Option<QuotaSnapshotRecord>>;
+}
+
+#[async_trait::async_trait]
+impl QuotaGate for TuiManagementService {
+    async fn refresh(&self, agent: &str) -> Result<()> {
+        self.refresh_quotas_for_agent(agent).await.map(|_| ())
+    }
+
+    async fn cached(&self, agent: &str) -> Result<Option<QuotaSnapshotRecord>> {
+        self.check_agent_quota(agent, None).await
+    }
+}
+
+fn is_fresh(record: &QuotaSnapshotRecord, now: DateTime<Utc>) -> bool {
+    DateTime::parse_from_rfc3339(&record.observed_at)
+        .map(|t| t.with_timezone(&Utc))
+        .is_ok_and(|observed| {
+            let age = now - observed;
+            age >= chrono::Duration::zero()
+                && age <= chrono::Duration::seconds(DEFAULT_QUOTA_STALE_AFTER_SECONDS as i64)
+        })
+}
+
+fn blocking_reset(record: &QuotaSnapshotRecord, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    if !is_fresh(record, now) {
+        return None;
+    }
+    let exhausted = record.status == "exhausted" || record.remaining_percent == Some(0.0);
+    let reset = DateTime::parse_from_rfc3339(record.reset_at.as_deref()?)
+        .ok()?
+        .with_timezone(&Utc);
+    (exhausted && reset > now).then_some(reset)
+}
+
+/// Rejects only when a known exhausted quota has a future reset. Query
+/// failures and timeouts never count as exhaustion.
+///
+/// `refresh_first` launches always re-read status; prompts consult the cached
+/// book and refresh only when it already looks exhausted, so unrelated status
+/// never blocks them.
+async fn enforce_quota_admission(
+    gate: &dyn QuotaGate,
+    agent: &str,
+    refresh_first: bool,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let refresh = || async {
+        let _ = tokio::time::timeout(QUOTA_REFRESH_TIMEOUT, gate.refresh(agent)).await;
+    };
+    if refresh_first {
+        refresh().await;
+    }
+    let mut record = gate.cached(agent).await.ok().flatten();
+    if !refresh_first
+        && record
+            .as_ref()
+            .is_some_and(|r| blocking_reset(r, now).is_some())
+    {
+        refresh().await;
+        record = gate.cached(agent).await.ok().flatten();
+    }
+    match record.as_ref().and_then(|r| blocking_reset(r, now).map(|t| (r, t))) {
+        Some((r, reset)) => Err(anyhow!(
+            "Cannot use agent '{agent}': hit {} limit (resets at {}). Agent is suspended until quota resets.",
+            r.quota_type,
+            reset.to_rfc3339()
+        )),
+        None => Ok(()),
+    }
+}
+
 pub struct TuiAgentHarnessExtension {
     manager: Arc<TuiSessionManager>,
     project_slug: Option<String>,
@@ -128,6 +210,7 @@ impl TuiAgentHarnessExtension {
             .filter(|s| !s.is_empty());
 
         let service = crate::control::tui_management::TuiManagementService::global().await;
+        enforce_quota_admission(&*service, &kind.to_string(), true, Utc::now()).await?;
         let (rec, _initial_turn) = service
             .start_session(crate::control::tui_management::StartManagedSessionRequest {
                 agent: kind.to_string(),
@@ -259,6 +342,9 @@ impl TuiAgentHarnessExtension {
             .unwrap_or(600);
 
         let service = crate::control::tui_management::TuiManagementService::global().await;
+        if let Some(rec) = service.get_session_record(session_id).await? {
+            enforce_quota_admission(&*service, &rec.agent_kind, false, Utc::now()).await?;
+        }
         let turn = service
             .send_prompt(
                 session_id,
@@ -305,10 +391,15 @@ impl TuiAgentHarnessExtension {
 
         let service = crate::control::tui_management::TuiManagementService::global().await;
         let turn = service
-            .read_state(session_id, lines.map(|l| l as i32), raw_ansi)
+            .read_state_wait(
+                session_id,
+                lines.map(|l| l as i32),
+                raw_ansi,
+                call.arguments.get("wait_secs").and_then(|v| v.as_u64()),
+            )
             .await?;
 
-        let text = if !turn.response.trim().is_empty() {
+        let mut text = if !turn.response.trim().is_empty() {
             format!(
                 "Response:\n{}\n\nScreen Snapshot:\n{}",
                 turn.response, turn.screen_snapshot
@@ -316,6 +407,9 @@ impl TuiAgentHarnessExtension {
         } else {
             turn.screen_snapshot
         };
+        if let Some(hint) = &turn.stall_hint {
+            text.push_str(&format!("\n\nStall warning: {hint}"));
+        }
 
         Ok(ToolCallResponse {
             id: call.id.clone(),
@@ -536,7 +630,7 @@ impl HarnessToolExtension for TuiAgentHarnessExtension {
             },
             ToolDefinition {
                 name: "tui_agent_read".into(),
-                description: "Reads the live terminal screen capture and latest output from an active agent session.".into(),
+                description: "Waits up to 30 seconds (maximum 60; extended automatically when a working screen stays unchanged) for completion, approval, quota or exit, then returns latest output and screen. Unchanged screens are omitted. Continue waiting while working; elapsed time alone is not a reason to interrupt. Use wait_secs=0 only for immediate inspection. If stallHint is present, the screen has been unchanged for 5+ minutes: inspect it instead of waiting again.".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -547,6 +641,13 @@ impl HarnessToolExtension for TuiAgentHarnessExtension {
                         "lines": {
                             "type": "integer",
                             "description": "Number of lines of terminal capture to return (defaults to 50)."
+                        },
+                        "wait_secs": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 60,
+                            "default": 30,
+                            "description": "Wait for completion or an actionable state; 0 returns immediately."
                         },
                         "raw_ansi": {
                             "type": "boolean",
@@ -668,5 +769,175 @@ impl HarnessToolExtension for TuiAgentHarnessExtension {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod quota_gate_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct FakeGate {
+        refresh_fails: bool,
+        before: Option<QuotaSnapshotRecord>,
+        after: Option<QuotaSnapshotRecord>,
+        refreshed: Mutex<u32>,
+    }
+
+    #[async_trait::async_trait]
+    impl QuotaGate for FakeGate {
+        async fn refresh(&self, _: &str) -> Result<()> {
+            *self.refreshed.lock().unwrap() += 1;
+            if self.refresh_fails {
+                Err(anyhow!("boom"))
+            } else {
+                Ok(())
+            }
+        }
+        async fn cached(&self, _: &str) -> Result<Option<QuotaSnapshotRecord>> {
+            let refreshed = *self.refreshed.lock().unwrap() > 0;
+            Ok(if refreshed {
+                self.after.clone()
+            } else {
+                self.before.clone()
+            })
+        }
+    }
+
+    fn record(reset: Option<DateTime<Utc>>, exhausted: bool) -> QuotaSnapshotRecord {
+        QuotaSnapshotRecord {
+            id: "q".into(),
+            pool_id: "p".into(),
+            account_id: None,
+            agent_kind: Some("grok".into()),
+            model_pattern: None,
+            quota_type: "weekly".into(),
+            unit: "credits".into(),
+            used_amount: 0.0,
+            limit_amount: None,
+            remaining_percent: exhausted.then_some(0.0),
+            window_start: None,
+            window_end: None,
+            reset_at: reset.map(|r| r.to_rfc3339()),
+            source: "test".into(),
+            status: if exhausted { "exhausted" } else { "valid" }.into(),
+            observed_at: (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+        }
+    }
+
+    fn gate(
+        refresh_fails: bool,
+        before: Option<QuotaSnapshotRecord>,
+        after: Option<QuotaSnapshotRecord>,
+    ) -> FakeGate {
+        FakeGate {
+            refresh_fails,
+            before,
+            after,
+            refreshed: Mutex::new(0),
+        }
+    }
+
+    #[tokio::test]
+    async fn launch_rejects_exhausted_with_reset_time() {
+        let now = Utc::now();
+        let reset = now + chrono::Duration::hours(2);
+        let r = record(Some(reset), true);
+        let g = gate(false, Some(r.clone()), Some(r));
+        let err = enforce_quota_admission(&g, "grok", true, now)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(&reset.to_rfc3339()));
+        assert_eq!(*g.refreshed.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_failure_is_not_exhaustion() {
+        let g = gate(true, None, None);
+        enforce_quota_admission(&g, "grok", true, Utc::now())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn launch_allowed_when_refresh_clears_exhaustion() {
+        let now = Utc::now();
+        let stale = record(Some(now + chrono::Duration::hours(1)), true);
+        let g = gate(false, Some(stale), Some(record(None, false)));
+        enforce_quota_admission(&g, "grok", true, now)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn past_reset_or_unknown_reset_does_not_block() {
+        let now = Utc::now();
+        let past = record(Some(now - chrono::Duration::minutes(1)), true);
+        enforce_quota_admission(
+            &gate(false, Some(past.clone()), Some(past)),
+            "grok",
+            true,
+            now,
+        )
+        .await
+        .unwrap();
+        let unknown = record(None, true);
+        enforce_quota_admission(
+            &gate(false, Some(unknown.clone()), Some(unknown)),
+            "grok",
+            true,
+            now,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn prompt_skips_refresh_unless_cached_exhausted() {
+        let now = Utc::now();
+        let g = gate(false, Some(record(None, false)), None);
+        enforce_quota_admission(&g, "grok", false, now)
+            .await
+            .unwrap();
+        assert_eq!(*g.refreshed.lock().unwrap(), 0);
+
+        let r = record(Some(now + chrono::Duration::hours(1)), true);
+        let g = gate(false, Some(r.clone()), Some(r));
+        assert!(enforce_quota_admission(&g, "grok", false, now)
+            .await
+            .is_err());
+        assert_eq!(*g.refreshed.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_or_malformed_observation_fails_open() {
+        let now = Utc::now();
+        let reset = Some(now + chrono::Duration::hours(1));
+        let stale_age = DEFAULT_QUOTA_STALE_AFTER_SECONDS as i64 + 60;
+        let observations = [
+            (now - chrono::Duration::seconds(stale_age)).to_rfc3339(),
+            (now + chrono::Duration::minutes(10)).to_rfc3339(),
+            "not-a-timestamp".to_string(),
+            String::new(),
+        ];
+        for observed_at in observations {
+            let mut r = record(reset, true);
+            r.observed_at = observed_at.clone();
+            let g = gate(true, Some(r.clone()), Some(r));
+            enforce_quota_admission(&g, "grok", true, now)
+                .await
+                .unwrap_or_else(|e| panic!("{observed_at:?} should fail open: {e}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn fresh_observation_still_blocks_when_refresh_fails() {
+        let now = Utc::now();
+        let mut r = record(Some(now + chrono::Duration::hours(1)), true);
+        r.observed_at = (now - chrono::Duration::seconds(30)).to_rfc3339();
+        let g = gate(true, Some(r.clone()), Some(r));
+        assert!(enforce_quota_admission(&g, "grok", true, now)
+            .await
+            .is_err());
     }
 }

@@ -16,6 +16,7 @@ activities:
   - Validate automatic startup confirmations and directory trust for TUI agents
   - Validate project task FIFO queueing, cancellation, and isolation between projects
   - Validate default project task Git commits and the auto-commit setting
+  - Validate bounded TUI tool reads, unchanged-screen suppression, and continued work after wait timeout
   - Validate recorded TUI agent status in task run Agent Logs
   - Validate Hub deep-link URL parsing for task history, agent logs, and file previews
   - Test load tool for knowledge injection and discovery
@@ -58,6 +59,12 @@ parameters:
     description: "Clean up test artifacts after completion"
 
 instructions: |
+  For TUI read verification, submit a long-running prompt and call tui_agent_read
+  with wait_secs=1. Confirm it returns working without interrupting the agent.
+  Wait again with the default budget and confirm completion or an actionable state
+  returns early. Repeat an unchanged idle read and verify the screen is omitted.
+  Confirm wait_secs=0 inspects immediately and Hub live reads remain immediate.
+
   You are testing yourself - a running OpenDuck instance validating its own capabilities through meta-testing.
   This is true first-person integration testing where you use your own tools to test your own functionality.
 

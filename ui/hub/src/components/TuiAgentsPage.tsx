@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
-import type { createApi, ManagedTuiSession, SessionOperation, AgentProfile, TuiAccount, QuotaSnapshot, ProxyItem, TuiAgentModelCatalog } from '../api'
+import { createApi } from '../api'
+import type { ManagedTuiSession, SessionOperation, AgentProfile, TuiAccount, QuotaSnapshot, ProxyItem, TuiAgentModelCatalog } from '../api'
 import { formatDateTime, formatTime, formatNumber } from '../i18n/format.ts'
 import { validateProxyUrlMessage } from '../providerConfig'
 import { resolveActiveModel, normalizeCatalog, discoverAgentModelsViaCli, getCliDiscoveryCommand } from '../tuiModelPicker'
@@ -47,6 +48,21 @@ const QUOTA_TONE_LABEL_KEY: Record<QuotaTone, string> = {
 
 export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
   const { t } = useTranslation()
+  const resolvedApi = useMemo(() => {
+    if (
+      typeof (api as any)?.getTuiQuotas === 'function' &&
+      typeof (api as any)?.getTuiAgentQuotas === 'function' &&
+      typeof (api as any)?.listTuiQuotas === 'function' &&
+      typeof (api as any)?.refreshTuiAgentQuotas === 'function' &&
+      typeof (api as any)?.refreshTuiQuotas === 'function'
+    ) {
+      return api
+    }
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem('goose-hub-url')?.trim() ?? '' : ''
+    const baseUrl = stored || (typeof window !== 'undefined' ? window.location.origin : '')
+    const secret = typeof window !== 'undefined' ? window.localStorage.getItem('goose-hub-secret') ?? '' : ''
+    return { ...api, ...createApi(baseUrl, secret) }
+  }, [api])
   const [activeTab, setActiveTab] = useState<TabType>('running')
   const [sessions, setSessions] = useState<ManagedTuiSession[]>([])
   const [operations, setOperations] = useState<SessionOperation[]>([])
@@ -129,14 +145,14 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
 
       const seenEpoch = quotaEpoch.current
       const quotaLoad = await loadGlobalQuotas(
-        { getTuiQuotas: () => api.getTuiQuotas() },
+        { getTuiQuotas: () => resolvedApi.getTuiQuotas() },
         allQuotasRef.current,
       )
       let quotaError = quotaLoad.error
       let allQuotasList = quotaLoad.quotas
       if (quotaLoad.error && quotaEpoch.current === seenEpoch) {
         const detail = await loadMissingAgentQuotas(
-          { getTuiAgentQuotas: (id) => api.getTuiAgentQuotas(id) },
+          { getTuiAgentQuotas: (id) => resolvedApi.getTuiAgentQuotas(id) },
           allQuotasList,
           ['agy', 'grok', 'codex', 'claude', ...(agRes.agents || []).map((agent: AgentProfile) => agent.agentKind)],
         )
@@ -170,7 +186,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
           continue
         }
         try {
-          const qRes = await api.listTuiQuotas(acc.id)
+          const qRes = await resolvedApi.listTuiQuotas(acc.id)
           if ((qRes.quotas || []).length > 0) quotasMap[acc.id] = qRes.quotas
         } catch (e: unknown) {
           const message = e instanceof Error && e.message ? e.message : String(e)
@@ -186,7 +202,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
     } finally {
       setLoading(false)
     }
-  }, [api])
+  }, [api, resolvedApi])
 
   useEffect(() => {
     loadData()
@@ -432,7 +448,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
 
   const handleRefreshQuotas = async (accountId: string) => {
     try {
-      await api.refreshTuiQuotas(accountId)
+      await resolvedApi.refreshTuiQuotas(accountId)
       loadData()
     } catch (e: any) {
       alert(t('tuiAgents.page.refreshQuotasFailed', { message: e.message }))
@@ -444,7 +460,7 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
     setQuotaRefresh(prev => ({ ...prev, [key]: { loading: true, error: null, kept: false } }))
     const baseline = allQuotasRef.current
     const result = await runQuotaRefresh(
-      { refreshTuiAgentQuotas: (id) => api.refreshTuiAgentQuotas(id) },
+      { refreshTuiAgentQuotas: (id) => resolvedApi.refreshTuiAgentQuotas(id) },
       baseline,
       agentKind,
     )
@@ -469,8 +485,10 @@ export function TuiAgentsPage({ api }: TuiAgentsPageProps) {
         ) : (
           snapshots.map(q => {
             const view = quotaView(q)
+            const scopeLabel = q.modelPattern && q.modelPattern !== '*' ? q.modelPattern : snapshots.length > 1 ? q.quotaType : null
             return (
               <span key={q.id} style={{ marginRight: '8px' }}>
+                {scopeLabel && <span style={{ color: 'var(--text-muted, #666)', marginRight: '4px' }}>[{scopeLabel}]</span>}
                 <span style={{ color: QUOTA_TONE_STYLE[view.tone].fg, fontWeight: 600 }}>{t(QUOTA_TONE_LABEL_KEY[view.tone])}</span>
                 {view.remainingPercent !== null && (
                   <span> ({t('tuiAgents.page.percentLeft', { percent: formatNumber(view.remainingPercent, { maximumFractionDigits: 0 }) })})</span>

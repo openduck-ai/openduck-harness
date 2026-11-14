@@ -6,18 +6,19 @@ use tokio::sync::{broadcast, Mutex, OnceCell};
 use tracing::{error, warn};
 
 use anyhow::{anyhow, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use etcetera::base_strategy::BaseStrategy;
 use openduck_mcp::tui_session::profiles::detect_quota_limit;
 use openduck_mcp::tui_session::{
-    AgentCliKind, AgentModelCatalog, TuiPaneState, TuiSessionConfig, TuiSessionManager,
-    TuiTurnResult,
+    AgentCliKind, AgentModelCatalog, CatalogModelEntry, TuiPaneState, TuiSessionConfig,
+    TuiSessionManager, TuiTurnResult,
 };
 
 use super::models::{
     QuotaSnapshotRecord, SessionOperationRecord, SessionRunBindingRecord, TuiManagementEvent,
     TuiSessionRecord,
 };
+use super::quota::{QuotaAdmission, QuotaAgentStatus, DEFAULT_QUOTA_STALE_AFTER_SECONDS};
 use super::store::SqliteTuiStore;
 
 static GLOBAL_TUI_SERVICE: OnceCell<Arc<TuiManagementService>> = OnceCell::const_new();
@@ -72,6 +73,46 @@ fn inherited_tui_proxy(kind: &str, cwd: &Path) -> Option<String> {
             crate::config::proxies::get_proxy_entry(crate::config::Config::global(), "default")
                 .map(|entry| entry.url)
         })
+}
+
+fn resolve_effective_proxy(
+    proxy_mode: &str,
+    proxy_id: Option<&str>,
+    explicit_https_proxy: Option<String>,
+    agent_kind: &str,
+    working_dir: &Path,
+) -> Option<String> {
+    if proxy_mode == "direct" {
+        None
+    } else if let Some(p) = explicit_https_proxy {
+        Some(p)
+    } else if proxy_mode == "custom" {
+        proxy_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+    } else if proxy_mode == "named" {
+        if let Some(pid) = proxy_id {
+            let config = crate::config::Config::global();
+            crate::config::proxies::get_proxy_entry(config, pid)
+                .map(|e| e.url)
+                .or_else(|| {
+                    if pid.starts_with("http://")
+                        || pid.starts_with("https://")
+                        || pid.starts_with("socks5://")
+                        || pid.starts_with("socks5h://")
+                    {
+                        Some(pid.to_string())
+                    } else {
+                        None
+                    }
+                })
+        } else {
+            None
+        }
+    } else {
+        inherited_tui_proxy(agent_kind, working_dir)
+    }
 }
 
 fn inherited_tui_model_for_kind(kind: &str, cwd: &Path) -> Option<String> {
@@ -147,6 +188,15 @@ impl TuiManagementService {
         SHARED_SESSION_MANAGER
             .get_or_init(|| Arc::new(TuiSessionManager::default()))
             .clone()
+    }
+
+    /// Scheduling admission for one quota book.
+    ///
+    /// This does not start a session, read a provider, or rewrite the book.
+    /// Session launch and prompt send keep their existing checks.
+    #[must_use]
+    pub fn admit_agent_quota(status: &QuotaAgentStatus, now: DateTime<Utc>) -> QuotaAdmission {
+        status.admission_at(now)
     }
 
     pub async fn init_global(db_path: impl AsRef<Path>) -> Result<Arc<Self>> {
@@ -326,6 +376,123 @@ impl TuiManagementService {
         Ok(reclaimed_ids)
     }
 
+    async fn select_agy_startup_model(
+        &self,
+        desired: Option<&str>,
+        account_id: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<String>> {
+        if let Some(exhausted) = self.blocking_agy_wildcard_record(account_id, now).await {
+            return Err(suspended_agent_error(
+                "agy",
+                &exhausted.quota_type,
+                exhausted.reset_at.as_deref(),
+            ));
+        }
+
+        let entry = self.catalog.get_models(AgentCliKind::Agy).await;
+        let candidates =
+            agy_candidate_models(desired, entry.default_model.as_deref(), &entry.models);
+        let mut decided = Vec::with_capacity(candidates.len());
+        for model in &candidates {
+            let read = self.read_model_quota("agy", model, account_id).await;
+            decided.push(AgyCandidate {
+                model: model.as_str(),
+                eligibility: agy_eligibility(&read, now),
+            });
+        }
+
+        match choose_agy_model(&decided) {
+            Some(AgyModelChoice::Selected(model)) => Ok(Some(model)),
+            Some(AgyModelChoice::AllBlocked {
+                quota_type,
+                reset_at,
+                models,
+            }) => Err(all_agy_models_blocked_error(
+                &quota_type,
+                reset_at.as_deref(),
+                &models,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn reject_blocked_agy_prompt(&self, session: &TuiSessionRecord) -> Result<()> {
+        let now = Utc::now();
+        let account_id = session.account_id.as_deref();
+        if let Some(exhausted) = self.blocking_agy_wildcard_record(account_id, now).await {
+            return Err(session_quota_error(
+                &session.session_name,
+                "agy",
+                None,
+                &exhausted.quota_type,
+                exhausted.reset_at.as_deref(),
+            ));
+        }
+        let Some(model) = session_active_quota_model(session) else {
+            return Ok(());
+        };
+        let read = self.read_model_quota("agy", model, account_id).await;
+        if let AgyModelEligibility::Blocked(block) = agy_eligibility(&read, now) {
+            return Err(session_quota_error(
+                &session.session_name,
+                "agy",
+                Some(model),
+                &block.quota_type,
+                block.reset_at.as_deref(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn blocking_agy_wildcard_record(
+        &self,
+        account_id: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Option<QuotaSnapshotRecord> {
+        let mut accounts = Vec::with_capacity(2);
+        if account_id.is_some() {
+            accounts.push(account_id);
+        }
+        accounts.push(None);
+        for account in accounts {
+            let read = self
+                .read_model_quota("agy", SHARED_MODEL_PATTERN, account)
+                .await;
+            if let AgyQuotaRead::Record(quota) = read {
+                if agy_model_quota_blocks(&quota, now) {
+                    return Some(quota);
+                }
+            }
+        }
+        None
+    }
+
+    async fn read_model_quota(
+        &self,
+        agent_kind: &str,
+        model_pattern: &str,
+        account_id: Option<&str>,
+    ) -> AgyQuotaRead {
+        match self
+            .store
+            .find_quota_by_agent_model(agent_kind, model_pattern, account_id)
+            .await
+        {
+            Ok(Some(quota)) => AgyQuotaRead::Record(quota),
+            Ok(None) => AgyQuotaRead::Missing,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    agent = %agent_kind,
+                    model = %model_pattern,
+                    "quota lookup failed"
+                );
+                AgyQuotaRead::Failed
+            }
+        }
+    }
+
     pub async fn check_agent_quota(
         &self,
         agent_kind: &str,
@@ -334,33 +501,15 @@ impl TuiManagementService {
         let normalized = agent_kind.trim().to_ascii_lowercase();
         let now = Utc::now();
 
-        // 1. Check store for active quota record first
-        if let Some(mut quota) = self.store.find_quota_by_agent(&normalized).await? {
-            if quota.status == "exhausted" || quota.remaining_percent == Some(0.0) {
-                if let Some(ref reset_str) = quota.reset_at {
-                    if let Ok(reset_dt) = chrono::DateTime::parse_from_rfc3339(reset_str) {
-                        if now >= reset_dt {
-                            // Reset time has passed! Automatically restore quota
-                            quota.status = "valid".to_string();
-                            quota.remaining_percent = Some(100.0);
-                            quota.used_amount = 0.0;
-                            quota.observed_at = now.to_rfc3339();
-                            let _ = self.store.upsert_quota(&quota).await;
-                            self.emit_event(
-                                "quota_reset",
-                                None,
-                                None,
-                                serde_json::json!({
-                                    "agent": normalized,
-                                    "quota_type": quota.quota_type,
-                                    "reset_at": reset_str,
-                                }),
-                            );
-                            return Ok(None);
-                        }
-                    }
-                }
-                return Ok(Some(quota));
+        // Model-scoped agy rows must not suspend the whole agent. Only the
+        // shared wildcard observation does; per-model admission is separate.
+        if normalized == "agy" {
+            return Ok(self.blocking_agy_wildcard_record(account_id, now).await);
+        }
+
+        if let Some(quota) = self.store.find_quota_by_agent(&normalized).await? {
+            if quota_snapshot_is_exhausted(&quota) {
+                return Ok(quota_snapshot_blocks(&quota, now).then_some(quota));
             } else if quota.status == "valid" {
                 return Ok(None);
             }
@@ -370,15 +519,11 @@ impl TuiManagementService {
         if normalized == "grok" {
             if let Some(info) = openduck_mcp::tui_session::profiles::grok::read_grok_quota_info() {
                 if info.is_exhausted {
-                    let is_still_exhausted = if let Some(ref end_str) = info.end {
-                        if let Ok(end_dt) = chrono::DateTime::parse_from_rfc3339(end_str) {
-                            now < end_dt
-                        } else {
-                            true
-                        }
-                    } else {
-                        true
-                    };
+                    let is_still_exhausted = info
+                        .end
+                        .as_deref()
+                        .and_then(|end| DateTime::parse_from_rfc3339(end).ok())
+                        .is_some_and(|end| now < end);
 
                     if is_still_exhausted {
                         let existing = self.store.find_quota_by_agent(&normalized).await?;
@@ -413,23 +558,11 @@ impl TuiManagementService {
         // 3. Also check account_id if provided
         if let Some(acc_id) = account_id {
             let quotas = self.store.list_quotas(Some(acc_id)).await?;
-            for mut q in quotas {
-                if q.status == "exhausted" || q.remaining_percent == Some(0.0) {
-                    let now = Utc::now();
-                    if let Some(ref reset_str) = q.reset_at {
-                        if let Ok(reset_dt) = chrono::DateTime::parse_from_rfc3339(reset_str) {
-                            if now >= reset_dt {
-                                q.status = "valid".to_string();
-                                q.remaining_percent = Some(100.0);
-                                q.used_amount = 0.0;
-                                q.observed_at = now.to_rfc3339();
-                                let _ = self.store.upsert_quota(&q).await;
-                                continue;
-                            }
-                        }
-                    }
-                    return Ok(Some(q));
-                }
+            if let Some(blocking) = quotas
+                .into_iter()
+                .find(|q| quota_snapshot_is_exhausted(q) && quota_snapshot_blocks(q, now))
+            {
+                return Ok(Some(blocking));
             }
         }
 
@@ -441,11 +574,46 @@ impl TuiManagementService {
         agent_kind: &str,
         account_id: Option<&str>,
         quota_type: &str,
+        message: &str,
+        reset_at: Option<String>,
+    ) -> Result<QuotaSnapshotRecord> {
+        self.record_quota_exhausted_scoped(
+            agent_kind, account_id, None, quota_type, message, reset_at,
+        )
+        .await
+    }
+
+    async fn record_prompt_quota(
+        &self,
+        session: &TuiSessionRecord,
+        quota_type: &str,
+        message: &str,
+        reset_at: Option<String>,
+    ) -> Result<QuotaSnapshotRecord> {
+        let model = prompt_quota_model(&session.agent_kind, session);
+        self.record_quota_exhausted_scoped(
+            &session.agent_kind,
+            session.account_id.as_deref(),
+            model,
+            quota_type,
+            message,
+            reset_at,
+        )
+        .await
+    }
+
+    async fn record_quota_exhausted_scoped(
+        &self,
+        agent_kind: &str,
+        account_id: Option<&str>,
+        model: Option<&str>,
+        quota_type: &str,
         _message: &str,
         reset_at: Option<String>,
     ) -> Result<QuotaSnapshotRecord> {
         let normalized = agent_kind.trim().to_ascii_lowercase();
         let now = Utc::now();
+        let model_pattern = scoped_model_pattern(&normalized, model);
 
         let (exact_reset, window_start, window_end) = if normalized == "grok" {
             if let Some(info) = openduck_mcp::tui_session::profiles::grok::read_grok_quota_info() {
@@ -465,7 +633,26 @@ impl TuiManagementService {
             )
         };
 
-        let existing = self.store.find_quota_by_agent(&normalized).await?;
+        let existing = if normalized == "agy" {
+            match self
+                .store
+                .find_quota_by_agent_model(&normalized, &model_pattern, account_id)
+                .await
+            {
+                Ok(found) => found,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        agent = %normalized,
+                        model = %model_pattern,
+                        "quota lookup failed while recording exhaustion"
+                    );
+                    None
+                }
+            }
+        } else {
+            self.store.find_quota_by_agent(&normalized).await?
+        };
         let q_id = existing
             .map(|e| e.id)
             .unwrap_or_else(|| format!("quota_{}", uuid::Uuid::new_v4()));
@@ -475,7 +662,7 @@ impl TuiManagementService {
             pool_id: format!("pool_{normalized}"),
             account_id: account_id.map(ToString::to_string),
             agent_kind: Some(normalized.clone()),
-            model_pattern: Some("*".to_string()),
+            model_pattern: Some(model_pattern),
             quota_type: quota_type.to_string(),
             unit: "percent".to_string(),
             used_amount: 100.0,
@@ -501,46 +688,175 @@ impl TuiManagementService {
         Ok(record)
     }
 
+    pub async fn refresh_all_quotas_for_agent(
+        &self,
+        agent_kind: &str,
+    ) -> Result<Vec<QuotaSnapshotRecord>> {
+        let normalized = match agent_kind.trim().to_ascii_lowercase().as_str() {
+            "antigravity" => "agy".to_string(),
+            other => other.to_string(),
+        };
+        let now = Utc::now().to_rfc3339();
+
+        match normalized.as_str() {
+            "grok" => {
+                if let Some(info) =
+                    openduck_mcp::tui_session::profiles::grok::read_grok_quota_info()
+                {
+                    let existing = self.store.find_quota_by_agent(&normalized).await?;
+                    let q_id = existing
+                        .map(|e| e.id)
+                        .unwrap_or_else(|| format!("quota_{}", uuid::Uuid::new_v4()));
+                    let remaining = (100.0 - info.credit_usage_percent).max(0.0);
+                    let record = QuotaSnapshotRecord {
+                        id: q_id,
+                        pool_id: format!("pool_{normalized}"),
+                        account_id: None,
+                        agent_kind: Some(normalized.clone()),
+                        model_pattern: Some("*".to_string()),
+                        quota_type: info.quota_type,
+                        unit: "percent".to_string(),
+                        used_amount: info.credit_usage_percent,
+                        limit_amount: Some(100.0),
+                        remaining_percent: Some(remaining),
+                        window_start: info.start,
+                        window_end: info.end.clone(),
+                        reset_at: info.end,
+                        source: "cli_billing_log".to_string(),
+                        status: if info.is_exhausted {
+                            "exhausted".to_string()
+                        } else {
+                            "valid".to_string()
+                        },
+                        observed_at: now,
+                    };
+                    self.store.upsert_quota(&record).await?;
+                    return Ok(vec![record]);
+                }
+            }
+            "codex" => {
+                if let Some(info) =
+                    openduck_mcp::tui_session::profiles::codex::read_codex_quota_info()
+                {
+                    let existing = self.store.list_quotas_by_agent(&normalized).await?;
+                    let mut out = Vec::with_capacity(info.windows.len());
+                    for window in info.windows {
+                        let q_id = existing
+                            .iter()
+                            .find(|e| e.quota_type == window.quota_type)
+                            .map(|e| e.id.clone())
+                            .unwrap_or_else(|| format!("quota_codex_{}", window.quota_type));
+                        let record = QuotaSnapshotRecord {
+                            id: q_id,
+                            pool_id: format!("pool_codex_{}", window.quota_type),
+                            account_id: None,
+                            agent_kind: Some(normalized.clone()),
+                            model_pattern: Some("*".to_string()),
+                            quota_type: window.quota_type,
+                            unit: "percent".to_string(),
+                            used_amount: window.used_percent,
+                            limit_amount: Some(100.0),
+                            remaining_percent: Some(window.remaining_percent),
+                            window_start: None,
+                            window_end: window.reset_at.clone(),
+                            reset_at: window.reset_at,
+                            source: "codex_session_log".to_string(),
+                            status: if window.is_exhausted {
+                                "exhausted".to_string()
+                            } else {
+                                "valid".to_string()
+                            },
+                            observed_at: info.observed_at.clone().unwrap_or_else(|| now.clone()),
+                        };
+                        self.store.upsert_quota(&record).await?;
+                        out.push(record);
+                    }
+                    if !out.is_empty() {
+                        return Ok(out);
+                    }
+                }
+            }
+            "agy" => {
+                let profile = self.store.get_profile_by_agent(&normalized).await?;
+                let proxy_mode = profile
+                    .as_ref()
+                    .map(|p| p.proxy_mode.as_str())
+                    .unwrap_or("inherit");
+                let proxy_id = profile.as_ref().and_then(|p| p.proxy_id.as_deref());
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let effective_proxy =
+                    resolve_effective_proxy(proxy_mode, proxy_id, None, &normalized, &cwd);
+                let agy_proxy = if proxy_mode == "direct" {
+                    openduck_mcp::tui_session::profiles::agy::AgyQuotaProxy::Direct
+                } else if let Some(ref url) = effective_proxy {
+                    openduck_mcp::tui_session::profiles::agy::AgyQuotaProxy::Url(url.as_str())
+                } else {
+                    openduck_mcp::tui_session::profiles::agy::AgyQuotaProxy::SystemEnv
+                };
+                let info =
+                    openduck_mcp::tui_session::profiles::agy::read_agy_quota_info_with_proxy(
+                        agy_proxy,
+                    )
+                    .await?;
+                let existing = self.store.list_quotas_by_agent(&normalized).await?;
+                let mut out = Vec::with_capacity(info.pools.len());
+                for pool in info.pools {
+                    let pool_slug = pool.model_pattern.trim_end_matches("-*");
+                    let q_id = existing
+                        .iter()
+                        .find(|e| e.model_pattern.as_deref() == Some(pool.model_pattern.as_str()))
+                        .map(|e| e.id.clone())
+                        .unwrap_or_else(|| format!("quota_agy_{pool_slug}"));
+                    let record = QuotaSnapshotRecord {
+                        id: q_id,
+                        pool_id: format!("pool_agy_{pool_slug}"),
+                        account_id: None,
+                        agent_kind: Some(normalized.clone()),
+                        model_pattern: Some(pool.model_pattern),
+                        quota_type: "rolling".to_string(),
+                        unit: "percent".to_string(),
+                        used_amount: pool.used_percent,
+                        limit_amount: Some(100.0),
+                        remaining_percent: Some(pool.remaining_percent),
+                        window_start: None,
+                        window_end: pool.reset_at.clone(),
+                        reset_at: pool.reset_at,
+                        source: "agy_api".to_string(),
+                        status: if pool.is_exhausted {
+                            "exhausted".to_string()
+                        } else {
+                            "valid".to_string()
+                        },
+                        observed_at: now.clone(),
+                    };
+                    self.store.upsert_quota(&record).await?;
+                    out.push(record);
+                }
+                if !out.is_empty() {
+                    return Ok(out);
+                }
+            }
+            _ => {}
+        }
+
+        self.store.list_quotas_by_agent(&normalized).await
+    }
+
     pub async fn refresh_quotas_for_agent(
         &self,
         agent_kind: &str,
     ) -> Result<Option<QuotaSnapshotRecord>> {
-        let normalized = agent_kind.trim().to_ascii_lowercase();
-        if normalized == "grok" {
-            if let Some(info) = openduck_mcp::tui_session::profiles::grok::read_grok_quota_info() {
-                let now = Utc::now();
-                let existing = self.store.find_quota_by_agent(&normalized).await?;
-                let q_id = existing
-                    .map(|e| e.id)
-                    .unwrap_or_else(|| format!("quota_{}", uuid::Uuid::new_v4()));
-                let remaining = (100.0 - info.credit_usage_percent).max(0.0);
-                let record = QuotaSnapshotRecord {
-                    id: q_id,
-                    pool_id: format!("pool_{normalized}"),
-                    account_id: None,
-                    agent_kind: Some(normalized.clone()),
-                    model_pattern: Some("*".to_string()),
-                    quota_type: info.quota_type,
-                    unit: "percent".to_string(),
-                    used_amount: info.credit_usage_percent,
-                    limit_amount: Some(100.0),
-                    remaining_percent: Some(remaining),
-                    window_start: info.start,
-                    window_end: info.end.clone(),
-                    reset_at: info.end,
-                    source: "cli_billing_log".to_string(),
-                    status: if info.is_exhausted {
-                        "exhausted".to_string()
-                    } else {
-                        "valid".to_string()
-                    },
-                    observed_at: now.to_rfc3339(),
-                };
-                self.store.upsert_quota(&record).await?;
-                return Ok(Some(record));
-            }
+        let mut records = self.refresh_all_quotas_for_agent(agent_kind).await?;
+        if records.is_empty() {
+            return Ok(None);
         }
-        self.store.find_quota_by_agent(&normalized).await
+        records.sort_by(|a, b| {
+            a.remaining_percent
+                .unwrap_or(100.0)
+                .partial_cmp(&b.remaining_percent.unwrap_or(100.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(records.into_iter().next())
     }
 
     pub async fn start_session(
@@ -548,22 +864,6 @@ impl TuiManagementService {
         req: StartManagedSessionRequest,
     ) -> Result<(TuiSessionRecord, Option<TuiTurnResult>)> {
         let kind = AgentCliKind::from_str(&req.agent)?;
-
-        // Quota check: If agent hit limit, do not use before limit reset
-        if let Some(exhausted) = self
-            .check_agent_quota(&kind.to_string(), req.account_id.as_deref())
-            .await?
-        {
-            let reset_info = match &exhausted.reset_at {
-                Some(r) => format!("resets at {}", r),
-                None => "waiting for limit reset".to_string(),
-            };
-            return Err(anyhow!(
-                "Cannot use agent '{}': hit {} limit ({reset_info}). Agent is suspended until quota resets.",
-                kind,
-                exhausted.quota_type
-            ));
-        }
 
         let session_name = req
             .session_name
@@ -618,6 +918,26 @@ impl TuiManagementService {
         if let Some(ref m) = resolved_model {
             validate_model_name(m)?;
         }
+        let desired_model = resolved_model;
+        let resolved_model = if kind == AgentCliKind::Agy {
+            self.select_agy_startup_model(
+                desired_model.as_deref(),
+                req.account_id.as_deref(),
+                Utc::now(),
+            )
+            .await?
+        } else if let Some(exhausted) = self
+            .check_agent_quota(&kind.to_string(), req.account_id.as_deref())
+            .await?
+        {
+            return Err(suspended_agent_error(
+                &kind.to_string(),
+                &exhausted.quota_type,
+                exhausted.reset_at.as_deref(),
+            ));
+        } else {
+            desired_model
+        };
         let resolved_effort = req
             .effort
             .clone()
@@ -632,34 +952,13 @@ impl TuiManagementService {
             .proxy_id
             .or_else(|| profile.as_ref().and_then(|p| p.proxy_id.clone()));
 
-        let effective_proxy = if resolved_proxy_mode == "direct" {
-            None
-        } else if let Some(p) = req.https_proxy {
-            Some(p)
-        } else if resolved_proxy_mode == "custom" {
-            resolved_proxy_id.clone().filter(|s| !s.trim().is_empty())
-        } else if resolved_proxy_mode == "named" {
-            if let Some(ref pid) = resolved_proxy_id {
-                let config = crate::config::Config::global();
-                crate::config::proxies::get_proxy_entry(config, pid)
-                    .map(|e| e.url)
-                    .or_else(|| {
-                        if pid.starts_with("http://")
-                            || pid.starts_with("https://")
-                            || pid.starts_with("socks5://")
-                            || pid.starts_with("socks5h://")
-                        {
-                            Some(pid.clone())
-                        } else {
-                            None
-                        }
-                    })
-            } else {
-                None
-            }
-        } else {
-            inherited_tui_proxy(&kind.to_string(), &working_dir)
-        };
+        let effective_proxy = resolve_effective_proxy(
+            &resolved_proxy_mode,
+            resolved_proxy_id.as_deref(),
+            req.https_proxy,
+            &kind.to_string(),
+            &working_dir,
+        );
 
         let op_id = format!("op_{}", uuid::Uuid::new_v4());
         let start_time = Instant::now();
@@ -868,20 +1167,18 @@ impl TuiManagementService {
             }
         }
 
-        // Quota check: If agent hit limit, do not use before limit reset
-        if let Some(exhausted) = self
+        if sess_rec.agent_kind.eq_ignore_ascii_case("agy") {
+            self.reject_blocked_agy_prompt(&sess_rec).await?;
+        } else if let Some(exhausted) = self
             .check_agent_quota(&sess_rec.agent_kind, sess_rec.account_id.as_deref())
             .await?
         {
-            let reset_info = match &exhausted.reset_at {
-                Some(r) => format!("resets at {}", r),
-                None => "waiting for limit reset".to_string(),
-            };
-            return Err(anyhow!(
-                "Cannot use session '{}' (agent '{}'): hit {} limit ({reset_info}). Agent is suspended until quota resets.",
-                sess_rec.session_name,
-                sess_rec.agent_kind,
-                exhausted.quota_type
+            return Err(session_quota_error(
+                &sess_rec.session_name,
+                &sess_rec.agent_kind,
+                None,
+                &exhausted.quota_type,
+                exhausted.reset_at.as_deref(),
             ));
         }
 
@@ -941,26 +1238,14 @@ impl TuiManagementService {
 
                 if let TuiPaneState::QuotaExceeded { ref message } = turn.state {
                     let _ = self
-                        .record_quota_exhausted(
-                            &updated.agent_kind,
-                            updated.account_id.as_deref(),
-                            "weekly",
-                            message,
-                            None,
-                        )
+                        .record_prompt_quota(&updated, "weekly", message, None)
                         .await;
                 } else if let Some(msg) =
                     detect_quota_limit(&[&turn.screen_snapshot, &turn.response])
                 {
                     updated.tui_pane_state = "quota_exceeded".to_string();
                     let _ = self
-                        .record_quota_exhausted(
-                            &updated.agent_kind,
-                            updated.account_id.as_deref(),
-                            "weekly",
-                            &msg,
-                            None,
-                        )
+                        .record_prompt_quota(&updated, "weekly", &msg, None)
                         .await;
                 }
 
@@ -977,13 +1262,7 @@ impl TuiManagementService {
                 let err_str = e.to_string();
                 if let Some(msg) = detect_quota_limit(&[&err_str]) {
                     let _ = self
-                        .record_quota_exhausted(
-                            &sess_rec.agent_kind,
-                            sess_rec.account_id.as_deref(),
-                            "weekly",
-                            &msg,
-                            None,
-                        )
+                        .record_prompt_quota(&sess_rec, "weekly", &msg, None)
                         .await;
                     let mut updated = sess_rec;
                     updated.tui_pane_state = "quota_exceeded".to_string();
@@ -1058,6 +1337,35 @@ impl TuiManagementService {
             .get_session(&sess_rec.session_name)
             .await?;
         let res = handle.read_state(scrollback_lines, include_ansi).await?;
+
+        let now_str = Utc::now().to_rfc3339();
+        let mut updated = sess_rec;
+        updated.last_observed_at = Some(now_str);
+        updated.tui_pane_state = res.state.label().to_string();
+        let _ = self.store.update_session(&updated).await;
+
+        Ok(res)
+    }
+
+    pub async fn read_state_wait(
+        &self,
+        session_id_or_name: &str,
+        scrollback_lines: Option<i32>,
+        include_ansi: bool,
+        wait_secs: Option<u64>,
+    ) -> Result<TuiTurnResult> {
+        let sess_rec = self
+            .get_session_record(session_id_or_name)
+            .await?
+            .ok_or_else(|| anyhow!("Session '{}' not found", session_id_or_name))?;
+
+        let handle = self
+            .session_manager
+            .get_session(&sess_rec.session_name)
+            .await?;
+        let res = handle
+            .read_for_tool_with(scrollback_lines, include_ansi, wait_secs)
+            .await?;
 
         let now_str = Utc::now().to_rfc3339();
         let mut updated = sess_rec;
@@ -1549,5 +1857,936 @@ impl TuiManagementService {
             return Ok(Some(s));
         }
         self.store.get_session_by_name(id_or_name).await
+    }
+}
+
+const SHARED_MODEL_PATTERN: &str = "*";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgyModelEligibility {
+    Eligible,
+    Blocked(AgyQuotaBlock),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgyQuotaBlock {
+    quota_type: String,
+    reset_at: Option<String>,
+}
+
+enum AgyQuotaRead {
+    Record(QuotaSnapshotRecord),
+    Missing,
+    Failed,
+}
+
+struct AgyCandidate<'a> {
+    model: &'a str,
+    eligibility: AgyModelEligibility,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgyModelChoice {
+    Selected(String),
+    AllBlocked {
+        quota_type: String,
+        reset_at: Option<String>,
+        models: Vec<String>,
+    },
+}
+
+fn nonempty_model(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|model| !model.is_empty())
+}
+
+fn session_active_quota_model(session: &TuiSessionRecord) -> Option<&str> {
+    nonempty_model(session.active_model.as_deref())
+        .or_else(|| nonempty_model(session.current_model.as_deref()))
+        .or_else(|| nonempty_model(session.model.as_deref()))
+}
+
+fn prompt_quota_model<'a>(agent_kind: &str, session: &'a TuiSessionRecord) -> Option<&'a str> {
+    if agent_kind.eq_ignore_ascii_case("agy") {
+        session_active_quota_model(session)
+    } else {
+        None
+    }
+}
+
+fn scoped_model_pattern(agent_kind: &str, model: Option<&str>) -> String {
+    if agent_kind == "agy" {
+        nonempty_model(model)
+            .unwrap_or(SHARED_MODEL_PATTERN)
+            .to_string()
+    } else {
+        SHARED_MODEL_PATTERN.to_string()
+    }
+}
+
+fn push_candidate(candidates: &mut Vec<String>, model: &str) {
+    let model = model.trim();
+    if model.is_empty() || candidates.iter().any(|existing| existing == model) {
+        return;
+    }
+    candidates.push(model.to_string());
+}
+
+fn agy_candidate_models(
+    desired: Option<&str>,
+    default_model: Option<&str>,
+    models: &[CatalogModelEntry],
+) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Some(model) = nonempty_model(desired) {
+        push_candidate(&mut candidates, model);
+    } else if let Some(model) = nonempty_model(default_model) {
+        push_candidate(&mut candidates, model);
+    }
+    for model in models {
+        push_candidate(&mut candidates, &model.id);
+    }
+    candidates
+}
+
+/// Missing, stale, expired, failed, and non-observation reads stay eligible.
+/// A model is blocked only by a fresh exhausted observation whose reset is still ahead.
+fn agy_eligibility(read: &AgyQuotaRead, now: DateTime<Utc>) -> AgyModelEligibility {
+    match read {
+        AgyQuotaRead::Record(quota) if agy_model_quota_blocks(quota, now) => {
+            AgyModelEligibility::Blocked(AgyQuotaBlock {
+                quota_type: quota.quota_type.clone(),
+                reset_at: quota.reset_at.clone(),
+            })
+        }
+        AgyQuotaRead::Record(_) | AgyQuotaRead::Missing | AgyQuotaRead::Failed => {
+            AgyModelEligibility::Eligible
+        }
+    }
+}
+
+fn agy_model_quota_blocks(quota: &QuotaSnapshotRecord, now: DateTime<Utc>) -> bool {
+    if !agy_status_is_quota_observation(&quota.status) {
+        return false;
+    }
+    quota_observation_is_fresh(quota, now)
+        && quota_snapshot_is_exhausted(quota)
+        && quota_snapshot_blocks(quota, now)
+}
+
+fn agy_status_is_quota_observation(status: &str) -> bool {
+    !matches!(
+        status,
+        "failed" | "error" | "unavailable" | "unsupported" | "unknown"
+    )
+}
+
+fn quota_observation_is_fresh(quota: &QuotaSnapshotRecord, now: DateTime<Utc>) -> bool {
+    let Some(observed) = DateTime::parse_from_rfc3339(&quota.observed_at)
+        .ok()
+        .map(|observed| observed.with_timezone(&Utc))
+    else {
+        return false;
+    };
+    if observed > now {
+        return false;
+    }
+    now.signed_duration_since(observed)
+        <= chrono::Duration::seconds(DEFAULT_QUOTA_STALE_AFTER_SECONDS as i64)
+}
+
+fn choose_agy_model(candidates: &[AgyCandidate<'_>]) -> Option<AgyModelChoice> {
+    if candidates.is_empty() {
+        return None;
+    }
+    for candidate in candidates {
+        if candidate.eligibility == AgyModelEligibility::Eligible {
+            return Some(AgyModelChoice::Selected(candidate.model.to_string()));
+        }
+    }
+    let quota_type = candidates
+        .iter()
+        .find_map(|candidate| match &candidate.eligibility {
+            AgyModelEligibility::Blocked(block) => Some(block.quota_type.clone()),
+            AgyModelEligibility::Eligible => None,
+        })
+        .unwrap_or_else(|| "quota".to_string());
+    let reset_at = candidates
+        .iter()
+        .filter_map(|candidate| match &candidate.eligibility {
+            AgyModelEligibility::Blocked(block) => block.reset_at.as_deref().and_then(|reset| {
+                DateTime::parse_from_rfc3339(reset)
+                    .ok()
+                    .map(|parsed| (parsed.with_timezone(&Utc), reset.to_string()))
+            }),
+            AgyModelEligibility::Eligible => None,
+        })
+        .max_by_key(|(parsed, _)| *parsed)
+        .map(|(_, reset)| reset);
+    Some(AgyModelChoice::AllBlocked {
+        quota_type,
+        reset_at,
+        models: candidates
+            .iter()
+            .map(|candidate| candidate.model.to_string())
+            .collect(),
+    })
+}
+
+fn reset_phrase(reset_at: Option<&str>) -> String {
+    match reset_at {
+        Some(reset) => format!("resets at {reset}"),
+        None => "waiting for limit reset".to_string(),
+    }
+}
+
+fn suspended_agent_error(agent: &str, quota_type: &str, reset_at: Option<&str>) -> anyhow::Error {
+    let reset_info = reset_phrase(reset_at);
+    anyhow!(
+        "Cannot use agent '{agent}': hit {quota_type} limit ({reset_info}). Agent is suspended until quota resets."
+    )
+}
+
+fn all_agy_models_blocked_error(
+    quota_type: &str,
+    reset_at: Option<&str>,
+    models: &[String],
+) -> anyhow::Error {
+    let reset_info = reset_phrase(reset_at);
+    let listed = models.join(", ");
+    anyhow!(
+        "Cannot use agent 'agy': hit {quota_type} limit for all known models ({listed}) ({reset_info}). Agent is suspended until quota resets."
+    )
+}
+
+fn session_quota_error(
+    session_name: &str,
+    agent: &str,
+    model: Option<&str>,
+    quota_type: &str,
+    reset_at: Option<&str>,
+) -> anyhow::Error {
+    let reset_info = reset_phrase(reset_at);
+    match model {
+        Some(model) => anyhow!(
+            "Cannot use session '{session_name}' (agent '{agent}', model '{model}'): hit {quota_type} limit ({reset_info}). Agent is suspended until quota resets."
+        ),
+        None => anyhow!(
+            "Cannot use session '{session_name}' (agent '{agent}'): hit {quota_type} limit ({reset_info}). Agent is suspended until quota resets."
+        ),
+    }
+}
+
+fn quota_snapshot_is_exhausted(quota: &QuotaSnapshotRecord) -> bool {
+    quota.status == "exhausted" || quota.remaining_percent == Some(0.0)
+}
+
+fn quota_snapshot_blocks(quota: &QuotaSnapshotRecord, now: DateTime<Utc>) -> bool {
+    quota
+        .reset_at
+        .as_deref()
+        .and_then(|reset| DateTime::parse_from_rfc3339(reset).ok())
+        .is_some_and(|reset| reset.with_timezone(&Utc) > now)
+}
+
+#[cfg(test)]
+mod snapshot_gate_tests {
+    use super::{quota_snapshot_blocks, quota_snapshot_is_exhausted, QuotaSnapshotRecord};
+    use chrono::{DateTime, Utc};
+
+    fn snapshot(reset_at: Option<&str>) -> QuotaSnapshotRecord {
+        QuotaSnapshotRecord {
+            id: "q".into(),
+            pool_id: "p".into(),
+            account_id: None,
+            agent_kind: Some("grok".into()),
+            model_pattern: None,
+            quota_type: "credits".into(),
+            unit: "percent".into(),
+            used_amount: 100.0,
+            limit_amount: Some(100.0),
+            remaining_percent: Some(0.0),
+            window_start: None,
+            window_end: None,
+            reset_at: reset_at.map(Into::into),
+            source: "test".into(),
+            status: "exhausted".into(),
+            observed_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        "2026-01-01T12:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn blocks_only_for_future_parseable_reset() {
+        assert!(quota_snapshot_is_exhausted(&snapshot(None)));
+        assert!(quota_snapshot_blocks(
+            &snapshot(Some("2026-01-01T12:00:01Z")),
+            now()
+        ));
+        assert!(quota_snapshot_blocks(
+            &snapshot(Some("2026-01-01T08:00:00-05:00")),
+            now()
+        ));
+        assert!(!quota_snapshot_blocks(
+            &snapshot(Some("2026-01-01T12:00:00Z")),
+            now()
+        ));
+        assert!(!quota_snapshot_blocks(
+            &snapshot(Some("2025-12-31T00:00:00Z")),
+            now()
+        ));
+        assert!(!quota_snapshot_blocks(&snapshot(Some("soon")), now()));
+        assert!(!quota_snapshot_blocks(&snapshot(None), now()));
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::super::quota::{
+        QuotaAdmission, QuotaAgentStatus, QuotaAvailability, QuotaCollection, QuotaObservation,
+        QuotaReset, QuotaScope, NORMAL_SAMPLING_WEIGHT,
+    };
+    use super::TuiManagementService;
+    use chrono::{DateTime, Utc};
+
+    fn ts(epoch: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(epoch, 0).expect("timestamp")
+    }
+
+    #[test]
+    fn admit_agent_quota_uses_policy_without_mutating_observation() {
+        let observed_at = ts(1_000);
+        let reset_at = ts(5_000);
+        let observation = QuotaObservation::try_new(
+            QuotaScope::try_from_parts("grok", None, None, "credits", "weekly").expect("scope"),
+            QuotaAvailability::Exhausted,
+            Some(0.0),
+            QuotaReset::at(reset_at),
+            "cli_billing_log",
+            observed_at,
+        )
+        .expect("observation");
+        let mut book = QuotaAgentStatus::never_observed(observation.scope.agent).apply_refresh(
+            observed_at,
+            QuotaCollection::Observed(vec![observation.clone()]),
+        );
+        book.stale_after_seconds = 10_000;
+        book.statuses[0].stale_after_seconds = 10_000;
+        let before = book.clone();
+
+        assert_eq!(
+            TuiManagementService::admit_agent_quota(&book, ts(1_200)),
+            QuotaAdmission::Blocked { until: reset_at }
+        );
+        assert_eq!(
+            TuiManagementService::admit_agent_quota(&book, reset_at),
+            QuotaAdmission::Eligible {
+                weight: NORMAL_SAMPLING_WEIGHT,
+            }
+        );
+        assert_eq!(book, before);
+        assert_eq!(book.statuses[0].observation.as_ref(), Some(&observation));
+    }
+}
+
+#[cfg(test)]
+mod agy_model_quota_tests {
+    use std::sync::Arc;
+
+    use chrono::{DateTime, Duration, Utc};
+    use openduck_mcp::tui_session::{
+        AgentCliKind, AgentModelCatalog, CatalogModelEntry, ModelLoader, ModelSource,
+        TuiSessionManager,
+    };
+
+    use super::super::models::{QuotaSnapshotRecord, TuiSessionRecord};
+    use super::super::quota::DEFAULT_QUOTA_STALE_AFTER_SECONDS;
+    use super::{
+        agy_candidate_models, agy_eligibility, choose_agy_model, prompt_quota_model,
+        scoped_model_pattern, AgyCandidate, AgyModelChoice, AgyModelEligibility, AgyQuotaRead,
+        TuiManagementService,
+    };
+
+    struct FixedAgyModels(Vec<CatalogModelEntry>);
+
+    #[async_trait::async_trait]
+    impl ModelLoader for FixedAgyModels {
+        async fn load_models(&self, agent: AgentCliKind) -> anyhow::Result<Vec<CatalogModelEntry>> {
+            if agent == AgentCliKind::Agy {
+                Ok(self.0.clone())
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    fn ts(epoch: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(epoch, 0).expect("timestamp")
+    }
+
+    fn catalog_model(id: &str, is_default: bool) -> CatalogModelEntry {
+        CatalogModelEntry {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            description: None,
+            is_default,
+            source: ModelSource::DynamicLoader,
+        }
+    }
+
+    fn models() -> Vec<CatalogModelEntry> {
+        vec![
+            catalog_model("zeta-model", false),
+            catalog_model("mid-model", true),
+            catalog_model("alpha-model", false),
+        ]
+    }
+
+    fn snapshot(
+        status: &str,
+        remaining: Option<f64>,
+        reset_at: Option<&str>,
+        observed_at: &str,
+    ) -> QuotaSnapshotRecord {
+        QuotaSnapshotRecord {
+            id: "q".into(),
+            pool_id: "pool_agy".into(),
+            account_id: None,
+            agent_kind: Some("agy".into()),
+            model_pattern: Some("zeta-model".into()),
+            quota_type: "weekly".into(),
+            unit: "percent".into(),
+            used_amount: 100.0,
+            limit_amount: Some(100.0),
+            remaining_percent: remaining,
+            window_start: None,
+            window_end: None,
+            reset_at: reset_at.map(str::to_string),
+            source: "test".into(),
+            status: status.into(),
+            observed_at: observed_at.into(),
+        }
+    }
+
+    fn eligibility(
+        status: &str,
+        remaining: Option<f64>,
+        reset_at: Option<&str>,
+        observed_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> AgyModelEligibility {
+        let record = snapshot(status, remaining, reset_at, &observed_at.to_rfc3339());
+        agy_eligibility(&AgyQuotaRead::Record(record), now)
+    }
+
+    fn blocked<'a>(model: &'a str, quota_type: &str, reset_at: &str) -> AgyCandidate<'a> {
+        AgyCandidate {
+            model,
+            eligibility: AgyModelEligibility::Blocked(super::AgyQuotaBlock {
+                quota_type: quota_type.to_string(),
+                reset_at: Some(reset_at.to_string()),
+            }),
+        }
+    }
+
+    fn eligible(model: &str) -> AgyCandidate<'_> {
+        AgyCandidate {
+            model,
+            eligibility: AgyModelEligibility::Eligible,
+        }
+    }
+
+    fn session(agent: &str, active: Option<&str>, model: Option<&str>) -> TuiSessionRecord {
+        TuiSessionRecord {
+            id: "sess".into(),
+            session_name: "sess-name".into(),
+            agent_kind: agent.into(),
+            cwd: "/tmp".into(),
+            model: model.map(str::to_string),
+            active_model: active.map(str::to_string),
+            current_model: None,
+            effort: None,
+            auto_approve: true,
+            proxy_mode: "inherit".into(),
+            proxy_id: None,
+            effective_proxy: None,
+            account_id: None,
+            created_by_project_id: None,
+            created_by_task_id: None,
+            created_by_run_id: None,
+            created_by_subtask_id: None,
+            creation_source: "test".into(),
+            owner_run_id: None,
+            ownership_mode: "manual".into(),
+            generation: 1,
+            lifecycle_state: "active".into(),
+            process_state: "alive".into(),
+            tui_pane_state: "idle".into(),
+            stop_intent: None,
+            cleanup_error: None,
+            created_at: "2026-11-13T00:00:00Z".into(),
+            last_operation_at: None,
+            last_input_at: None,
+            last_progress_at: None,
+            last_observed_at: None,
+            idle_since: None,
+            owner_terminal_at: None,
+            reclaim_after: None,
+            stopped_at: None,
+            reclaimed_at: None,
+        }
+    }
+
+    async fn service_with(catalog_models: Vec<CatalogModelEntry>) -> TuiManagementService {
+        let store = Arc::new(
+            super::super::store::SqliteTuiStore::open(":memory:")
+                .await
+                .expect("memory store"),
+        );
+        let catalog = Arc::new(AgentModelCatalog::new());
+        catalog
+            .set_loader(AgentCliKind::Agy, Arc::new(FixedAgyModels(catalog_models)))
+            .await;
+        TuiManagementService::with_catalog(store, Arc::new(TuiSessionManager::default()), catalog)
+    }
+
+    async fn insert_quota(
+        service: &TuiManagementService,
+        id: &str,
+        model: &str,
+        account: Option<&str>,
+        status: &str,
+        reset_at: DateTime<Utc>,
+        observed_at: DateTime<Utc>,
+    ) {
+        service
+            .store
+            .upsert_quota(&QuotaSnapshotRecord {
+                id: id.into(),
+                pool_id: "pool_agy".into(),
+                account_id: account.map(str::to_string),
+                agent_kind: Some("agy".into()),
+                model_pattern: Some(model.into()),
+                quota_type: "weekly".into(),
+                unit: "percent".into(),
+                used_amount: 100.0,
+                limit_amount: Some(100.0),
+                remaining_percent: Some(0.0),
+                window_start: None,
+                window_end: Some(reset_at.to_rfc3339()),
+                reset_at: Some(reset_at.to_rfc3339()),
+                source: "test".into(),
+                status: status.into(),
+                observed_at: observed_at.to_rfc3339(),
+            })
+            .await
+            .expect("upsert quota");
+    }
+
+    #[test]
+    fn candidate_order_is_requested_then_stable_catalog_order() {
+        let listed = models();
+        assert_eq!(
+            agy_candidate_models(Some("zeta-model"), Some("mid-model"), &listed),
+            vec!["zeta-model", "mid-model", "alpha-model"]
+        );
+        assert_eq!(
+            agy_candidate_models(None, Some("mid-model"), &listed),
+            vec!["mid-model", "zeta-model", "alpha-model"]
+        );
+        assert_eq!(
+            agy_candidate_models(Some("custom-model"), None, &listed),
+            vec!["custom-model", "zeta-model", "mid-model", "alpha-model"]
+        );
+    }
+
+    #[test]
+    fn unknown_stale_expired_and_failed_reads_stay_eligible() {
+        let now = ts(1_700_000_000);
+        let future = now + Duration::hours(2);
+        let past = now - Duration::hours(1);
+        let fresh = now - Duration::seconds(1);
+        let stale_after = i64::try_from(DEFAULT_QUOTA_STALE_AFTER_SECONDS).expect("stale window");
+        let still_fresh = now - Duration::seconds(stale_after);
+        let stale = now - Duration::seconds(stale_after + 1);
+
+        assert_eq!(
+            agy_eligibility(&AgyQuotaRead::Missing, now),
+            AgyModelEligibility::Eligible
+        );
+        assert_eq!(
+            agy_eligibility(&AgyQuotaRead::Failed, now),
+            AgyModelEligibility::Eligible
+        );
+        assert_eq!(
+            eligibility(
+                "exhausted",
+                Some(0.0),
+                Some(&future.to_rfc3339()),
+                stale,
+                now
+            ),
+            AgyModelEligibility::Eligible
+        );
+        assert_eq!(
+            eligibility("exhausted", Some(0.0), Some(&past.to_rfc3339()), fresh, now),
+            AgyModelEligibility::Eligible
+        );
+        assert_eq!(
+            eligibility("exhausted", Some(0.0), Some("next week"), fresh, now),
+            AgyModelEligibility::Eligible
+        );
+        assert_eq!(
+            eligibility("exhausted", Some(0.0), None, fresh, now),
+            AgyModelEligibility::Eligible
+        );
+        assert_eq!(
+            eligibility("failed", Some(0.0), Some(&future.to_rfc3339()), fresh, now),
+            AgyModelEligibility::Eligible
+        );
+        assert_eq!(
+            eligibility("unknown", Some(0.0), Some(&future.to_rfc3339()), fresh, now),
+            AgyModelEligibility::Eligible
+        );
+        assert_eq!(
+            eligibility(
+                "exhausted",
+                Some(0.0),
+                Some(&future.to_rfc3339()),
+                now + Duration::seconds(5),
+                now
+            ),
+            AgyModelEligibility::Eligible
+        );
+        let unparsed = snapshot("exhausted", Some(0.0), Some(&future.to_rfc3339()), "soon");
+        assert_eq!(
+            agy_eligibility(&AgyQuotaRead::Record(unparsed), now),
+            AgyModelEligibility::Eligible
+        );
+        assert_eq!(
+            eligibility(
+                "exhausted",
+                Some(0.0),
+                Some(&future.to_rfc3339()),
+                still_fresh,
+                now
+            ),
+            AgyModelEligibility::Blocked(super::AgyQuotaBlock {
+                quota_type: "weekly".into(),
+                reset_at: Some(future.to_rfc3339()),
+            })
+        );
+        assert_eq!(
+            eligibility("valid", Some(0.0), Some(&future.to_rfc3339()), fresh, now),
+            AgyModelEligibility::Blocked(super::AgyQuotaBlock {
+                quota_type: "weekly".into(),
+                reset_at: Some(future.to_rfc3339()),
+            })
+        );
+    }
+
+    #[test]
+    fn choose_falls_back_in_order_until_one_is_eligible() {
+        let choice = choose_agy_model(&[
+            blocked("zeta-model", "weekly", "2026-12-01T00:00:00Z"),
+            eligible("mid-model"),
+            blocked("alpha-model", "weekly", "2026-12-02T00:00:00Z"),
+        ]);
+        assert_eq!(
+            choice,
+            Some(AgyModelChoice::Selected("mid-model".to_string()))
+        );
+
+        let blocked_choice = choose_agy_model(&[
+            blocked("zeta-model", "weekly", "2026-12-01T00:00:00Z"),
+            blocked("mid-model", "daily", "2026-12-03T00:00:00Z"),
+        ])
+        .expect("decision");
+        assert_eq!(
+            blocked_choice,
+            AgyModelChoice::AllBlocked {
+                quota_type: "weekly".into(),
+                reset_at: Some("2026-12-03T00:00:00Z".into()),
+                models: vec!["zeta-model".into(), "mid-model".into()],
+            }
+        );
+        assert!(choose_agy_model(&[]).is_none());
+    }
+
+    #[test]
+    fn prompt_model_pattern_uses_agy_active_model_only() {
+        let agy = session("agy", Some("mid-model"), Some("zeta-model"));
+        assert_eq!(prompt_quota_model("agy", &agy), Some("mid-model"));
+        assert_eq!(
+            scoped_model_pattern("agy", prompt_quota_model("agy", &agy)),
+            "mid-model"
+        );
+        let configured = session("agy", Some("  "), Some("zeta-model"));
+        assert_eq!(prompt_quota_model("agy", &configured), Some("zeta-model"));
+        let grok = session("grok", Some("grok-4.6"), Some("grok-4.6"));
+        assert_eq!(prompt_quota_model("grok", &grok), None);
+        assert_eq!(scoped_model_pattern("grok", Some("grok-4.6")), "*");
+        assert_eq!(scoped_model_pattern("agy", None), "*");
+    }
+
+    #[tokio::test]
+    async fn fallback_follows_discovered_catalog_order() {
+        let now = Utc::now();
+        let reset = now + Duration::hours(4);
+        let service = service_with(models()).await;
+        let entry = service.catalog.get_models(AgentCliKind::Agy).await;
+        assert_eq!(
+            entry
+                .models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["zeta-model", "mid-model", "alpha-model"]
+        );
+        assert_eq!(entry.default_model.as_deref(), Some("mid-model"));
+
+        insert_quota(
+            &service,
+            "q-zeta",
+            "zeta-model",
+            None,
+            "exhausted",
+            reset,
+            now,
+        )
+        .await;
+        let chosen = service
+            .select_agy_startup_model(Some("zeta-model"), None, now)
+            .await
+            .expect("fallback");
+        assert_eq!(chosen.as_deref(), Some("mid-model"));
+
+        insert_quota(
+            &service,
+            "q-zeta-account",
+            "zeta-model",
+            Some("acct-1"),
+            "exhausted",
+            reset,
+            now,
+        )
+        .await;
+        let other_account = service
+            .select_agy_startup_model(Some("zeta-model"), Some("acct-2"), now)
+            .await
+            .expect("other account");
+        assert_eq!(other_account.as_deref(), Some("zeta-model"));
+        let same_account = service
+            .select_agy_startup_model(Some("zeta-model"), Some("acct-1"), now)
+            .await
+            .expect("same account");
+        assert_eq!(same_account.as_deref(), Some("mid-model"));
+
+        assert!(service
+            .check_agent_quota("agy", None)
+            .await
+            .expect("agent gate")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn all_known_models_exhausted_is_a_clear_error() {
+        let now = Utc::now();
+        let earlier = now + Duration::hours(1);
+        let later = now + Duration::hours(5);
+        let service = service_with(models()).await;
+        insert_quota(
+            &service,
+            "q-zeta",
+            "zeta-model",
+            None,
+            "exhausted",
+            earlier,
+            now,
+        )
+        .await;
+        insert_quota(
+            &service,
+            "q-mid",
+            "mid-model",
+            None,
+            "exhausted",
+            later,
+            now,
+        )
+        .await;
+        insert_quota(
+            &service,
+            "q-alpha",
+            "alpha-model",
+            None,
+            "exhausted",
+            earlier,
+            now,
+        )
+        .await;
+
+        let err = service
+            .select_agy_startup_model(Some("zeta-model"), None, now)
+            .await
+            .expect_err("all blocked");
+        let message = err.to_string();
+        assert!(message.contains("all known models"), "{message}");
+        assert!(message.contains("zeta-model"), "{message}");
+        assert!(message.contains("mid-model"), "{message}");
+        assert!(message.contains("alpha-model"), "{message}");
+        assert!(message.contains(&later.to_rfc3339()), "{message}");
+        assert!(
+            message.contains("suspended until quota resets"),
+            "{message}"
+        );
+
+        insert_quota(&service, "q-wild", "*", None, "exhausted", later, now).await;
+        let wildcard = service
+            .select_agy_startup_model(Some("custom-model"), None, now)
+            .await
+            .expect_err("wildcard");
+        let wildcard_message = wildcard.to_string();
+        assert!(
+            wildcard_message.contains("suspended until quota resets"),
+            "{wildcard_message}"
+        );
+        assert!(
+            !wildcard_message.contains("all known models"),
+            "{wildcard_message}"
+        );
+        assert!(service
+            .check_agent_quota("agy", None)
+            .await
+            .expect("wildcard gate")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn missing_stale_and_expired_rows_do_not_block_the_requested_model() {
+        let now = Utc::now();
+        let future = now + Duration::hours(3);
+        let past = now - Duration::hours(2);
+        let stale_after = i64::try_from(DEFAULT_QUOTA_STALE_AFTER_SECONDS).expect("stale window");
+        let service = service_with(models()).await;
+
+        let missing = service
+            .select_agy_startup_model(Some("zeta-model"), None, now)
+            .await
+            .expect("missing");
+        assert_eq!(missing.as_deref(), Some("zeta-model"));
+
+        insert_quota(
+            &service,
+            "q-zeta",
+            "zeta-model",
+            None,
+            "exhausted",
+            future,
+            now - Duration::seconds(stale_after + 1),
+        )
+        .await;
+        let stale = service
+            .select_agy_startup_model(Some("zeta-model"), None, now)
+            .await
+            .expect("stale");
+        assert_eq!(stale.as_deref(), Some("zeta-model"));
+
+        insert_quota(
+            &service,
+            "q-zeta",
+            "zeta-model",
+            None,
+            "exhausted",
+            past,
+            now,
+        )
+        .await;
+        let expired = service
+            .select_agy_startup_model(Some("zeta-model"), None, now)
+            .await
+            .expect("expired");
+        assert_eq!(expired.as_deref(), Some("zeta-model"));
+
+        let unset = service
+            .select_agy_startup_model(None, None, now)
+            .await
+            .expect("default");
+        assert_eq!(unset.as_deref(), Some("mid-model"));
+    }
+
+    #[tokio::test]
+    async fn prompt_exhaustion_persists_under_the_agy_active_model() {
+        let service = service_with(Vec::new()).await;
+        let agy = session("agy", Some("mid-model"), Some("zeta-model"));
+        let first = service
+            .record_prompt_quota(&agy, "weekly", "hit weekly limit", None)
+            .await
+            .expect("record agy");
+        assert_eq!(first.model_pattern.as_deref(), Some("mid-model"));
+        assert_eq!(first.status, "exhausted");
+        let second = service
+            .record_prompt_quota(&agy, "weekly", "hit weekly limit", None)
+            .await
+            .expect("record agy again");
+        assert_eq!(second.id, first.id);
+
+        let alpha_session = session("agy", Some("alpha-model"), None);
+        let alpha = service
+            .record_prompt_quota(&alpha_session, "weekly", "hit", None)
+            .await
+            .expect("record alpha");
+        assert_eq!(alpha.model_pattern.as_deref(), Some("alpha-model"));
+        assert_ne!(alpha.id, first.id);
+
+        let grok = session("grok", Some("grok-4.6"), Some("grok-4.6"));
+        let grok_row = service
+            .record_prompt_quota(&grok, "weekly", "hit", None)
+            .await
+            .expect("record grok");
+        assert_eq!(grok_row.model_pattern.as_deref(), Some("*"));
+
+        let stored_mid = service
+            .store
+            .find_quota_by_agent_model("agy", "mid-model", None)
+            .await
+            .expect("query mid")
+            .expect("mid row");
+        assert_eq!(stored_mid.id, first.id);
+        let stored_alpha = service
+            .store
+            .find_quota_by_agent_model("agy", "alpha-model", None)
+            .await
+            .expect("query alpha")
+            .expect("alpha row");
+        assert_eq!(stored_alpha.id, alpha.id);
+        assert!(service
+            .store
+            .find_quota_by_agent_model("agy", "*", None)
+            .await
+            .expect("no wildcard")
+            .is_none());
+
+        let err = service
+            .reject_blocked_agy_prompt(&agy)
+            .await
+            .expect_err("active model blocked");
+        let message = err.to_string();
+        assert!(message.contains("mid-model"), "{message}");
+        assert!(
+            message.contains("suspended until quota resets"),
+            "{message}"
+        );
+        service
+            .reject_blocked_agy_prompt(&alpha_session)
+            .await
+            .expect_err("alpha also blocked");
+        let zeta_session = session("agy", Some("zeta-model"), None);
+        service
+            .reject_blocked_agy_prompt(&zeta_session)
+            .await
+            .expect("unknown model stays eligible");
     }
 }

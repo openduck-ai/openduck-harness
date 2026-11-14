@@ -243,3 +243,172 @@ fn find_codex_transcript(codex_home: &Path) -> Option<PathBuf> {
 
     newest.map(|(p, _)| p)
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CodexQuotaWindow {
+    pub quota_type: String,
+    pub used_percent: f64,
+    pub remaining_percent: f64,
+    pub window_minutes: Option<u64>,
+    pub reset_at: Option<String>,
+    pub is_exhausted: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CodexQuotaInfo {
+    pub windows: Vec<CodexQuotaWindow>,
+    pub observed_at: Option<String>,
+    pub plan_type: Option<String>,
+}
+
+fn collect_jsonl_files_recursive(
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<(PathBuf, std::time::SystemTime)>,
+) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonl_files_recursive(&path, depth + 1, out);
+        } else if path.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+            if let Ok(mod_time) = path.metadata().and_then(|m| m.modified()) {
+                out.push((path, mod_time));
+            }
+        }
+    }
+}
+
+fn parse_codex_rate_limit_window(
+    window: &Value,
+    default_type: &str,
+    rate_limit_reached: bool,
+) -> Option<CodexQuotaWindow> {
+    let used_percent = window.get("used_percent").and_then(Value::as_f64)?;
+    let window_minutes = window.get("window_minutes").and_then(Value::as_u64);
+    let quota_type = match window_minutes {
+        Some(m) if m >= 1440 => "weekly".to_string(),
+        Some(m) if m > 0 => format!("{}h", (m + 59) / 60),
+        _ => default_type.to_string(),
+    };
+    let reset_at = window
+        .get("resets_at")
+        .and_then(Value::as_i64)
+        .and_then(|ts| chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0))
+        .map(|dt| dt.to_rfc3339());
+    let remaining_percent = (100.0 - used_percent).clamp(0.0, 100.0);
+    let is_exhausted = used_percent >= 100.0 || rate_limit_reached;
+    Some(CodexQuotaWindow {
+        quota_type,
+        used_percent,
+        remaining_percent,
+        window_minutes,
+        reset_at,
+        is_exhausted,
+    })
+}
+
+fn read_codex_quota_from_file(path: &Path) -> Option<CodexQuotaInfo> {
+    let file = File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let len = reader.get_ref().metadata().ok()?.len();
+    if len > 262_144 {
+        let _ = reader.seek(SeekFrom::Start(len - 262_144));
+    }
+    let mut buffer = String::new();
+    reader.read_to_string(&mut buffer).ok()?;
+
+    for line in buffer.lines().rev() {
+        if !line.contains("rate_limits") {
+            continue;
+        }
+        let Ok(val) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(rate_limits) = val.pointer("/payload/rate_limits") else {
+            continue;
+        };
+        let rate_limit_reached = rate_limits
+            .get("rate_limit_reached_type")
+            .and_then(Value::as_str)
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        let mut windows = Vec::new();
+        if let Some(primary) = rate_limits.get("primary") {
+            if let Some(w) = parse_codex_rate_limit_window(primary, "session", rate_limit_reached) {
+                windows.push(w);
+            }
+        }
+        if let Some(secondary) = rate_limits.get("secondary") {
+            if let Some(w) = parse_codex_rate_limit_window(secondary, "weekly", rate_limit_reached)
+            {
+                windows.push(w);
+            }
+        }
+        if !windows.is_empty() {
+            return Some(CodexQuotaInfo {
+                windows,
+                observed_at: val
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                plan_type: rate_limits
+                    .get("plan_type")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+            });
+        }
+    }
+    None
+}
+
+pub fn read_codex_quota_info_from_dir(codex_home_dir: &Path) -> Option<CodexQuotaInfo> {
+    let sessions_dir = codex_home_dir.join("sessions");
+    if !sessions_dir.is_dir() {
+        return None;
+    }
+    let mut files = Vec::new();
+    collect_jsonl_files_recursive(&sessions_dir, 0, &mut files);
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    for (path, _) in files.into_iter().take(5) {
+        if let Some(info) = read_codex_quota_from_file(&path) {
+            return Some(info);
+        }
+    }
+    None
+}
+
+pub fn read_codex_quota_info() -> Option<CodexQuotaInfo> {
+    let home = codex_home()?;
+    read_codex_quota_info_from_dir(&home)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_codex_rate_limits_from_nested_session_jsonl() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("sessions/2026/11/14");
+        fs::create_dir_all(&nested).expect("mkdir");
+        let file_path = nested.join("rollout-test.jsonl");
+        let line = r#"{"timestamp":"2026-11-14T05:59:47.660Z","ordinal":35,"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":2.0,"window_minutes":300,"resets_at":1794653216},"secondary":{"used_percent":12.0,"window_minutes":10080,"resets_at":1795011948},"plan_type":"plus","rate_limit_reached_type":null}}}"#;
+        fs::write(&file_path, format!("{line}\n")).expect("write");
+
+        let info = read_codex_quota_info_from_dir(dir.path()).expect("quota info");
+        assert_eq!(info.plan_type.as_deref(), Some("plus"));
+        assert_eq!(info.windows.len(), 2);
+        assert_eq!(info.windows[0].quota_type, "5h");
+        assert_eq!(info.windows[0].remaining_percent, 98.0);
+        assert!(!info.windows[0].is_exhausted);
+        assert!(info.windows[0].reset_at.is_some());
+        assert_eq!(info.windows[1].quota_type, "weekly");
+        assert_eq!(info.windows[1].remaining_percent, 88.0);
+    }
+}

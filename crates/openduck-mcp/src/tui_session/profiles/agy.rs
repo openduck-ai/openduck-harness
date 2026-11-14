@@ -296,6 +296,238 @@ impl AgentTuiProfile for AgyTuiProfile {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgyQuotaPool {
+    pub model_pattern: String,
+    pub used_percent: f64,
+    pub remaining_percent: f64,
+    pub reset_at: Option<String>,
+    pub is_exhausted: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgyQuotaInfo {
+    pub pools: Vec<AgyQuotaPool>,
+    pub account_email: Option<String>,
+}
+
+const AGY_FETCH_MODELS_URL: &str =
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+const AGY_USER_AGENT: &str = "antigravity/1.104.0 linux/amd64";
+
+pub fn parse_agy_available_models_quotas(
+    payload: &Value,
+    account_email: Option<String>,
+) -> Option<AgyQuotaInfo> {
+    let models = payload.get("models")?.as_object()?;
+    let mut grouped: std::collections::BTreeMap<&'static str, (f64, Option<String>)> =
+        std::collections::BTreeMap::new();
+
+    for (model_id, entry) in models {
+        let Some(display_name) = entry.get("displayName").and_then(Value::as_str) else {
+            continue;
+        };
+        if display_name.trim().is_empty() {
+            continue;
+        }
+        let Some(quota_info) = entry.get("quotaInfo") else {
+            continue;
+        };
+        let Some(remaining_fraction) = quota_info.get("remainingFraction").and_then(Value::as_f64)
+        else {
+            continue;
+        };
+        let reset_time = quota_info
+            .get("resetTime")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+
+        let group = if model_id.starts_with("gemini-") {
+            "gemini-*"
+        } else if model_id.starts_with("claude-") || model_id.starts_with("gpt-oss-") {
+            "claude-*"
+        } else {
+            "other"
+        };
+
+        grouped
+            .entry(group)
+            .and_modify(|(min_frac, existing_reset)| {
+                if remaining_fraction < *min_frac {
+                    *min_frac = remaining_fraction;
+                    *existing_reset = reset_time.clone();
+                } else if existing_reset.is_none() {
+                    *existing_reset = reset_time.clone();
+                }
+            })
+            .or_insert((remaining_fraction, reset_time));
+    }
+
+    if grouped.is_empty() {
+        return None;
+    }
+
+    let pools = grouped
+        .into_iter()
+        .map(|(pattern, (min_frac, reset_at))| {
+            let remaining_percent = (min_frac * 100.0).clamp(0.0, 100.0);
+            let used_percent = (100.0 - remaining_percent).clamp(0.0, 100.0);
+            AgyQuotaPool {
+                model_pattern: pattern.to_string(),
+                used_percent,
+                remaining_percent,
+                reset_at,
+                is_exhausted: remaining_percent <= 0.0,
+            }
+        })
+        .collect();
+
+    Some(AgyQuotaInfo {
+        pools,
+        account_email,
+    })
+}
+
+fn read_agy_oauth_token(agy_home: &Path) -> Result<(String, Option<String>)> {
+    let token_path = agy_home.join("antigravity-oauth-token");
+    let raw = fs::read_to_string(&token_path).map_err(|e| {
+        anyhow!(
+            "Failed to read Antigravity OAuth token at {}: {e}",
+            token_path.display()
+        )
+    })?;
+    let val: Value = serde_json::from_str(&raw)?;
+    let access_token = val
+        .pointer("/token/access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("Missing access_token in {}", token_path.display()))?
+        .to_string();
+    let email = val
+        .get("id_token_email")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    Ok((access_token, email))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgyQuotaProxy<'a> {
+    #[default]
+    SystemEnv,
+    Direct,
+    Url(&'a str),
+}
+
+fn build_agy_http_client(proxy: AgyQuotaProxy<'_>) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15));
+    match proxy {
+        AgyQuotaProxy::SystemEnv => {}
+        AgyQuotaProxy::Direct => {
+            builder = builder.no_proxy();
+        }
+        AgyQuotaProxy::Url(url) => {
+            let trimmed = url.trim();
+            if !trimmed.is_empty() {
+                builder = builder.proxy(reqwest::Proxy::all(trimmed)?);
+            }
+        }
+    }
+    Ok(builder.build()?)
+}
+
+async fn refresh_agy_token_via_cli(proxy: AgyQuotaProxy<'_>) {
+    let Ok(bin) = AgyTuiProfile::resolve_binary() else {
+        return;
+    };
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.arg("models")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match proxy {
+        AgyQuotaProxy::SystemEnv => {}
+        AgyQuotaProxy::Direct => {
+            for key in [
+                "HTTPS_PROXY",
+                "https_proxy",
+                "HTTP_PROXY",
+                "http_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+            ] {
+                cmd.env_remove(key);
+            }
+        }
+        AgyQuotaProxy::Url(url) => {
+            let trimmed = url.trim();
+            if !trimmed.is_empty() {
+                for key in [
+                    "HTTPS_PROXY",
+                    "https_proxy",
+                    "HTTP_PROXY",
+                    "http_proxy",
+                    "ALL_PROXY",
+                    "all_proxy",
+                ] {
+                    cmd.env(key, trimmed);
+                }
+            }
+        }
+    }
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(15), cmd.status()).await;
+}
+
+pub async fn read_agy_quota_info() -> Result<AgyQuotaInfo> {
+    read_agy_quota_info_with_proxy(AgyQuotaProxy::SystemEnv).await
+}
+
+pub async fn read_agy_quota_info_with_proxy(proxy: AgyQuotaProxy<'_>) -> Result<AgyQuotaInfo> {
+    let home = AgyTuiProfile::agy_home();
+    let (mut access_token, mut email) = read_agy_oauth_token(&home)?;
+
+    let client = build_agy_http_client(proxy)?;
+
+    let mut resp = client
+        .post(AGY_FETCH_MODELS_URL)
+        .bearer_auth(&access_token)
+        .header(reqwest::header::USER_AGENT, AGY_USER_AGENT)
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+        || resp.status() == reqwest::StatusCode::FORBIDDEN
+    {
+        refresh_agy_token_via_cli(proxy).await;
+        if let Ok((new_token, new_email)) = read_agy_oauth_token(&home) {
+            access_token = new_token;
+            if new_email.is_some() {
+                email = new_email;
+            }
+            resp = client
+                .post(AGY_FETCH_MODELS_URL)
+                .bearer_auth(&access_token)
+                .header(reqwest::header::USER_AGENT, AGY_USER_AGENT)
+                .json(&serde_json::json!({}))
+                .send()
+                .await?;
+        }
+    }
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!(
+            "Antigravity quota API returned {status}: {}",
+            body.chars().take(200).collect::<String>()
+        ));
+    }
+
+    let payload: Value = resp.json().await?;
+    parse_agy_available_models_quotas(&payload, email)
+        .ok_or_else(|| anyhow!("No quotaInfo entries returned by Antigravity API"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +577,47 @@ I have refactored the auth module and updated the unit tests.
         let extracted = AgyTuiProfile::parse_transcript_bytes(sample).unwrap();
         assert!(extracted.contains("First tool step"));
         assert!(extracted.contains("Final complete answer from agy."));
+    }
+
+    #[test]
+    fn agy_parses_available_models_quotas_into_model_pools() {
+        let payload = serde_json::json!({
+            "models": {
+                "gemini-3-flash": {
+                    "displayName": "Gemini 3 Flash",
+                    "quotaInfo": {
+                        "remainingFraction": 0.96,
+                        "resetTime": "2026-11-14T10:57:17Z"
+                    }
+                },
+                "claude-sonnet-5-5-high": {
+                    "displayName": "Claude Sonnet 5.5 (High)",
+                    "quotaInfo": {
+                        "remainingFraction": 0.38,
+                        "resetTime": "2026-11-20T14:57:30Z"
+                    }
+                },
+                "chat_23310": {
+                    "quotaInfo": { "remainingFraction": 1.0 }
+                }
+            }
+        });
+        let info =
+            parse_agy_available_models_quotas(&payload, Some("user@example.com".to_string()))
+                .expect("quota info");
+        assert_eq!(info.account_email.as_deref(), Some("user@example.com"));
+        assert_eq!(info.pools.len(), 2);
+        assert_eq!(info.pools[0].model_pattern, "claude-*");
+        assert!((info.pools[0].remaining_percent - 38.0).abs() < 0.01);
+        assert_eq!(info.pools[1].model_pattern, "gemini-*");
+        assert!((info.pools[1].remaining_percent - 96.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn agy_http_client_accepts_proxy_modes() {
+        assert!(build_agy_http_client(AgyQuotaProxy::SystemEnv).is_ok());
+        assert!(build_agy_http_client(AgyQuotaProxy::Direct).is_ok());
+        assert!(build_agy_http_client(AgyQuotaProxy::Url("http://127.0.0.1:1096")).is_ok());
+        assert!(build_agy_http_client(AgyQuotaProxy::Url("socks5://127.0.0.1:1096")).is_ok());
     }
 }

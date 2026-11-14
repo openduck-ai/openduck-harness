@@ -816,6 +816,17 @@ impl SqliteTuiStore {
         Ok(row.map(quota_from_row))
     }
 
+    pub async fn list_quotas_by_agent(&self, agent_kind: &str) -> Result<Vec<QuotaSnapshotRecord>> {
+        let rows = sqlx::query(
+            "SELECT * FROM tui_quotas WHERE LOWER(agent_kind) = LOWER(?) ORDER BY observed_at DESC",
+        )
+        .bind(agent_kind)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(quota_from_row).collect())
+    }
+
     /// Exact `(agent, model, account)` snapshot. `account_id` `None` matches only
     /// rows whose account is NULL, so one model's record cannot hide another.
     pub async fn find_quota_by_agent_model(
