@@ -701,6 +701,32 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
           <button
             type="button"
             className="secondary mini-btn"
+            data-repo-path={selectedRepoPath}
+            data-action="pull"
+            onClick={() => void handleRepoAction(selectedRepoPath, 'pull')}
+            disabled={Boolean(pendingRepoAction) || mutating || loading}
+          >
+            <ArrowDown size={13} />
+            {pendingRepoAction?.path === selectedRepoPath && pendingRepoAction?.action === 'pull'
+              ? t('git.page.pulling')
+              : t('git.page.pull')}
+          </button>
+          <button
+            type="button"
+            className="secondary mini-btn"
+            data-repo-path={selectedRepoPath}
+            data-action="push"
+            onClick={() => void handleRepoAction(selectedRepoPath, 'push')}
+            disabled={Boolean(pendingRepoAction) || mutating || loading}
+          >
+            <ArrowUp size={13} />
+            {pendingRepoAction?.path === selectedRepoPath && pendingRepoAction?.action === 'push'
+              ? t('git.page.pushing')
+              : t('git.page.push')}
+          </button>
+          <button
+            type="button"
+            className="secondary mini-btn"
             onClick={() => setShowAddRepoForm(v => !v)}
             disabled={loading || mutating}
           >
@@ -768,23 +794,23 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                       <span className="git-repo-clean-badge">✓</span>
                     )}
                   </button>
-                  {repo.path !== '.' && (
-                    <div className="git-repo-row-actions">
-                      <button
-                        type="button"
-                        className="secondary mini-btn"
-                        title={t('git.page.pull')}
-                        data-repo-path={repo.path}
-                        data-action="pull"
-                        onClick={e => {
-                          e.stopPropagation()
-                          void handleRepoAction(repo.path, 'pull')
-                        }}
-                        disabled={anyPending}
-                      >
-                        <ArrowDown size={11} />
-                        {isThisPulling ? t('git.page.pulling') : t('git.page.pull')}
-                      </button>
+                  <div className="git-repo-row-actions">
+                    <button
+                      type="button"
+                      className="secondary mini-btn"
+                      title={t('git.page.pull')}
+                      data-repo-path={repo.path}
+                      data-action="pull"
+                      onClick={e => {
+                        e.stopPropagation()
+                        void handleRepoAction(repo.path, 'pull')
+                      }}
+                      disabled={anyPending}
+                    >
+                      <ArrowDown size={11} />
+                      {isThisPulling ? t('git.page.pulling') : t('git.page.pull')}
+                    </button>
+                    {repo.path !== '.' && (
                       <button
                         type="button"
                         className="secondary mini-btn"
@@ -800,39 +826,39 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                         <Check size={11} />
                         {isThisCommitting ? t('git.page.committing') : t('git.page.commit')}
                       </button>
+                    )}
+                    <button
+                      type="button"
+                      className="secondary mini-btn"
+                      title={t('git.page.push')}
+                      data-repo-path={repo.path}
+                      data-action="push"
+                      onClick={e => {
+                        e.stopPropagation()
+                        void handleRepoAction(repo.path, 'push')
+                      }}
+                      disabled={anyPending}
+                    >
+                      <ArrowUp size={11} />
+                      {isThisPushing ? t('git.page.pushing') : t('git.page.push')}
+                    </button>
+                    {repo.custom && (
                       <button
                         type="button"
-                        className="secondary mini-btn"
-                        title={t('git.page.push')}
+                        className="secondary mini-btn git-repo-remove-btn"
+                        title={t('git.page.removeRepo')}
                         data-repo-path={repo.path}
-                        data-action="push"
+                        data-action="remove"
                         onClick={e => {
                           e.stopPropagation()
-                          void handleRepoAction(repo.path, 'push')
+                          void handleRemoveRepository(repo.path)
                         }}
                         disabled={anyPending}
                       >
-                        <ArrowUp size={11} />
-                        {isThisPushing ? t('git.page.pushing') : t('git.page.push')}
+                        <X size={11} />
                       </button>
-                      {repo.custom && (
-                        <button
-                          type="button"
-                          className="secondary mini-btn git-repo-remove-btn"
-                          title={t('git.page.removeRepo')}
-                          data-repo-path={repo.path}
-                          data-action="remove"
-                          onClick={e => {
-                            e.stopPropagation()
-                            void handleRemoveRepository(repo.path)
-                          }}
-                          disabled={anyPending}
-                        >
-                          <X size={11} />
-                        </button>
-                      )}
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               )
             })}
