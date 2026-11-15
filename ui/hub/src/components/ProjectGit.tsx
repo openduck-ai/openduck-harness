@@ -229,6 +229,12 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
   } | null>(null)
   const [commitModalRepo, setCommitModalRepo] = useState<string | null>(null)
   const [commitModalMessage, setCommitModalMessage] = useState('')
+  const [showAddRepoForm, setShowAddRepoForm] = useState(false)
+  const [addRepoPath, setAddRepoPath] = useState('')
+  const [allowUntrustedPath, setAllowUntrustedPath] = useState(false)
+  const [needsUntrustedConfirm, setNeedsUntrustedConfirm] = useState(false)
+  const [addingRepo, setAddingRepo] = useState(false)
+  const [addRepoError, setAddRepoError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -546,13 +552,124 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
     })
   }
 
+  const handleAddRepository = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const trimmed = addRepoPath.trim()
+    if (!trimmed) {
+      setAddRepoError(t('git.page.addRepoEmpty'))
+      return
+    }
+    setAddingRepo(true)
+    setAddRepoError(null)
+    try {
+      const res = await api.addGitRepository(slug, {
+        path: trimmed,
+        allowUntrustedPath,
+      })
+      setShowAddRepoForm(false)
+      setAddRepoPath('')
+      setAllowUntrustedPath(false)
+      setNeedsUntrustedConfirm(false)
+      setSelectedRepoPath(res.repository.path)
+      setSelectedSha(null)
+      setActivePath(null)
+      await load()
+    } catch (cause) {
+      const msg = cause instanceof Error ? cause.message : t('git.page.addRepoFailed')
+      if (msg.includes('allowUntrustedPath') || msg.includes('outside $HOME')) {
+        setNeedsUntrustedConfirm(true)
+      }
+      setAddRepoError(msg)
+    } finally {
+      setAddingRepo(false)
+    }
+  }
+
+  const handleRemoveRepository = async (repoPath: string) => {
+    setMutating(true)
+    setError(null)
+    try {
+      await api.removeGitRepository(slug, repoPath)
+      if (selectedRepoPath === repoPath) {
+        setSelectedRepoPath('.')
+        setSelectedSha(null)
+        setActivePath(null)
+      }
+      await load()
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? { kind: 'raw', message: cause.message }
+          : { kind: 'fallback', key: 'git.page.removeRepoFailed' },
+      )
+    } finally {
+      setMutating(false)
+    }
+  }
+
+  const addRepoForm = showAddRepoForm ? (
+    <form className="git-add-repo-form" onSubmit={e => void handleAddRepository(e)}>
+      <div className="git-add-repo-row">
+        <input
+          type="text"
+          className="git-add-repo-input"
+          value={addRepoPath}
+          onChange={e => setAddRepoPath(e.target.value)}
+          placeholder={t('git.page.addRepoPlaceholder')}
+          disabled={addingRepo}
+          autoFocus
+        />
+        <button type="submit" className="primary mini-btn" disabled={addingRepo || !addRepoPath.trim()}>
+          <Plus size={13} />
+          {addingRepo ? t('git.page.addingRepo') : t('git.page.addRepoSubmit')}
+        </button>
+        <button
+          type="button"
+          className="secondary mini-btn"
+          onClick={() => {
+            setShowAddRepoForm(false)
+            setAddRepoError(null)
+            setNeedsUntrustedConfirm(false)
+            setAllowUntrustedPath(false)
+          }}
+          disabled={addingRepo}
+        >
+          {t('common.cancel')}
+        </button>
+      </div>
+      {needsUntrustedConfirm && (
+        <label className="git-add-repo-untrusted">
+          <input
+            type="checkbox"
+            checked={allowUntrustedPath}
+            onChange={e => setAllowUntrustedPath(e.target.checked)}
+            disabled={addingRepo}
+          />
+          <span>{t('git.page.allowUntrustedPath')}</span>
+        </label>
+      )}
+      {addRepoError && <p className="error git-add-repo-error">{addRepoError}</p>}
+    </form>
+  ) : null
+
   if (error && !status && !history && repositories.length === 0) {
     return (
       <div className="panel git-panel">
         <p className="error">{error.kind === 'raw' ? error.message : t(error.key)}</p>
-        <button type="button" className="secondary mini-btn" onClick={() => void load()}>
-          {t('git.page.retry')}
-        </button>
+        <div className="git-empty-actions">
+          <button type="button" className="secondary mini-btn" onClick={() => void load()}>
+            {t('git.page.retry')}
+          </button>
+          <button
+            type="button"
+            className="primary mini-btn"
+            onClick={() => setShowAddRepoForm(v => !v)}
+          >
+            <Plus size={13} />
+            {t('git.page.addRepo')}
+          </button>
+        </div>
+        {addRepoForm}
       </div>
     )
   }
@@ -580,16 +697,29 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
             {dirtyCount > 0 ? t('git.page.changedCount', { count: dirtyCount }) : t('git.page.clean')}
           </span>
         </div>
-        <button
-          type="button"
-          className="secondary mini-btn"
-          onClick={() => void load()}
-          disabled={loading || mutating}
-        >
-          <RefreshCw size={13} />
-          {t('git.page.refresh')}
-        </button>
+        <div className="git-toolbar-actions">
+          <button
+            type="button"
+            className="secondary mini-btn"
+            onClick={() => setShowAddRepoForm(v => !v)}
+            disabled={loading || mutating}
+          >
+            <Plus size={13} />
+            {t('git.page.addRepo')}
+          </button>
+          <button
+            type="button"
+            className="secondary mini-btn"
+            onClick={() => void load()}
+            disabled={loading || mutating}
+          >
+            <RefreshCw size={13} />
+            {t('git.page.refresh')}
+          </button>
+        </div>
       </div>
+
+      {addRepoForm}
 
       {(repositories.length > 1 || repositories.some(r => r.path !== '.')) && (
         <div className="git-repositories-selector">
@@ -685,6 +815,22 @@ export function ProjectGit({ api, slug }: ProjectGitProps) {
                         <ArrowUp size={11} />
                         {isThisPushing ? t('git.page.pushing') : t('git.page.push')}
                       </button>
+                      {repo.custom && (
+                        <button
+                          type="button"
+                          className="secondary mini-btn git-repo-remove-btn"
+                          title={t('git.page.removeRepo')}
+                          data-repo-path={repo.path}
+                          data-action="remove"
+                          onClick={e => {
+                            e.stopPropagation()
+                            void handleRemoveRepository(repo.path)
+                          }}
+                          disabled={anyPending}
+                        >
+                          <X size={11} />
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

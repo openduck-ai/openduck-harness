@@ -337,6 +337,8 @@ pub struct GitStatusResponse {
 pub struct GitRepositoryEntry {
     pub path: String,
     pub status: GitStatusResponse,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub custom: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -974,7 +976,7 @@ fn looks_like_git_root(dir: &Path) -> bool {
     }
 }
 
-async fn is_actual_repo_root(candidate: &Path) -> bool {
+pub async fn is_actual_repo_root(candidate: &Path) -> bool {
     let Ok(layout) = repo_layout(candidate).await else {
         return false;
     };
@@ -1011,25 +1013,36 @@ fn should_skip_discovery_dir(name: &str) -> bool {
 }
 
 fn collect_submodule_paths(repo_root: &Path) -> Vec<PathBuf> {
-    let gitmodules_path = repo_root.join(".gitmodules");
-    let Ok(content) = std::fs::read_to_string(gitmodules_path) else {
-        return Vec::new();
-    };
     let mut paths = Vec::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("path") {
-            let rest = rest.trim_start();
-            if let Some(val) = rest.strip_prefix('=') {
-                let sub_path = val.trim().replace('\\', "/");
-                let clean = sub_path
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .trim_matches('/');
-                if !clean.is_empty() {
-                    let sub_dir = repo_root.join(clean);
-                    if looks_like_git_root(&sub_dir) {
-                        paths.push(sub_dir);
+    let mut visited = std::collections::HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back((repo_root.to_path_buf(), 0usize));
+    const MAX_SUBMODULE_DEPTH: usize = 4;
+
+    while let Some((dir, depth)) = queue.pop_front() {
+        if depth >= MAX_SUBMODULE_DEPTH {
+            continue;
+        }
+        let gitmodules_path = dir.join(".gitmodules");
+        let Ok(content) = std::fs::read_to_string(gitmodules_path) else {
+            continue;
+        };
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("path") {
+                let rest = rest.trim_start();
+                if let Some(val) = rest.strip_prefix('=') {
+                    let sub_path = val.trim().replace('\\', "/");
+                    let clean = sub_path
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .trim_matches('/');
+                    if !clean.is_empty() {
+                        let sub_dir = dir.join(clean);
+                        if looks_like_git_root(&sub_dir) && visited.insert(sub_dir.clone()) {
+                            paths.push(sub_dir.clone());
+                            queue.push_back((sub_dir, depth + 1));
+                        }
                     }
                 }
             }
@@ -1115,9 +1128,16 @@ fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
             if entry_meta.file_type().is_symlink() {
                 // If it is a symlink, check if it points to a git repository or git worktree root.
                 // Do NOT queue it for BFS traversal (avoids recursive symlink loops or deep external traversals),
-                // but DO record the symlinked directory itself as a candidate if it looks like a git root.
-                if looks_like_git_root(&entry_path) && seen.insert(entry_path.clone()) {
-                    candidates.push(entry_path);
+                // but DO record the symlinked directory itself and its declared submodules as candidates.
+                if looks_like_git_root(&entry_path) {
+                    if seen.insert(entry_path.clone()) {
+                        candidates.push(entry_path.clone());
+                    }
+                    for sub in collect_submodule_paths(&entry_path) {
+                        if seen.insert(sub.clone()) {
+                            candidates.push(sub);
+                        }
+                    }
                 }
                 continue;
             }
@@ -1131,6 +1151,13 @@ fn collect_candidate_roots(root: &Path) -> Vec<PathBuf> {
 }
 
 pub async fn discover_repositories(root: &Path) -> Result<GitRepositoriesResponse> {
+    discover_repositories_with_custom(root, &[]).await
+}
+
+pub async fn discover_repositories_with_custom(
+    root: &Path,
+    custom_repos: &[PathBuf],
+) -> Result<GitRepositoriesResponse> {
     if path_has_git_component(root) {
         return Ok(GitRepositoriesResponse {
             repositories: Vec::new(),
@@ -1194,12 +1221,71 @@ pub async fn discover_repositories(root: &Path) -> Result<GitRepositoriesRespons
                 repositories.push(GitRepositoryEntry {
                     path: rel_path,
                     status: repo_status,
+                    custom: false,
                 });
             }
             Err(e) => {
                 tracing::warn!(
                     "Failed to get git status for repository candidate {}: {e}",
                     candidate.display()
+                );
+            }
+        }
+    }
+
+    for custom_path in custom_repos {
+        if path_has_git_component(custom_path) || !is_actual_repo_root(custom_path).await {
+            continue;
+        }
+        let custom_canonical = custom_path.canonicalize().ok();
+        if let Some(ref canon) = custom_canonical {
+            if !seen_canonical_roots.insert(canon.clone()) {
+                continue;
+            }
+        }
+        let is_root =
+            custom_path == root || (root_canonical.is_some() && root_canonical == custom_canonical);
+        if is_root && repositories.iter().any(|r| r.path == ".") {
+            continue;
+        }
+        match status(custom_path).await {
+            Ok(repo_status) => {
+                let entry_path = if is_root {
+                    ".".to_string()
+                } else if let Ok(rel) = custom_path.strip_prefix(root) {
+                    let s = rel.to_string_lossy().replace('\\', "/");
+                    let clean = s.trim_start_matches("./").trim_matches('/');
+                    if clean.is_empty() || clean == "." {
+                        ".".to_string()
+                    } else {
+                        clean.to_string()
+                    }
+                } else if let (Some(rc), Some(cc)) = (&root_canonical, &custom_canonical) {
+                    if let Ok(rel) = cc.strip_prefix(rc) {
+                        let s = rel.to_string_lossy().replace('\\', "/");
+                        let clean = s.trim_start_matches("./").trim_matches('/');
+                        if clean.is_empty() || clean == "." {
+                            ".".to_string()
+                        } else {
+                            clean.to_string()
+                        }
+                    } else {
+                        cc.to_string_lossy().replace('\\', "/")
+                    }
+                } else {
+                    custom_path.to_string_lossy().replace('\\', "/")
+                };
+
+                repositories.push(GitRepositoryEntry {
+                    path: entry_path,
+                    status: repo_status,
+                    custom: true,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to get git status for custom repository {}: {e}",
+                    custom_path.display()
                 );
             }
         }
@@ -1371,8 +1457,15 @@ pub async fn repository_action(
     req: GitRepositoryActionRequest,
 ) -> Result<GitRepositoryActionResponse> {
     let repo_root = resolve_discovered_repo(project_root, &req.path).await?;
-    with_repo_write_lock(&repo_root, async {
-        repository_action_locked(&repo_root, req).await
+    repository_action_in_dir(&repo_root, req).await
+}
+
+pub async fn repository_action_in_dir(
+    repo_root: &Path,
+    req: GitRepositoryActionRequest,
+) -> Result<GitRepositoryActionResponse> {
+    with_repo_write_lock(repo_root, async {
+        repository_action_locked(repo_root, req).await
     })
     .await
 }
@@ -3039,6 +3132,97 @@ detached
 
         assert!(commit_res.success);
         assert_eq!(commit_res.path, "mqtt-broker-ptt");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discover_repositories_finds_submodules_in_symlinked_worktree() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let sub_upstream = dir.path().join("abs_admin_vue_upstream");
+        fs::create_dir_all(&sub_upstream).unwrap();
+        init_repo(&sub_upstream);
+        fs::write(sub_upstream.join("package.json"), "{}\n").unwrap();
+        run_plain_git(&sub_upstream, &["add", "package.json"]);
+        run_plain_git(&sub_upstream, &["commit", "-m", "sub init"]);
+
+        let main_upstream = dir.path().join("mqtt_upstream");
+        fs::create_dir_all(&main_upstream).unwrap();
+        init_repo(&main_upstream);
+        run_plain_git(&main_upstream, &["commit", "--allow-empty", "-m", "init"]);
+
+        let worktree_dir = dir.path().join("mqtt-broker-ptt");
+        run_plain_git(
+            &main_upstream,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feat-wt",
+                worktree_dir.to_str().unwrap(),
+            ],
+        );
+
+        let sub_dir = worktree_dir.join("abs_admin_vue");
+        fs::create_dir_all(&sub_dir).unwrap();
+        init_repo(&sub_dir);
+        fs::write(sub_dir.join("index.html"), "<html></html>\n").unwrap();
+        run_plain_git(&sub_dir, &["add", "index.html"]);
+        run_plain_git(&sub_dir, &["commit", "-m", "sub commit"]);
+        fs::write(
+            worktree_dir.join(".gitmodules"),
+            "[submodule \"abs_admin_vue\"]\n\tpath = abs_admin_vue\n\turl = git@github.com:example/abs_admin_vue\n",
+        )
+        .unwrap();
+
+        let project_root = dir.path().join("ASR1606");
+        fs::create_dir_all(&project_root).unwrap();
+        symlink(&worktree_dir, project_root.join("mqtt-broker-ptt")).unwrap();
+
+        let response = discover_repositories(&project_root).await.unwrap();
+        let paths: Vec<&str> = response
+            .repositories
+            .iter()
+            .map(|r| r.path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["mqtt-broker-ptt", "mqtt-broker-ptt/abs_admin_vue"]
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_repositories_merges_custom_repos_without_duplicates() {
+        let dir = tempdir().unwrap();
+        let project_root = dir.path().join("project");
+        let nested_repo = project_root.join("nested");
+        let external_repo = dir.path().join("external");
+        fs::create_dir_all(&nested_repo).unwrap();
+        fs::create_dir_all(&external_repo).unwrap();
+        init_repo(&project_root);
+        run_plain_git(&project_root, &["commit", "--allow-empty", "-m", "root"]);
+        init_repo(&nested_repo);
+        run_plain_git(&nested_repo, &["commit", "--allow-empty", "-m", "nested"]);
+        init_repo(&external_repo);
+        run_plain_git(&external_repo, &["commit", "--allow-empty", "-m", "ext"]);
+
+        let response = discover_repositories_with_custom(
+            &project_root,
+            &[nested_repo.clone(), external_repo.clone()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.repositories.len(), 3);
+        assert_eq!(response.repositories[0].path, ".");
+        assert!(!response.repositories[0].custom);
+        let ext_entry = response
+            .repositories
+            .iter()
+            .find(|r| r.path != "." && r.path != "nested")
+            .unwrap();
+        assert!(ext_entry.custom);
     }
 
     #[tokio::test]

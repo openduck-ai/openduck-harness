@@ -547,10 +547,20 @@ export interface GitStatusResponse {
 export interface GitRepositoryEntry {
   path: string
   status: GitStatusResponse
+  custom?: boolean
 }
 
 export interface GitRepositoriesResponse {
   repositories: GitRepositoryEntry[]
+}
+
+export interface AddGitRepositoryRequest {
+  path: string
+  allowUntrustedPath?: boolean
+}
+
+export interface AddGitRepositoryResponse {
+  repository: GitRepositoryEntry
 }
 
 export type GitRepositoryActionType = 'pull' | 'commit' | 'push'

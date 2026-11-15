@@ -1354,20 +1354,37 @@ fn project_dir(slug: &str) -> Result<PathBuf, (StatusCode, Json<serde_json::Valu
     Ok(PathBuf::from(project.path))
 }
 
+async fn resolve_project_repo(
+    slug: &str,
+    project_path: &Path,
+    target: Option<&str>,
+) -> Result<PathBuf, (StatusCode, Json<serde_json::Value>)> {
+    match target {
+        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
+            let trimmed = rel.trim();
+            if let Some(custom_path) = super::project_git_repos::ProjectGitReposStore::from_config()
+                .resolve(slug, project_path, trimmed)
+            {
+                if !super::git::is_actual_repo_root(&custom_path).await {
+                    return Err(bad(format!("Path is not a git repository root: {trimmed}")));
+                }
+                return Ok(custom_path);
+            }
+            super::git::resolve_discovered_repo(project_path, trimmed)
+                .await
+                .map_err(bad)
+        }
+        _ => Ok(project_path.to_path_buf()),
+    }
+}
+
 async fn git_status(
     AxumPath(slug): AxumPath<String>,
     Query(query): Query<super::git::GitStatusQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
     let target = query.repo.as_deref().or(query.path.as_deref());
-    let repo_path = match target {
-        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
-            super::git::resolve_discovered_repo(&path, rel.trim())
-                .await
-                .map_err(bad)?
-        }
-        _ => path,
-    };
+    let repo_path = resolve_project_repo(&slug, &path, target).await?;
     let result = super::git::status(&repo_path).await.map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
 }
@@ -1376,10 +1393,85 @@ async fn git_repositories(
     AxumPath(slug): AxumPath<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let result = super::git::discover_repositories(&path)
+    let custom_repos = super::project_git_repos::ProjectGitReposStore::from_config()
+        .list(&slug)
+        .map_err(bad)?;
+    let result = super::git::discover_repositories_with_custom(&path, &custom_repos)
         .await
         .map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddGitRepositoryRequest {
+    path: String,
+    #[serde(default)]
+    allow_untrusted_path: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoveGitRepositoryQuery {
+    path: String,
+}
+
+async fn add_git_repository(
+    AxumPath(slug): AxumPath<String>,
+    Json(req): Json<AddGitRepositoryRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let project_path = project_dir(&slug)?;
+    let canonical = super::project_git_repos::ProjectGitReposStore::validate_candidate_path(
+        &project_path,
+        &req.path,
+        req.allow_untrusted_path,
+    )
+    .map_err(bad)?;
+
+    if !super::git::is_actual_repo_root(&canonical).await {
+        return Err(bad(format!(
+            "Path is not a git repository root: {}",
+            req.path.trim()
+        )));
+    }
+
+    let store = super::project_git_repos::ProjectGitReposStore::from_config();
+    store.add_validated(&slug, &canonical).map_err(bad)?;
+
+    let custom_repos = store.list(&slug).map_err(bad)?;
+    let discovered = super::git::discover_repositories_with_custom(&project_path, &custom_repos)
+        .await
+        .map_err(bad)?;
+
+    let entry = discovered
+        .repositories
+        .into_iter()
+        .find(|repo| {
+            let repo_fs_path = if repo.path == "." {
+                project_path.clone()
+            } else if Path::new(&repo.path).is_absolute() {
+                PathBuf::from(&repo.path)
+            } else {
+                project_path.join(&repo.path)
+            };
+            repo_fs_path
+                .canonicalize()
+                .map(|c| c == canonical)
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| bad("Added repository could not be loaded"))?;
+
+    Ok(Json(serde_json::json!({ "repository": entry })))
+}
+
+async fn remove_git_repository(
+    AxumPath(slug): AxumPath<String>,
+    Query(query): Query<RemoveGitRepositoryQuery>,
+) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    let project_path = project_dir(&slug)?;
+    super::project_git_repos::ProjectGitReposStore::from_config()
+        .remove(&slug, &project_path, &query.path)
+        .map_err(bad)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn git_repository_action(
@@ -1387,7 +1479,8 @@ async fn git_repository_action(
     Json(req): Json<super::git::GitRepositoryActionRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let result = super::git::repository_action(&path, req)
+    let repo_path = resolve_project_repo(&slug, &path, Some(&req.path)).await?;
+    let result = super::git::repository_action_in_dir(&repo_path, req)
         .await
         .map_err(bad)?;
     Ok(Json(serde_json::to_value(result).map_err(bad)?))
@@ -1399,14 +1492,7 @@ async fn git_log(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
     let target = query.path.as_deref().or(query.repo.as_deref());
-    let repo_path = match target {
-        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
-            super::git::resolve_discovered_repo(&path, rel.trim())
-                .await
-                .map_err(bad)?
-        }
-        _ => path,
-    };
+    let repo_path = resolve_project_repo(&slug, &path, target).await?;
     let result = super::git::log(&repo_path, query.limit)
         .await
         .map_err(bad)?;
@@ -1419,14 +1505,7 @@ async fn git_diff(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
     let target = query.repo.as_deref().or(query.repo_path.as_deref());
-    let repo_path = match target {
-        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
-            super::git::resolve_discovered_repo(&path, rel.trim())
-                .await
-                .map_err(bad)?
-        }
-        _ => path,
-    };
+    let repo_path = resolve_project_repo(&slug, &path, target).await?;
     let rel = query.path.as_deref().unwrap_or("");
     let result = super::git::diff(&repo_path, rel, query.staged.unwrap_or(false))
         .await
@@ -1440,14 +1519,7 @@ async fn git_show(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
     let target = query.path.as_deref().or(query.repo.as_deref());
-    let repo_path = match target {
-        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
-            super::git::resolve_discovered_repo(&path, rel.trim())
-                .await
-                .map_err(bad)?
-        }
-        _ => path,
-    };
+    let repo_path = resolve_project_repo(&slug, &path, target).await?;
     let result = super::git::show(&repo_path, &query.sha)
         .await
         .map_err(bad)?;
@@ -1459,14 +1531,7 @@ async fn git_stage(
     Json(req): Json<super::git::GitPathsRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let repo_path = match req.repo.as_deref() {
-        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
-            super::git::resolve_discovered_repo(&path, rel.trim())
-                .await
-                .map_err(bad)?
-        }
-        _ => path,
-    };
+    let repo_path = resolve_project_repo(&slug, &path, req.repo.as_deref()).await?;
     let result = super::git::stage(&repo_path, &req.paths)
         .await
         .map_err(bad)?;
@@ -1478,14 +1543,7 @@ async fn git_unstage(
     Json(req): Json<super::git::GitPathsRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let repo_path = match req.repo.as_deref() {
-        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
-            super::git::resolve_discovered_repo(&path, rel.trim())
-                .await
-                .map_err(bad)?
-        }
-        _ => path,
-    };
+    let repo_path = resolve_project_repo(&slug, &path, req.repo.as_deref()).await?;
     let result = super::git::unstage(&repo_path, &req.paths)
         .await
         .map_err(bad)?;
@@ -1497,14 +1555,7 @@ async fn git_discard(
     Json(req): Json<super::git::GitPathsRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let repo_path = match req.repo.as_deref() {
-        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
-            super::git::resolve_discovered_repo(&path, rel.trim())
-                .await
-                .map_err(bad)?
-        }
-        _ => path,
-    };
+    let repo_path = resolve_project_repo(&slug, &path, req.repo.as_deref()).await?;
     let result = super::git::discard(&repo_path, &req.paths)
         .await
         .map_err(bad)?;
@@ -1516,14 +1567,7 @@ async fn git_commit(
     Json(req): Json<super::git::GitCommitRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let repo_path = match req.repo.as_deref() {
-        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
-            super::git::resolve_discovered_repo(&path, rel.trim())
-                .await
-                .map_err(bad)?
-        }
-        _ => path,
-    };
+    let repo_path = resolve_project_repo(&slug, &path, req.repo.as_deref()).await?;
     let result = super::git::commit(&repo_path, &req.message, &req.paths)
         .await
         .map_err(bad)?;
@@ -1535,14 +1579,7 @@ async fn git_commit_message(
     Json(req): Json<super::git::GitCommitMessageRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let path = project_dir(&slug)?;
-    let repo_path = match req.repo.as_deref() {
-        Some(rel) if !rel.trim().is_empty() && rel.trim() != "." => {
-            super::git::resolve_discovered_repo(&path, rel.trim())
-                .await
-                .map_err(bad)?
-        }
-        _ => path,
-    };
+    let repo_path = resolve_project_repo(&slug, &path, req.repo.as_deref()).await?;
     let result = super::git::suggest_commit_message(&repo_path, &req.paths)
         .await
         .map_err(bad)?;
@@ -1985,7 +2022,9 @@ pub fn routes(server: Arc<crate::acp::server_factory::AcpServer>) -> Router {
         .route("/api/v1/projects/{slug}/git/status", get(git_status))
         .route(
             "/api/v1/projects/{slug}/git/repositories",
-            get(git_repositories),
+            get(git_repositories)
+                .post(add_git_repository)
+                .delete(remove_git_repository),
         )
         .route(
             "/api/v1/projects/{slug}/git/repositories/action",

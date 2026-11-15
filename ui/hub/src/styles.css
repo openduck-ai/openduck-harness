@@ -9872,6 +9872,52 @@ textarea {
   flex-wrap: wrap;
 }
 
+.git-toolbar-actions,
+.git-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.git-add-repo-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.git-add-repo-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.git-add-repo-input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.git-add-repo-untrusted {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.git-add-repo-error {
+  margin: 0;
+}
+
+.git-repo-remove-btn {
+  padding-inline: 0.35rem;
+}
+
 .git-repositories-title {
   display: inline-flex;
   align-items: center;

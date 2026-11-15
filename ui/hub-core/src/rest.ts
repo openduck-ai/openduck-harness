@@ -1,4 +1,6 @@
 import type {
+  AddGitRepositoryRequest,
+  AddGitRepositoryResponse,
   CreateFileInput,
   CreateJobInput,
   ExecCommandInput,
@@ -504,6 +506,16 @@ export function createApi(baseUrl: string, secret = '', options: ApiOptions = {}
     getGitRepositories: (slug: string) =>
       request<GitRepositoriesResponse>(
         `/api/v1/projects/${encodeURIComponent(slug)}/git/repositories`,
+      ),
+    addGitRepository: (slug: string, body: AddGitRepositoryRequest) =>
+      request<AddGitRepositoryResponse>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/git/repositories`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    removeGitRepository: (slug: string, path: string) =>
+      request<void>(
+        `/api/v1/projects/${encodeURIComponent(slug)}/git/repositories?path=${encodeURIComponent(path)}`,
+        { method: 'DELETE' },
       ),
     executeGitRepositoryAction: (slug: string, body: GitRepositoryActionRequest) =>
       request<GitRepositoryActionResponse>(
