@@ -31,6 +31,7 @@ export const settingsNavGroups: SettingsNavGroup[] = [
     labelKey: 'settings.nav.configuration',
     items: [
       { id: 'settings-providers', labelKey: 'settings.nav.providers' },
+      { id: 'settings-adaptive', labelKey: 'settings.nav.adaptive' },
       { id: 'settings-proxies', labelKey: 'settings.nav.proxies' },
       { id: 'settings-tool-mode', labelKey: 'settings.nav.toolMode' },
       { id: 'settings-harness', labelKey: 'settings.nav.harness' },

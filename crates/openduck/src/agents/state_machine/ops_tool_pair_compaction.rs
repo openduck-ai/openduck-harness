@@ -1,11 +1,13 @@
 //! Replaces one batch of old tool request and response pairs with compact summaries.
 
+#[cfg(test)]
 use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use tracing_futures::Instrument;
 
+use crate::agents::routing::AgentRoutingHandle;
 use crate::agents::state_machine::ops_llm::chat_span;
 use crate::agents::state_machine::{
     applied, messages_since_kickoff, not_applicable, ConversationEffect, Emitter, GooseEffect,
@@ -14,18 +16,20 @@ use crate::agents::state_machine::{
 use crate::context_mgmt::{summarize_tool_call, tool_ids_to_summarize};
 use crate::conversation::message::MessageContent;
 use crate::conversation::Conversation;
+#[cfg(test)]
 use crate::providers::base::Provider;
 use crate::session::Session;
+#[cfg(test)]
 use openduck_providers::model::ModelConfig;
 
 pub struct ToolPairCompactionOperation {
-    provider: Arc<dyn Provider>,
-    model_config: ModelConfig,
+    routing_handle: AgentRoutingHandle,
     cutoff: usize,
     enabled: bool,
 }
 
 impl ToolPairCompactionOperation {
+    #[cfg(test)]
     pub fn new(
         provider: Arc<dyn Provider>,
         model_config: ModelConfig,
@@ -33,8 +37,19 @@ impl ToolPairCompactionOperation {
         enabled: bool,
     ) -> Self {
         Self {
-            provider,
-            model_config,
+            routing_handle: AgentRoutingHandle::from_static(provider, model_config),
+            cutoff,
+            enabled,
+        }
+    }
+
+    pub fn with_routing_handle(
+        routing_handle: AgentRoutingHandle,
+        cutoff: usize,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            routing_handle,
             cutoff,
             enabled,
         }
@@ -118,15 +133,16 @@ impl Operation<Session, GooseEffect> for ToolPairCompactionOperation {
                 continue;
             }
 
+            let snapshot = self.routing_handle.snapshot()?;
             let span = chat_span(
-                self.provider.as_ref(),
-                &self.model_config,
+                snapshot.provider.as_ref(),
+                &snapshot.model_config,
                 &session.id,
                 "tool_pair_compaction",
             );
             let summary = match summarize_tool_call(
-                self.provider.as_ref(),
-                &self.model_config,
+                snapshot.provider.as_ref(),
+                &snapshot.model_config,
                 &session.id,
                 conversation,
                 &tool_id,

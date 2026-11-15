@@ -167,6 +167,31 @@
     "retryFile": "重试打开文件"
   },
   "config": {
+    "adaptive": {
+      "baseProvider": "基础提供商（可选）",
+      "cooldownSeconds": "切换冷却时间（秒）",
+      "customModel": "自定义模型 ID...",
+      "economyModel": "低成本模型 (Economy)",
+      "hint": "根据低峰时间窗口与实测首字延迟，在普通模型与低成本模型之间自动路由。",
+      "invalidCooldown": "切换冷却时间必须为非负整数。",
+      "invalidOffPeak": "低峰窗口格式必须为 HH:MM-HH:MM（多个窗口用逗号分隔）。",
+      "invalidProbeRatio": "探测比例必须为 0 到 1 之间的数值。",
+      "mode": "路由模式",
+      "modeAuto": "自动（自适应）",
+      "modeEconomy": "固定低成本",
+      "modeRegular": "固定普通",
+      "noBaseProvider": "自动从前缀解析",
+      "offPeak": "低峰时间窗口",
+      "probeRatio": "探测比例",
+      "regularModel": "普通模型 (Regular)",
+      "regularModelRequired": "请填写普通模型。",
+      "economyModelRequired": "请填写低成本模型。",
+      "save": "保存自适应路由配置",
+      "saved": "自适应路由配置已保存。",
+      "saveFailed": "保存自适应路由配置失败。",
+      "timezone": "时区",
+      "title": "自适应模型路由"
+    },
     "editor": {
       "anthropicHost": "Anthropic 主机",
       "completion": "完成",
@@ -1575,6 +1600,7 @@
   "settings": {
     "nav": {
       "about": "关于",
+      "adaptive": "自适应路由",
       "appearance": "外观",
       "configuration": "配置",
       "connection": "连接",

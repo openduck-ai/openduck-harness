@@ -1,4 +1,5 @@
 mod acp_tooling;
+pub mod adaptive_def;
 pub mod amp_acp;
 pub mod anthropic {
     pub use openduck_providers::anthropic::*;

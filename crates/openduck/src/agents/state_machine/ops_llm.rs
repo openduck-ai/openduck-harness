@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::agents::routing::AgentRoutingHandle;
 use crate::agents::state_machine::ops_unknown_tool::UNCLAIMED_TOOL_ERROR;
 use crate::agents::state_machine::{
     applied, messages_since_kickoff, not_applicable, trailing_error, yielded_with,
@@ -112,8 +113,7 @@ pub(super) fn record_chat_usage(span: &tracing::Span, usage: &ProviderUsage) {
 }
 
 pub struct InferenceRunner<'a> {
-    provider: Arc<dyn Provider>,
-    model_config: ModelConfig,
+    routing_handle: AgentRoutingHandle,
     #[cfg(feature = "code-mode")]
     extension_manager: Arc<ExtensionManager>,
     goose_mode: &'a Mutex<GooseMode>,
@@ -160,6 +160,7 @@ fn ends_with_provider_turn(messages: &[Message]) -> bool {
 }
 
 impl<'a> InferenceRunner<'a> {
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: Arc<dyn Provider>,
@@ -171,9 +172,31 @@ impl<'a> InferenceRunner<'a> {
         tool_inspection_manager: &'a ToolInspectionManager,
         frontend_instructions: &'a Mutex<Option<String>>,
     ) -> Self {
+        Self::with_routing_handle(
+            AgentRoutingHandle::from_static(provider, model_config),
+            #[cfg(feature = "code-mode")]
+            extension_manager,
+            #[cfg(not(feature = "code-mode"))]
+            _extension_manager,
+            goose_mode,
+            prompt_manager,
+            tool_inspection_manager,
+            frontend_instructions,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_routing_handle(
+        routing_handle: AgentRoutingHandle,
+        #[cfg(feature = "code-mode")] extension_manager: Arc<ExtensionManager>,
+        #[cfg(not(feature = "code-mode"))] _extension_manager: Arc<ExtensionManager>,
+        goose_mode: &'a Mutex<GooseMode>,
+        prompt_manager: &'a Mutex<PromptManager>,
+        tool_inspection_manager: &'a ToolInspectionManager,
+        frontend_instructions: &'a Mutex<Option<String>>,
+    ) -> Self {
         Self {
-            provider,
-            model_config,
+            routing_handle,
             #[cfg(feature = "code-mode")]
             extension_manager,
             goose_mode,
@@ -278,11 +301,13 @@ impl Operation<Session, GooseEffect> for InferenceRunner<'_> {
         emit: &Emitter,
     ) -> Result<OperationResult<GooseEffect>> {
         if command.command == "status" {
-            let context_limit = self
-                .provider
-                .get_context_limit(&self.model_config)
+            let snapshot = self.routing_handle.snapshot()?;
+            let provider = snapshot.provider;
+            let model_config = snapshot.model_config;
+            let context_limit = provider
+                .get_context_limit(&model_config)
                 .await
-                .unwrap_or_else(|_| self.model_config.context_limit());
+                .unwrap_or_else(|_| model_config.context_limit());
             let context_tokens = session.usage.total_tokens.unwrap_or(0).max(0) as usize;
             let lifetime_tokens =
                 session.accumulated_usage.total_tokens.unwrap_or(0).max(0) as usize;
@@ -299,14 +324,25 @@ impl Operation<Session, GooseEffect> for InferenceRunner<'_> {
                  - Mode: {}\n\
                  - Tokens (lifetime): {}\n\
                  - Context: {} / {} tokens ({})",
-                self.model_config.model_name,
-                self.provider.get_name(),
+                model_config.model_name,
+                provider.get_name(),
                 session.goose_mode,
                 lifetime_tokens,
                 context_tokens,
                 context_limit,
                 context_pct,
             );
+            if let Some(routing) = self.routing_handle.status() {
+                status_text.push_str(&format!(
+                    "\n- Routing mode: {}\n- Primary model: {}\n- Last actual model: {}\n- Probe: {}\n- Switch reason: {}\n- Config version: {}",
+                    routing.mode,
+                    routing.primary_model,
+                    routing.last_actual_model.as_deref().unwrap_or("none"),
+                    routing.last_is_probe,
+                    routing.last_switch_reason,
+                    routing.config_version,
+                ));
+            }
             let quota_summary =
                 crate::slash_commands::quota_slash_command::get_short_quota_summary().await;
             if !quota_summary.is_empty() {
@@ -397,12 +433,11 @@ impl Inference<Session, GooseEffect> for InferenceRunner<'_> {
             return not_applicable();
         }
 
-        let span = chat_span(
-            self.provider.as_ref(),
-            &self.model_config,
-            &session.id,
-            "inference",
-        );
+        let snapshot = self.routing_handle.snapshot()?;
+        let provider = snapshot.provider;
+        let model_config = snapshot.model_config;
+
+        let span = chat_span(provider.as_ref(), &model_config, &session.id, "inference");
 
         async {
             #[cfg(feature = "code-mode")]
@@ -438,7 +473,7 @@ impl Inference<Session, GooseEffect> for InferenceRunner<'_> {
                 crate::agents::reply_parts::prepare_tools_for_provider(
                     tools,
                     system_prompt,
-                    &self.model_config,
+                    &model_config,
                 );
             let mut available_tools = tools
                 .iter()
@@ -469,17 +504,16 @@ impl Inference<Session, GooseEffect> for InferenceRunner<'_> {
                 }
             }
 
-            let context_limit = self
-                .provider
-                .get_context_limit(&self.model_config)
+            let context_limit = provider
+                .get_context_limit(&model_config)
                 .await
-                .unwrap_or_else(|_| self.model_config.context_limit());
-            let provider_name = self.provider.get_name();
+                .unwrap_or_else(|_| model_config.context_limit());
+            let provider_name = provider.get_name();
             if let Some(session_id) = super::super::latest_provider_session_id(
                 conversation.messages(),
                 provider_name,
             ) {
-                if let Err(error) = self.provider.resume(session_id).await {
+                if let Err(error) = provider.resume(session_id).await {
                     tracing::warn!(
                         provider = provider_name,
                         %error,
@@ -515,8 +549,8 @@ impl Inference<Session, GooseEffect> for InferenceRunner<'_> {
                 turn_context.into_iter().map(GooseEffect::from).collect();
 
             let stream = crate::agents::reply_parts::stream_response_from_provider(
-                self.provider.clone(),
-                self.model_config.clone(),
+                provider.clone(),
+                model_config.clone(),
                 &session.id,
                 &system_prompt,
                 conversation_for_provider.messages(),
@@ -533,16 +567,15 @@ impl Inference<Session, GooseEffect> for InferenceRunner<'_> {
                 }
             };
 
-            let requested_model = self.model_config.model_name.clone();
-            let resolved_model = self
-                .provider
+            let requested_model = model_config.model_name.clone();
+            let resolved_model = provider
                 .fetch_model_info(&requested_model)
                 .await
                 .ok()
                 .and_then(|model_info| model_info.resolved_model);
-            let provider_session_id = self.provider.provider_session_id();
+            let provider_session_id = provider.provider_session_id();
             let inference = Some(InferenceMetadata {
-                provider: self.provider.get_name().to_string(),
+                provider: provider.get_name().to_string(),
                 requested_model,
                 resolved_model,
                 provider_session_id,
@@ -616,7 +649,7 @@ impl Inference<Session, GooseEffect> for InferenceRunner<'_> {
                 .any(|effect| matches!(effect, GooseEffect::RecordUsage(_)));
             if !has_recorded_usage {
                 let mut usage = ProviderUsage::new(
-                    self.model_config.model_name.clone(),
+                    model_config.model_name.clone(),
                     openduck_providers::conversation::token_usage::Usage::default(),
                 );
                 if let Some(response) = accumulator.last() {

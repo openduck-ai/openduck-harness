@@ -167,6 +167,31 @@
     "retryFile": "Retry file"
   },
   "config": {
+    "adaptive": {
+      "baseProvider": "Base provider (optional)",
+      "cooldownSeconds": "Switch cooldown (seconds)",
+      "customModel": "Custom model ID...",
+      "economyModel": "Economy model",
+      "hint": "Automatically routes between regular and economy models based on off-peak windows and observed first-token latency.",
+      "invalidCooldown": "Cooldown seconds must be a non-negative integer.",
+      "invalidOffPeak": "Off-peak windows must use HH:MM-HH:MM format (comma-separated).",
+      "invalidProbeRatio": "Probe ratio must be a number between 0 and 1.",
+      "mode": "Routing mode",
+      "modeAuto": "Auto (Adaptive)",
+      "modeEconomy": "Fixed economy",
+      "modeRegular": "Fixed regular",
+      "noBaseProvider": "Auto-detect from prefix",
+      "offPeak": "Off-peak windows",
+      "probeRatio": "Probe ratio",
+      "regularModel": "Regular model",
+      "regularModelRequired": "Regular model is required.",
+      "economyModelRequired": "Economy model is required.",
+      "save": "Save adaptive routing",
+      "saved": "Adaptive routing settings saved.",
+      "saveFailed": "Failed to save adaptive routing settings.",
+      "timezone": "Timezone",
+      "title": "Adaptive Model Routing"
+    },
     "editor": {
       "anthropicHost": "Anthropic host",
       "completion": "Completion",
@@ -1575,6 +1600,7 @@
   "settings": {
     "nav": {
       "about": "About",
+      "adaptive": "Adaptive routing",
       "appearance": "Appearance",
       "configuration": "Configuration",
       "connection": "Connection",

@@ -26,6 +26,7 @@ use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_
 use crate::agents::platform_extensions::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::retry::{RetryManager, RetryResult};
+use crate::agents::routing::{mode_for_provider_and_model, AgentRoutingHandle};
 use crate::agents::state_machine::{
     run_goose, BangShellOperation, CompactionOperation, DoctorOperation, Emitter,
     EntryHookOperation, ExitOnErrorOperation, GooseEffect, InferenceRunner, MaxTurnsOperation,
@@ -293,6 +294,7 @@ fn resolve_use_login_shell_path(explicit: Option<bool>, platform: &GoosePlatform
 /// The main goose Agent
 pub struct Agent {
     pub(super) provider: SharedProvider,
+    pub(super) routing_handle: AgentRoutingHandle,
     pub config: AgentConfig,
     pub(super) current_goose_mode: Mutex<GooseMode>,
 
@@ -439,6 +441,7 @@ impl Agent {
         let is_subagent = config.is_subagent;
         Self {
             provider: provider.clone(),
+            routing_handle: AgentRoutingHandle::new(),
             config,
             current_goose_mode: Mutex::new(initial_mode),
             extension_manager: Arc::new(ExtensionManager::new(
@@ -1011,6 +1014,14 @@ impl Agent {
             Some(provider) => Ok(Arc::clone(provider)),
             None => Err(anyhow!("Provider not set")),
         }
+    }
+
+    pub fn routing_handle(&self) -> &AgentRoutingHandle {
+        &self.routing_handle
+    }
+
+    pub fn routing_status(&self) -> Option<crate::providers::base::ProviderRoutingStatus> {
+        self.routing_handle.status()
     }
 
     /// Resolve the active model config for a session.
@@ -1712,6 +1723,8 @@ impl Agent {
             .unwrap_or_else(|_| {
                 crate::context_mgmt::compute_tool_call_cutoff(context_limit, compaction_threshold)
             });
+        self.routing_handle
+            .ensure_initialized(provider.clone(), model_config.clone());
         let manages_own_context = provider.manages_own_context();
         let tool_pair_compaction_enabled =
             crate::context_mgmt::tool_pair_summarization_enabled() && !manages_own_context;
@@ -1722,17 +1735,16 @@ impl Agent {
             Arc::new(BangShellOperation::new()),
         ];
         if !manages_own_context {
-            operations.push(Arc::new(CompactionOperation::new(
-                provider.clone(),
-                model_config.clone(),
+            operations.push(Arc::new(CompactionOperation::with_routing_handle(
+                self.routing_handle.clone(),
                 context_limit,
                 compaction_threshold,
+                manages_own_context,
             )));
         }
         let remaining_operations: Vec<Arc<dyn Operation<Session, GooseEffect> + '_>> = vec![
-            Arc::new(ToolPairCompactionOperation::new(
-                provider.clone(),
-                model_config.clone(),
+            Arc::new(ToolPairCompactionOperation::with_routing_handle(
+                self.routing_handle.clone(),
                 tool_call_cutoff,
                 tool_pair_compaction_enabled,
             )),
@@ -1763,9 +1775,8 @@ impl Agent {
             Arc::new(ExitOnErrorOperation),
         ];
         operations.extend(remaining_operations);
-        let inference = Arc::new(InferenceRunner::new(
-            provider,
-            model_config,
+        let inference = Arc::new(InferenceRunner::with_routing_handle(
+            self.routing_handle.clone(),
             self.extension_manager.clone(),
             &self.current_goose_mode,
             &self.prompt_manager,
@@ -2310,6 +2321,8 @@ impl Agent {
         self.reset_retry_attempts().await;
 
         let provider = self.provider().await?;
+        self.routing_handle
+            .ensure_initialized(provider.clone(), model_config.clone());
         let provider_name = provider.get_name().to_string();
         let saved_provider_session_id =
             super::latest_provider_session_id(conversation.messages(), &provider_name);
@@ -2541,9 +2554,16 @@ impl Agent {
                     break;
                 }
 
+                let request_snapshot = self.routing_handle.snapshot()?;
+                let inference = Some(InferenceMetadata {
+                    provider: request_snapshot.provider.get_name().to_string(),
+                    requested_model: request_snapshot.model_config.model_name.clone(),
+                    resolved_model: inference.as_ref().and_then(|i| i.resolved_model.clone()),
+                    provider_session_id: request_snapshot.provider.provider_session_id(),
+                });
                 let mut stream = crate::agents::reply_parts::stream_response_from_provider(
-                    self.provider().await?,
-                    model_config.clone(),
+                    request_snapshot.provider.clone(),
+                    request_snapshot.model_config.clone(),
                     &session_config.id,
                     &system_prompt,
                     conversation.messages(),
@@ -2562,8 +2582,8 @@ impl Agent {
                     None
                 } else {
                     crate::context_mgmt::maybe_summarize_tool_pairs(
-                        self.provider().await?,
-                        model_config.clone(),
+                        request_snapshot.provider.clone(),
+                        request_snapshot.model_config.clone(),
                         session_config.id.clone(),
                         conversation.clone(),
                         tool_call_cut_off,
@@ -3574,43 +3594,64 @@ impl Agent {
         model_config: openduck_providers::model::ModelConfig,
         session_id: &str,
     ) -> Result<()> {
-        let provider_name = provider.get_name().to_string();
-
-        // Normalize against the provider entry so custom/declarative providers
-        // backfill `context_limit` from their known models before the config is
-        // persisted as the session source of truth; otherwise auto-compaction
-        // would fall back to DEFAULT_CONTEXT_LIMIT.
-        let model_config = match crate::providers::get_from_registry(&provider_name).await {
-            Ok(entry) => entry
-                .normalize_model_config(model_config.clone())
-                .unwrap_or(model_config),
-            Err(_) => model_config,
-        };
-        let effort_support = provider.thinking_effort_support();
-        let model_config = normalize_legacy_provider_thinking_effort(model_config, &effort_support);
-
-        {
-            let mut current_provider = self.provider.lock().await;
-            *current_provider = Some(Arc::clone(&provider));
-        }
-
-        // A freshly created provider that manages its own model starts on its
-        // own default, so the session's selection has to be pushed to it before
-        // the next config snapshot is built. Failures are not fatal here: the
-        // selection is re-applied at stream time.
-        if let Err(e) = provider.apply_model_selection(&model_config).await {
-            warn!("Failed to apply model selection to provider: {e}");
-        }
-
-        self.config
-            .session_manager
-            .clone()
-            .update(session_id)
-            .provider_name(&provider_name)
-            .model_config(model_config)
-            .apply()
+        self.update_provider_versioned(provider, model_config, session_id)
             .await
-            .context("Failed to persist provider config to session")
+            .map(|_| ())
+    }
+
+    pub async fn update_provider_versioned(
+        &self,
+        provider: Arc<dyn Provider>,
+        model_config: openduck_providers::model::ModelConfig,
+        session_id: &str,
+    ) -> Result<u64> {
+        let session_manager = self.config.session_manager.clone();
+        let shared_provider = self.provider.clone();
+        let session_id = session_id.to_string();
+
+        self.routing_handle
+            .update_serialized(|_proposed_version| async move {
+                let provider_name = provider.get_name().to_string();
+
+                // Normalize against the provider entry so custom/declarative providers
+                // backfill `context_limit` from their known models before the config is
+                // persisted as the session source of truth; otherwise auto-compaction
+                // would fall back to DEFAULT_CONTEXT_LIMIT.
+                let model_config = match crate::providers::get_from_registry(&provider_name).await {
+                    Ok(entry) => entry
+                        .normalize_model_config(model_config.clone())
+                        .unwrap_or(model_config),
+                    Err(_) => model_config,
+                };
+                let effort_support = provider.thinking_effort_support();
+                let model_config =
+                    normalize_legacy_provider_thinking_effort(model_config, &effort_support);
+
+                // A freshly created provider that manages its own model starts on its
+                // own default, so the session's selection has to be pushed to it before
+                // the next config snapshot is built. Failures are not fatal here: the
+                // selection is re-applied at stream time.
+                if let Err(e) = provider.apply_model_selection(&model_config).await {
+                    warn!("Failed to apply model selection to provider: {e}");
+                }
+
+                session_manager
+                    .update(&session_id)
+                    .provider_name(&provider_name)
+                    .model_config(model_config.clone())
+                    .apply()
+                    .await
+                    .context("Failed to persist provider config to session")?;
+
+                {
+                    let mut current_provider = shared_provider.lock().await;
+                    *current_provider = Some(Arc::clone(&provider));
+                }
+
+                let mode = mode_for_provider_and_model(provider.as_ref(), &model_config);
+                Ok((provider, model_config, mode))
+            })
+            .await
     }
 
     pub async fn update_goose_mode(&self, mode: GooseMode, session_id: &str) -> Result<()> {

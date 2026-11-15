@@ -1,11 +1,13 @@
 //! Compacts conversation history when it is too large for the configured context window.
 
+#[cfg(test)]
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use tracing_futures::Instrument;
 
+use crate::agents::routing::AgentRoutingHandle;
 use crate::agents::state_machine::ops_llm::{chat_span, record_chat_usage};
 use crate::agents::state_machine::{
     applied, last_effective_role, messages_since_kickoff, not_applicable, trailing_error, yielded,
@@ -15,8 +17,10 @@ use crate::agents::state_machine::{
 use crate::context_mgmt::compact_messages;
 use crate::conversation::message::{Message, MessageErrorKind, SystemNotificationType};
 use crate::conversation::{Conversation, EffectiveRole};
+#[cfg(test)]
 use crate::providers::base::Provider;
 use crate::session::Session;
+#[cfg(test)]
 use openduck_providers::model::ModelConfig;
 
 const COMPACTION_THINKING_TEXT: &str = "goose is compacting the conversation...";
@@ -45,14 +49,14 @@ fn compaction_part(
 }
 
 pub struct CompactionOperation {
-    provider: Arc<dyn Provider>,
-    model_config: ModelConfig,
+    routing_handle: AgentRoutingHandle,
     context_limit: usize,
     threshold: f64,
     manages_own_context: bool,
 }
 
 impl CompactionOperation {
+    #[cfg(test)]
     pub fn new(
         provider: Arc<dyn Provider>,
         model_config: ModelConfig,
@@ -61,8 +65,21 @@ impl CompactionOperation {
     ) -> Self {
         let manages_own_context = provider.manages_own_context();
         Self {
-            provider,
-            model_config,
+            routing_handle: AgentRoutingHandle::from_static(provider, model_config),
+            context_limit,
+            threshold,
+            manages_own_context,
+        }
+    }
+
+    pub fn with_routing_handle(
+        routing_handle: AgentRoutingHandle,
+        context_limit: usize,
+        threshold: f64,
+        manages_own_context: bool,
+    ) -> Self {
+        Self {
+            routing_handle,
             context_limit,
             threshold,
             manages_own_context,
@@ -147,15 +164,16 @@ impl Operation<Session, GooseEffect> for CompactionOperation {
             _ => return not_applicable(),
         }
 
+        let snapshot = self.routing_handle.snapshot()?;
         let span = chat_span(
-            self.provider.as_ref(),
-            &self.model_config,
+            snapshot.provider.as_ref(),
+            &snapshot.model_config,
             &session.id,
             "compaction",
         );
         let result = match compact_messages(
-            self.provider.as_ref(),
-            &self.model_config,
+            snapshot.provider.as_ref(),
+            &snapshot.model_config,
             &session.id,
             conversation,
             true,
@@ -274,15 +292,16 @@ impl Operation<Session, GooseEffect> for CompactionOperation {
         ))
         .await;
 
+        let snapshot = self.routing_handle.snapshot()?;
         let span = chat_span(
-            self.provider.as_ref(),
-            &self.model_config,
+            snapshot.provider.as_ref(),
+            &snapshot.model_config,
             &session.id,
             "compaction",
         );
         match compact_messages(
-            self.provider.as_ref(),
-            &self.model_config,
+            snapshot.provider.as_ref(),
+            &snapshot.model_config,
             &session.id,
             conversation,
             false,

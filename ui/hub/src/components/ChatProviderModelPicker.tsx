@@ -14,9 +14,19 @@ export function ChatProviderModelPicker({ view, disabled, onChange }: ChatProvid
   const chooseModel = view.models.length > 1
   if (!chooseProvider && !chooseModel) return null
 
+  const formatModelLabel = (value: string, fallback: string) => {
+    if (view.provider === 'adaptive') {
+      if (value === 'auto') return t('config.adaptive.modeAuto')
+      if (value === 'regular') return t('config.adaptive.modeRegular')
+      if (value === 'economy') return t('config.adaptive.modeEconomy')
+    }
+    return fallback
+  }
+
   const providerLabel =
     view.providers.find(choice => choice.value === view.provider)?.label || view.provider
-  const modelLabel = view.models.find(choice => choice.value === view.model)?.label || view.model
+  const rawModelLabel = view.models.find(choice => choice.value === view.model)?.label || view.model
+  const modelLabel = formatModelLabel(view.model, rawModelLabel)
 
   return (
     <div
@@ -62,7 +72,7 @@ export function ChatProviderModelPicker({ view, disabled, onChange }: ChatProvid
           {!view.model && <option value="">{t('chat.page.model')}</option>}
           {view.models.map(choice => (
             <option key={choice.value} value={choice.value}>
-              {choice.label}
+              {formatModelLabel(choice.value, choice.label)}
             </option>
           ))}
         </select>

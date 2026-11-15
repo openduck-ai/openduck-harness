@@ -49,6 +49,16 @@ import {
   validateNewConfigKey,
   type ConfigDrafts,
 } from '../configEditor'
+import {
+  ADAPTIVE_CONFIG_KEYS,
+  adaptiveBaseProviderOptions,
+  adaptiveCandidateModelOptions,
+  adaptiveDraftFromDocument,
+  adaptiveEntriesToUpsert,
+  validateAdaptiveDraft,
+  type AdaptiveRoutingDraft,
+  type AdaptiveRoutingMode,
+} from '../adaptiveConfig'
 import { validateProxyUrlMessage } from '../providerConfig'
 
 type ConfigApi = Pick<
@@ -518,6 +528,7 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
   const { t } = useTranslation()
   const [doc, setDoc] = useState<AppConfigDocument | null>(null)
   const [drafts, setDrafts] = useState<ConfigDrafts | null>(null)
+  const [adaptiveDraft, setAdaptiveDraft] = useState<AdaptiveRoutingDraft | null>(null)
   const [providersDraft, setProvidersDraft] = useState<ProviderConfigDraft | null>(null)
   const [proxiesDraft, setProxiesDraft] = useState<ProxyItem[]>([])
   const [tuiProxyDraft, setTuiProxyDraft] = useState<TuiProxyDraftRow[]>(() =>
@@ -550,12 +561,14 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
   const applyDocument = (next: AppConfigDocument) => {
     setDoc(next)
     setDrafts(draftsFromDocument(next))
+    setAdaptiveDraft(adaptiveDraftFromDocument(next))
   }
 
   useEffect(() => {
     if (!isConnected) {
       setDoc(null)
       setDrafts(null)
+      setAdaptiveDraft(null)
       setProvidersDraft(null)
       setProxiesDraft([])
       setTuiProxyDraft(draftsFromTuiProxies(null))
@@ -734,6 +747,30 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
     }
     setEditingProxyId(null)
     setProxyFormError('')
+  }
+
+  const saveAdaptive = async () => {
+    if (!doc || !adaptiveDraft) return
+    setSaving('adaptive')
+    setError('')
+    setNotice('')
+    try {
+      validateAdaptiveDraft(adaptiveDraft)
+      const updates = adaptiveEntriesToUpsert(adaptiveDraft, doc)
+      let latest = doc
+      for (const item of updates) {
+        latest =
+          item.value === null
+            ? await api.removeAppConfig(item.key)
+            : await api.upsertAppConfig(item.key, item.value)
+      }
+      applyDocument(latest)
+      setNotice({ key: 'config.adaptive.saved' })
+    } catch (cause) {
+      setError(messageFrom(cause, { key: 'config.adaptive.saveFailed' }))
+    } finally {
+      setSaving(null)
+    }
   }
 
   const saveMode = async () => {
@@ -1116,6 +1153,238 @@ export function OpenDuckConfigPanel({ api, isConnected }: OpenDuckConfigPanelPro
               </button>
             </div>
           </section>
+
+          {adaptiveDraft && (
+            <section
+              id="settings-adaptive"
+              data-settings-section="settings-adaptive"
+              className="config-section"
+            >
+              <h4>{t('config.adaptive.title')}</h4>
+              <p className="form-hint">{t('config.adaptive.hint')}</p>
+
+              <div className="config-form-grid" style={{ marginTop: '0.75rem' }}>
+                <label className="config-field">
+                  <span>{t('config.adaptive.mode')}</span>
+                  <select
+                    value={adaptiveDraft.mode}
+                    disabled={
+                      saving === 'adaptive' ||
+                      adaptiveDraft.fromEnvKeys.has(ADAPTIVE_CONFIG_KEYS.mode)
+                    }
+                    onChange={(e) =>
+                      setAdaptiveDraft({
+                        ...adaptiveDraft,
+                        mode: e.target.value as AdaptiveRoutingMode,
+                      })
+                    }
+                  >
+                    <option value="auto">{t('config.adaptive.modeAuto')}</option>
+                    <option value="regular">{t('config.adaptive.modeRegular')}</option>
+                    <option value="economy">{t('config.adaptive.modeEconomy')}</option>
+                  </select>
+                </label>
+
+                <label className="config-field">
+                  <span>{t('config.adaptive.regularModel')}</span>
+                  {(() => {
+                    const options = adaptiveCandidateModelOptions(providersDraft)
+                    const inList = options.some((opt) => opt.value === adaptiveDraft.regularModel)
+                    const disabled =
+                      saving === 'adaptive' ||
+                      adaptiveDraft.fromEnvKeys.has(ADAPTIVE_CONFIG_KEYS.regularModel)
+                    return (
+                      <>
+                        {options.length > 0 && (
+                          <select
+                            value={inList ? adaptiveDraft.regularModel : '__custom__'}
+                            disabled={disabled}
+                            onChange={(e) => {
+                              const next = e.target.value
+                              setAdaptiveDraft({
+                                ...adaptiveDraft,
+                                regularModel: next === '__custom__' ? '' : next,
+                              })
+                            }}
+                          >
+                            {options.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                            <option value="__custom__">{t('config.adaptive.customModel')}</option>
+                          </select>
+                        )}
+                        {(options.length === 0 || !inList) && (
+                          <input
+                            type="text"
+                            placeholder="ark/deepseek-v4.1-flash"
+                            value={adaptiveDraft.regularModel}
+                            disabled={disabled}
+                            onChange={(e) =>
+                              setAdaptiveDraft({ ...adaptiveDraft, regularModel: e.target.value })
+                            }
+                          />
+                        )}
+                      </>
+                    )
+                  })()}
+                </label>
+
+                <label className="config-field">
+                  <span>{t('config.adaptive.economyModel')}</span>
+                  {(() => {
+                    const options = adaptiveCandidateModelOptions(providersDraft)
+                    const inList = options.some((opt) => opt.value === adaptiveDraft.economyModel)
+                    const disabled =
+                      saving === 'adaptive' ||
+                      adaptiveDraft.fromEnvKeys.has(ADAPTIVE_CONFIG_KEYS.economyModel)
+                    return (
+                      <>
+                        {options.length > 0 && (
+                          <select
+                            value={inList ? adaptiveDraft.economyModel : '__custom__'}
+                            disabled={disabled}
+                            onChange={(e) => {
+                              const next = e.target.value
+                              setAdaptiveDraft({
+                                ...adaptiveDraft,
+                                economyModel: next === '__custom__' ? '' : next,
+                              })
+                            }}
+                          >
+                            {options.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                            <option value="__custom__">{t('config.adaptive.customModel')}</option>
+                          </select>
+                        )}
+                        {(options.length === 0 || !inList) && (
+                          <input
+                            type="text"
+                            placeholder="ark/deepseek-v4.1-flash-economy"
+                            value={adaptiveDraft.economyModel}
+                            disabled={disabled}
+                            onChange={(e) =>
+                              setAdaptiveDraft({ ...adaptiveDraft, economyModel: e.target.value })
+                            }
+                          />
+                        )}
+                      </>
+                    )
+                  })()}
+                </label>
+
+                <label className="config-field">
+                  <span>{t('config.adaptive.baseProvider')}</span>
+                  <select
+                    value={adaptiveDraft.baseProvider}
+                    disabled={
+                      saving === 'adaptive' ||
+                      adaptiveDraft.fromEnvKeys.has(ADAPTIVE_CONFIG_KEYS.baseProvider)
+                    }
+                    onChange={(e) =>
+                      setAdaptiveDraft({ ...adaptiveDraft, baseProvider: e.target.value })
+                    }
+                  >
+                    <option value="">{t('config.adaptive.noBaseProvider')}</option>
+                    {adaptiveDraft.baseProvider &&
+                      !adaptiveBaseProviderOptions(providersDraft).includes(
+                        adaptiveDraft.baseProvider,
+                      ) && (
+                        <option value={adaptiveDraft.baseProvider}>
+                          {adaptiveDraft.baseProvider}
+                        </option>
+                      )}
+                    {adaptiveBaseProviderOptions(providersDraft).map((provider) => (
+                      <option key={provider} value={provider}>
+                        {provider}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="config-field">
+                  <span>{t('config.adaptive.timezone')}</span>
+                  <input
+                    type="text"
+                    placeholder="Asia/Shanghai"
+                    value={adaptiveDraft.timezone}
+                    disabled={
+                      saving === 'adaptive' ||
+                      adaptiveDraft.fromEnvKeys.has(ADAPTIVE_CONFIG_KEYS.timezone)
+                    }
+                    onChange={(e) =>
+                      setAdaptiveDraft({ ...adaptiveDraft, timezone: e.target.value })
+                    }
+                  />
+                </label>
+
+                <label className="config-field">
+                  <span>{t('config.adaptive.offPeak')}</span>
+                  <input
+                    type="text"
+                    placeholder="01:00-07:00"
+                    value={adaptiveDraft.offPeak}
+                    disabled={
+                      saving === 'adaptive' ||
+                      adaptiveDraft.fromEnvKeys.has(ADAPTIVE_CONFIG_KEYS.offPeak)
+                    }
+                    onChange={(e) =>
+                      setAdaptiveDraft({ ...adaptiveDraft, offPeak: e.target.value })
+                    }
+                  />
+                </label>
+
+                <label className="config-field">
+                  <span>{t('config.adaptive.probeRatio')}</span>
+                  <input
+                    type="text"
+                    placeholder="0.10"
+                    value={adaptiveDraft.probeRatio}
+                    disabled={
+                      saving === 'adaptive' ||
+                      adaptiveDraft.fromEnvKeys.has(ADAPTIVE_CONFIG_KEYS.probeRatio)
+                    }
+                    onChange={(e) =>
+                      setAdaptiveDraft({ ...adaptiveDraft, probeRatio: e.target.value })
+                    }
+                  />
+                </label>
+
+                <label className="config-field">
+                  <span>{t('config.adaptive.cooldownSeconds')}</span>
+                  <input
+                    type="text"
+                    placeholder="300"
+                    value={adaptiveDraft.cooldownSeconds}
+                    disabled={
+                      saving === 'adaptive' ||
+                      adaptiveDraft.fromEnvKeys.has(ADAPTIVE_CONFIG_KEYS.cooldownSeconds)
+                    }
+                    onChange={(e) =>
+                      setAdaptiveDraft({ ...adaptiveDraft, cooldownSeconds: e.target.value })
+                    }
+                  />
+                </label>
+              </div>
+
+              <div className="settings-actions-row" style={{ marginTop: '1rem' }}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={saving === 'adaptive'}
+                  onClick={() => void saveAdaptive()}
+                >
+                  {saving === 'adaptive'
+                    ? t('config.panel.saving')
+                    : t('config.adaptive.save')}
+                </button>
+              </div>
+            </section>
+          )}
 
           <section
             id="settings-proxies"

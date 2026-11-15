@@ -14,6 +14,7 @@ pub mod platform_tools;
 pub mod prompt_manager;
 pub mod reply_parts;
 pub mod retry;
+pub mod routing;
 mod schedule_tool;
 pub mod state_machine;
 pub mod subagent_execution_tool;

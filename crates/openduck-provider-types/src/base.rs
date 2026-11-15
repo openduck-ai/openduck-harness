@@ -365,6 +365,16 @@ pub type MessageStream = Pin<
     Box<dyn Stream<Item = Result<(Option<Message>, Option<ProviderUsage>), ProviderError>> + Send>,
 >;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderRoutingStatus {
+    pub mode: String,
+    pub primary_model: String,
+    pub last_actual_model: Option<String>,
+    pub last_is_probe: bool,
+    pub last_switch_reason: String,
+    pub config_version: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PermissionRouting {
     ActionRequired,
@@ -744,6 +754,10 @@ pub trait Provider: Send + Sync {
         _confirmation: &PermissionConfirmation,
     ) -> bool {
         false
+    }
+
+    fn routing_status(&self) -> Option<ProviderRoutingStatus> {
+        None
     }
 }
 

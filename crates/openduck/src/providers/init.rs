@@ -37,6 +37,7 @@ use super::{
     xai_oauth::XaiOAuthProvider,
 };
 use crate::config::ExtensionConfig;
+use crate::providers::adaptive_def::AdaptiveProviderDef;
 use crate::providers::anthropic_def::AnthropicProviderDef;
 use crate::providers::azure_foundry_def::AzureFoundryProviderDef;
 use crate::providers::base::ProviderType;
@@ -61,6 +62,7 @@ async fn init_registry() -> RwLock<ProviderRegistry> {
     let mut registry = ProviderRegistry::new(tls_config).with_providers(|registry| {
         use super::inventory::registrations;
 
+        registry.register::<AdaptiveProviderDef>(false);
         registry.register_with_inventory::<AmpAcpProvider>(
             false,
             Some(registrations::amp_acp_inventory()),

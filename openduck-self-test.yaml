@@ -24,6 +24,7 @@ activities:
   - Validate harness context memory, compaction carry-forward, and repetition warnings
   - Test multi-turn thinking preservation for providers that reject replayed reasoning_content
   - Validate ACP thinking-effort discovery, forwarding, and provider switching
+  - Validate adaptive model routing and mid-turn fixed/auto switching across both agent loops
   - Test error boundaries including nested delegation prevention
   - Generate comprehensive test report
 
@@ -95,6 +96,14 @@ instructions: |
   notes file even while a subtask runs. An updated notes file should suppress the reminder.
   Exhausting the turn budget must still report an incomplete run, never forced success.
   Confirm that Continue does not replay injected harness notices as new user follow-ups.
+
+  ## Adaptive Model Routing Validation
+  Run `cargo test -p openduck-providers --test adaptive_provider_test` and
+  `cargo test -p openduck --test adaptive_routing_test`. Confirm that:
+  - Fixed regular, fixed economy, and auto modes route and report status accurately.
+  - Mid-turn provider/model updates take effect on the next inference request in both
+    the legacy loop and `OPENDUCK_STATE_MACHINE=1` while preserving tool call history.
+  - Persistence failures preserve the existing active routing snapshot.
 
   ## TUI Agent Model Catalog Validation
   Run `cargo test -p openduck-mcp --test model_catalog_test` and
