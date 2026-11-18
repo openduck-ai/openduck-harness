@@ -97,9 +97,10 @@ export function ProviderStatsDashboard({
         const q = searchQuery.toLowerCase()
         const matchProvider = call.provider.toLowerCase().includes(q)
         const matchModel = call.model?.toLowerCase().includes(q)
+        const matchTier = call.adaptiveTier?.toLowerCase().includes(q)
         const matchReason = call.retryReason?.toLowerCase().includes(q)
         const matchError = call.error?.toLowerCase().includes(q)
-        return matchProvider || matchModel || matchReason || matchError
+        return matchProvider || matchModel || matchTier || matchReason || matchError
       }
       return true
     })
@@ -109,6 +110,12 @@ export function ProviderStatsDashboard({
     providerStats.totalCalls > 0
       ? (providerStats.successfulCalls / providerStats.totalCalls) * 100
       : 100
+
+  const formatAdaptiveTier = (tier?: string | null) => {
+    if (tier === 'regular') return t('config.stats.regularModel')
+    if (tier === 'economy') return t('config.stats.economyModel')
+    return tier ?? ''
+  }
 
   const toggleCallExpanded = (id: string) => {
     setExpandedCallId(prev => (prev === id ? null : id))
@@ -253,6 +260,16 @@ export function ProviderStatsDashboard({
           {Object.entries(providerStats.byProvider || {}).map(([pName, pStat]) => {
             const pSuccessRate =
               pStat.totalCalls > 0 ? (pStat.successfulCalls / pStat.totalCalls) * 100 : 100
+            const tierCounts = Object.values(providerStats.byModel || {}).reduce(
+              (acc, mStat) => {
+                if (mStat.provider === pName && mStat.adaptiveTier) {
+                  acc[mStat.adaptiveTier] = (acc[mStat.adaptiveTier] ?? 0) + mStat.totalCalls
+                }
+                return acc
+              },
+              {} as Record<string, number>,
+            )
+            const tierEntries = Object.entries(tierCounts)
             return (
               <div key={pName} className="provider-summary-card">
                 <div className="p-card-top">
@@ -264,6 +281,15 @@ export function ProviderStatsDashboard({
                     {t('config.stats.callCount', { count: pStat.totalCalls })}
                   </span>
                 </div>
+                {tierEntries.length > 0 && (
+                  <div className="p-card-adaptive-tiers">
+                    {tierEntries.map(([tier, count]) => (
+                      <span key={tier} className={`adaptive-tier-badge tier-${tier}`}>
+                        {formatAdaptiveTier(tier)} ×{count}
+                      </span>
+                    ))}
+                  </div>
+                )}
 
                 <div className="p-card-metrics-grid">
                   <div className="p-metric-cell">
@@ -332,6 +358,11 @@ export function ProviderStatsDashboard({
                     <td>
                       <div className="model-name-cell">
                         <span className="provider-tag">{mStat.provider}</span>
+                        {mStat.adaptiveTier && (
+                          <span className={`adaptive-tier-badge tier-${mStat.adaptiveTier}`}>
+                            {formatAdaptiveTier(mStat.adaptiveTier)}
+                          </span>
+                        )}
                         <code className="model-code">{mStat.model || mKey}</code>
                       </div>
                     </td>
@@ -503,6 +534,11 @@ export function ProviderStatsDashboard({
                       <td>
                         <div className="provider-model-col">
                           <span className="p-badge">{call.provider}</span>
+                          {call.adaptiveTier && (
+                            <span className={`adaptive-tier-badge tier-${call.adaptiveTier}`}>
+                              {formatAdaptiveTier(call.adaptiveTier)}
+                            </span>
+                          )}
                           {call.model && <code className="m-badge">{call.model}</code>}
                         </div>
                       </td>

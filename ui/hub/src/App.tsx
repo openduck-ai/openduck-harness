@@ -658,6 +658,7 @@ export default function App() {
         {currentPage === 'running' && (
           <div className="page-view running-tasks-page-view">
             <RunningTasksPage
+              api={api}
               jobs={runningJobs}
               projects={projects}
               loaded={runningJobsLoaded}
@@ -673,6 +674,29 @@ export default function App() {
                 void refreshRunningJobs()
               }}
               onOpenProject={project => void open(project, 'harness')}
+              onOpenProjectChat={project => void open(project, 'chat')}
+              onOpenJobLog={(project, job) =>
+                void open(project, 'harness', {
+                  destination: {
+                    kind: 'log',
+                    target: { kind: 'job', jobId: job.jobId },
+                    file: null,
+                    logPage: null,
+                    logSize: null,
+                  },
+                })
+              }
+              onOpenHistoryLog={(project, item) =>
+                void open(project, 'harness', {
+                  destination: {
+                    kind: 'log',
+                    target: { kind: 'history', fileName: item.fileName },
+                    file: null,
+                    logPage: null,
+                    logSize: null,
+                  },
+                })
+              }
               onStopJob={job => void handleStopRunningJob(job)}
             />
           </div>

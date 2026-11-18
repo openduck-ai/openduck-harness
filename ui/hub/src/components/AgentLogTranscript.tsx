@@ -832,8 +832,17 @@ function AssistantTurn({
               {turn.providerCalls && turn.providerCalls.length > 0 && (
                 <ul className="agent-provider-list">
                   {turn.providerCalls.map((call, index) => (
-                    <li key={`${call.provider}-${call.model}-${index}`}>
+                    <li key={`${call.provider}-${call.adaptiveTier ?? ''}-${call.model}-${index}`}>
                       <span>{call.provider}</span>
+                      {call.adaptiveTier && (
+                        <span className={`adaptive-tier-badge tier-${call.adaptiveTier}`}>
+                          {call.adaptiveTier === 'regular'
+                            ? t('config.stats.regularModel')
+                            : call.adaptiveTier === 'economy'
+                              ? t('config.stats.economyModel')
+                              : call.adaptiveTier}
+                        </span>
+                      )}
                       {call.model && <span>{call.model}</span>}
                       <span>{t('trajectory.log.milliseconds', { value: formatNumber(call.latencyMs) })}</span>
                       <span>{call.success ? t('trajectory.log.ok') : call.error || t('trajectory.log.failedLower')}</span>

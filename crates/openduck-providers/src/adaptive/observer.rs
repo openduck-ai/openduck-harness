@@ -246,7 +246,7 @@ impl Stream for ObservedStream {
                         this.phase = StreamPhase::Done;
                         return Poll::Ready(None);
                     }
-                    Poll::Ready(Some(Ok((msg_opt, usage_opt)))) => {
+                    Poll::Ready(Some(Ok((msg_opt, mut usage_opt)))) => {
                         if this.attempt.first_valid_at.is_none() {
                             if let Some(msg) = &msg_opt {
                                 if has_valid_output(msg) {
@@ -254,10 +254,16 @@ impl Stream for ObservedStream {
                                 }
                             }
                         }
-                        if let Some(usage) = &usage_opt {
+                        if let Some(usage) = &mut usage_opt {
                             if !usage.model.is_empty() {
                                 this.attempt.actual_model = usage.model.clone();
+                            } else {
+                                usage.model = this.attempt.actual_model.clone();
                             }
+                            usage
+                                .stats
+                                .get_or_insert_with(Default::default)
+                                .routing_tier = Some(this.attempt.candidate.as_str().to_string());
                             if let Some(i) = usage.usage.input_tokens {
                                 this.attempt.input_tokens = i.max(0) as usize;
                             }

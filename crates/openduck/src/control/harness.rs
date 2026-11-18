@@ -360,6 +360,48 @@ async fn stream_provider_completion(
     .await
 }
 
+fn resolve_provider_call_identity(
+    provider: &Arc<dyn Provider>,
+    provider_name: &str,
+    configured_model: &str,
+    usage: Option<&openduck_providers::conversation::token_usage::ProviderUsage>,
+) -> (String, Option<String>) {
+    if let Some(usage) = usage {
+        let adaptive_tier = usage
+            .stats
+            .as_ref()
+            .and_then(|s| s.routing_tier.clone())
+            .or_else(|| {
+                provider
+                    .routing_status()
+                    .and_then(|s| s.last_actual_candidate)
+            });
+        let model = if (adaptive_tier.is_some() || provider_name == "adaptive")
+            && !usage.model.trim().is_empty()
+            && usage.model != "unknown"
+        {
+            usage.model.clone()
+        } else {
+            configured_model.to_string()
+        };
+        return (model, adaptive_tier);
+    }
+
+    let routing_status = provider.routing_status();
+    let adaptive_tier = routing_status
+        .as_ref()
+        .and_then(|s| s.last_actual_candidate.clone());
+    let model = if adaptive_tier.is_some() || provider_name == "adaptive" {
+        routing_status
+            .and_then(|s| s.last_actual_model)
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| configured_model.to_string())
+    } else {
+        configured_model.to_string()
+    };
+    (model, adaptive_tier)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn complete_provider_call(
     provider: &Arc<dyn Provider>,
@@ -439,9 +481,11 @@ async fn complete_provider_call(
                     receive_ms: 0,
                     total_ms: latency_ms,
                 };
+                let (resolved_model, adaptive_tier) =
+                    resolve_provider_call_identity(provider, &provider_name, &model_name, None);
                 recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
                     provider: provider_name.clone(),
-                    model: model_name.clone(),
+                    model: resolved_model,
                     latency_ms,
                     success: false,
                     error: Some(err_msg.clone()),
@@ -451,6 +495,7 @@ async fn complete_provider_call(
                     retry_reason: Some("context_length_exceeded".to_string()),
                     is_secondary: if is_secondary { Some(true) } else { None },
                     network_timing: Some(err_timing),
+                    adaptive_tier,
                 });
                 tracing::warn!(
                     policy = %policy_name,
@@ -511,9 +556,15 @@ async fn complete_provider_call(
                             receive_ms: 0,
                             total_ms: fallback_latency,
                         };
+                        let (resolved_model, adaptive_tier) = resolve_provider_call_identity(
+                            provider,
+                            &provider_name,
+                            &model_name,
+                            None,
+                        );
                         recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
                             provider: provider_name.clone(),
-                            model: model_name.clone(),
+                            model: resolved_model,
                             latency_ms: fallback_latency,
                             success: false,
                             error: Some(fb_err.to_string()),
@@ -523,6 +574,7 @@ async fn complete_provider_call(
                             retry_reason: Some("context_length_pruned_failed".to_string()),
                             is_secondary: if is_secondary { Some(true) } else { None },
                             network_timing: Some(fb_timing),
+                            adaptive_tier,
                         });
                         return Err(anyhow::anyhow!(fb_err));
                     }
@@ -540,9 +592,11 @@ async fn complete_provider_call(
                     receive_ms: 0,
                     total_ms: latency_ms,
                 };
+                let (resolved_model, adaptive_tier) =
+                    resolve_provider_call_identity(provider, &provider_name, &model_name, None);
                 recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
                     provider: provider_name.clone(),
-                    model: model_name.clone(),
+                    model: resolved_model,
                     latency_ms,
                     success: false,
                     error: Some(e.to_string()),
@@ -552,6 +606,7 @@ async fn complete_provider_call(
                     retry_reason: retry_reason.clone(),
                     is_secondary: if is_secondary { Some(true) } else { None },
                     network_timing: Some(err_timing),
+                    adaptive_tier,
                 });
                 return Err(anyhow::anyhow!(e));
             }
@@ -563,11 +618,14 @@ async fn complete_provider_call(
             total_tokens: usage.usage.total_tokens,
         });
 
+        let (resolved_model, adaptive_tier) =
+            resolve_provider_call_identity(provider, &provider_name, &model_name, Some(&usage));
+
         match action_from_provider_reply(&reply) {
             Ok(action) => {
                 recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
                     provider: provider_name.clone(),
-                    model: model_name.clone(),
+                    model: resolved_model,
                     latency_ms,
                     success: true,
                     error: None,
@@ -577,6 +635,7 @@ async fn complete_provider_call(
                     retry_reason: retry_reason.clone(),
                     is_secondary: if is_secondary { Some(true) } else { None },
                     network_timing: Some(network_timing),
+                    adaptive_tier,
                 });
                 return Ok(ProviderStepResult {
                     action,
@@ -591,7 +650,7 @@ async fn complete_provider_call(
                 empty_retries += 1;
                 recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
                     provider: provider_name.clone(),
-                    model: model_name.clone(),
+                    model: resolved_model,
                     latency_ms,
                     success: false,
                     error: Some("Empty completion returned".to_string()),
@@ -601,6 +660,7 @@ async fn complete_provider_call(
                     retry_reason: Some("empty_completion".to_string()),
                     is_secondary: if is_secondary { Some(true) } else { None },
                     network_timing: Some(network_timing),
+                    adaptive_tier,
                 });
                 let delay_ms = empty_turn_retry_delay_ms(empty_retries);
                 tracing::warn!(
@@ -618,7 +678,7 @@ async fn complete_provider_call(
             Err(err) => {
                 recorded_calls.push(openduck_harness::telemetry::ProviderCallRecord {
                     provider: provider_name.clone(),
-                    model: model_name.clone(),
+                    model: resolved_model,
                     latency_ms,
                     success: false,
                     error: Some(err.to_string()),
@@ -628,6 +688,7 @@ async fn complete_provider_call(
                     retry_reason: retry_reason.clone(),
                     is_secondary: if is_secondary { Some(true) } else { None },
                     network_timing: Some(network_timing),
+                    adaptive_tier,
                 });
                 return Err(err);
             }

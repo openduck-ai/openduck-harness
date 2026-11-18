@@ -161,10 +161,12 @@ impl EvaluationReport {
                         .by_model
                         .entry(m_key.clone())
                         .or_insert_with(|| {
-                            crate::telemetry::ProviderCallStats::new(
+                            let mut entry = crate::telemetry::ProviderCallStats::new(
                                 &m_stat.provider,
                                 m_stat.model.clone(),
-                            )
+                            );
+                            entry.adaptive_tier = m_stat.adaptive_tier.clone();
+                            entry
                         });
                     entry.total_calls += m_stat.total_calls;
                     entry.successful_calls += m_stat.successful_calls;

@@ -749,6 +749,7 @@ impl AdaptivePolicyState {
             return;
         }
 
+        self.last_actual = Some(obs.candidate);
         self.last_actual_model = Some(obs.actual_model.clone());
 
         if obs.purpose == RequestPurpose::Auxiliary || mode != RoutingMode::Auto {

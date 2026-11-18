@@ -2663,6 +2663,15 @@ function StepDetailCard({
                           </span>
                           <span className="call-provider-tag">
                             <strong>{call.provider}</strong>
+                            {call.adaptiveTier && (
+                              <span className={`adaptive-tier-badge tier-${call.adaptiveTier}`}>
+                                {call.adaptiveTier === 'regular'
+                                  ? t('config.stats.regularModel')
+                                  : call.adaptiveTier === 'economy'
+                                    ? t('config.stats.economyModel')
+                                    : call.adaptiveTier}
+                              </span>
+                            )}
                             {call.model && <code className="call-model-tag">{call.model}</code>}
                           </span>
                         </div>

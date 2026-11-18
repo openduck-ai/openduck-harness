@@ -24,6 +24,8 @@ pub struct ProviderCallRecord {
     pub is_secondary: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_timing: Option<NetworkTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adaptive_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -55,6 +57,8 @@ pub struct ProviderCallStats {
     pub provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adaptive_tier: Option<String>,
     pub total_calls: usize,
     pub successful_calls: usize,
     pub failed_calls: usize,
@@ -224,11 +228,15 @@ impl TaskProviderStats {
             .or_insert_with(|| ProviderCallStats::new(&call.provider, None));
         provider_entry.record(call);
 
-        let model_key = format!("{}:{}", call.provider, call.model);
-        let model_entry = self
-            .by_model
-            .entry(model_key)
-            .or_insert_with(|| ProviderCallStats::new(&call.provider, Some(call.model.clone())));
+        let model_key = match &call.adaptive_tier {
+            Some(tier) => format!("{}:{}:{}", call.provider, tier, call.model),
+            None => format!("{}:{}", call.provider, call.model),
+        };
+        let model_entry = self.by_model.entry(model_key).or_insert_with(|| {
+            let mut entry = ProviderCallStats::new(&call.provider, Some(call.model.clone()));
+            entry.adaptive_tier = call.adaptive_tier.clone();
+            entry
+        });
         model_entry.record(call);
     }
 
@@ -280,6 +288,7 @@ impl TaskProviderStats {
                     retry_reason: None,
                     is_secondary: None,
                     network_timing: None,
+                    adaptive_tier: None,
                 };
                 stats.record_call(&call);
             }
@@ -323,6 +332,7 @@ mod tests {
                 receive_ms: 775,
                 total_ms: 1200,
             }),
+            adaptive_tier: None,
         };
 
         let call2 = ProviderCallRecord {
@@ -347,6 +357,7 @@ mod tests {
                 receive_ms: 0,
                 total_ms: 800,
             }),
+            adaptive_tier: None,
         };
 
         let call3 = ProviderCallRecord {
@@ -365,6 +376,7 @@ mod tests {
             retry_reason: None,
             is_secondary: Some(true),
             network_timing: None,
+            adaptive_tier: None,
         };
 
         stats.record_call(&call1);
@@ -400,5 +412,66 @@ mod tests {
         let openai = stats.by_provider.get("openai").unwrap();
         assert_eq!(openai.total_calls, 1);
         assert_eq!(openai.successful_calls, 1);
+    }
+
+    #[test]
+    fn test_adaptive_tier_stats_separation() {
+        let mut stats = TaskProviderStats::default();
+
+        let regular_call = ProviderCallRecord {
+            provider: "adaptive".to_string(),
+            model: "claude-sonnet-4-5".to_string(),
+            latency_ms: 900,
+            success: true,
+            error: None,
+            token_usage: Some(TokenUsageSummary {
+                input_tokens: Some(100),
+                output_tokens: Some(40),
+                total_tokens: Some(140),
+            }),
+            cost: None,
+            retry_attempt: None,
+            retry_reason: None,
+            is_secondary: None,
+            network_timing: None,
+            adaptive_tier: Some("regular".to_string()),
+        };
+
+        let economy_call = ProviderCallRecord {
+            provider: "adaptive".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            latency_ms: 300,
+            success: true,
+            error: None,
+            token_usage: Some(TokenUsageSummary {
+                input_tokens: Some(100),
+                output_tokens: Some(30),
+                total_tokens: Some(130),
+            }),
+            cost: None,
+            retry_attempt: None,
+            retry_reason: None,
+            is_secondary: None,
+            network_timing: None,
+            adaptive_tier: Some("economy".to_string()),
+        };
+
+        stats.record_call(&regular_call);
+        stats.record_call(&economy_call);
+
+        assert_eq!(stats.by_provider.get("adaptive").unwrap().total_calls, 2);
+
+        let reg_stat = stats
+            .by_model
+            .get("adaptive:regular:claude-sonnet-4-5")
+            .unwrap();
+        assert_eq!(reg_stat.adaptive_tier.as_deref(), Some("regular"));
+        assert_eq!(reg_stat.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(reg_stat.total_calls, 1);
+
+        let eco_stat = stats.by_model.get("adaptive:economy:gpt-4o-mini").unwrap();
+        assert_eq!(eco_stat.adaptive_tier.as_deref(), Some("economy"));
+        assert_eq!(eco_stat.model.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(eco_stat.total_calls, 1);
     }
 }

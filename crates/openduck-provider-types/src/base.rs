@@ -370,6 +370,8 @@ pub struct ProviderRoutingStatus {
     pub mode: String,
     pub primary_model: String,
     pub last_actual_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_actual_candidate: Option<String>,
     pub last_is_probe: bool,
     pub last_switch_reason: String,
     pub config_version: u64,

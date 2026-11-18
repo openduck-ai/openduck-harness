@@ -120,6 +120,7 @@ impl AgentRoutingHandle {
             mode: snap.mode.as_str().to_string(),
             primary_model: snap.model_config.model_name.clone(),
             last_actual_model: Some(snap.model_config.model_name),
+            last_actual_candidate: None,
             last_is_probe: false,
             last_switch_reason: "fixed provider".to_string(),
             config_version: snap.version,

@@ -28,6 +28,8 @@ pub struct ProviderStats {
     pub elapsed_ms: Option<u64>,
     pub output_tokens: Option<usize>,
     pub draft: Option<DraftStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

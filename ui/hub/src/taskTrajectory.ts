@@ -1740,11 +1740,14 @@ export function computeTaskProviderStats(
           pStat.avgReceiveMs = ((pStat.avgReceiveMs || 0) * prevCalls + (call.networkTiming.receiveMs || 0)) / n
         }
 
-        const mKey = `${call.provider}:${call.model}`
+        const mKey = call.adaptiveTier
+          ? `${call.provider}:${call.adaptiveTier}:${call.model}`
+          : `${call.provider}:${call.model}`
         if (!byModel[mKey]) {
           byModel[mKey] = {
             provider: call.provider,
             model: call.model,
+            adaptiveTier: call.adaptiveTier ?? undefined,
             totalCalls: 0,
             successfulCalls: 0,
             failedCalls: 0,

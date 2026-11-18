@@ -769,11 +769,13 @@ export interface ProviderCallRecord {
   retryReason?: string | null
   isSecondary?: boolean | null
   networkTiming?: NetworkTiming | null
+  adaptiveTier?: string | null
 }
 
 export interface ProviderCallStats {
   provider: string
   model?: string | null
+  adaptiveTier?: string | null
   totalCalls: number
   successfulCalls: number
   failedCalls: number

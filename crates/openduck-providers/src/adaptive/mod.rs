@@ -167,6 +167,7 @@ impl AdaptiveProvider {
             mode: guard.mode.as_str().to_string(),
             primary_model,
             last_actual_model,
+            last_actual_candidate: guard.policy.last_actual().map(|c| c.as_str().to_string()),
             last_is_probe: guard.policy.last_is_probe(),
             last_switch_reason: guard.policy.last_switch_reason().to_string(),
             config_version: guard.config_version,

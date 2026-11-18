@@ -1378,6 +1378,45 @@ test('buildAgentLog attaches providerCalls to assistant turns', () => {
   assert.equal(turns[0].providerCalls?.[0].provider, 'anthropic')
 })
 
+test('computeTaskProviderStats separates adaptive regular and economy tiers in byModel', () => {
+  const run = {
+    taskId: 'adaptive-stats-test',
+    trajectory: {
+      steps: [
+        {
+          stepIndex: 1,
+          timestamp: '2026-09-01T00:00:01Z',
+          durationMs: 900,
+          agentAction: { FinalAnswer: 'Regular' },
+          providerCalls: [
+            {
+              provider: 'adaptive',
+              model: 'claude-sonnet-4-5',
+              adaptiveTier: 'regular',
+              latencyMs: 900,
+              success: true,
+            },
+            {
+              provider: 'adaptive',
+              model: 'gpt-4o-mini',
+              adaptiveTier: 'economy',
+              latencyMs: 300,
+              success: true,
+            },
+          ],
+        },
+      ],
+    },
+  } as unknown as HarnessRunResponse
+
+  const stats = computeTaskProviderStats(run)
+  assert.equal(stats.byProvider['adaptive']?.totalCalls, 2)
+  assert.equal(stats.byModel?.['adaptive:regular:claude-sonnet-4-5']?.adaptiveTier, 'regular')
+  assert.equal(stats.byModel?.['adaptive:regular:claude-sonnet-4-5']?.totalCalls, 1)
+  assert.equal(stats.byModel?.['adaptive:economy:gpt-4o-mini']?.adaptiveTier, 'economy')
+  assert.equal(stats.byModel?.['adaptive:economy:gpt-4o-mini']?.totalCalls, 1)
+})
+
 test('isCurrentThinkingTurn is only the live latest step that is still a thought', () => {
   const thought = { role: 'assistant' as const, thinking: 'Clippy first, then the warnings.' }
   assert.equal(isCurrentThinkingTurn(thought, true, true), true)
