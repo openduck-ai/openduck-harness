@@ -10,6 +10,10 @@ _Sandboxed execution, benchmark evaluation, deterministic replay, multi-project 
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
   <a href="https://github.com/openduck-ai/openduck-harness"><img src="https://img.shields.io/badge/Rust-1.94%2B-brightgreen.svg" alt="Rust Edition 2021"></a>
 </p>
+
+<p align="center">
+  <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
+</p>
 </div>
 
 ---
