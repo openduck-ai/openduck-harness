@@ -145,6 +145,8 @@ The CLI binary is `openduck` (legacy aliases `goose` and `duck` still work). Wor
 
 ## 🚀 Quickstart
 
+> 🤖 **For AI Agents & Headless Automation**: See the non-interactive, verification-driven [AI Agent Setup & Runbook](documentation/docs/guides/agent-setup-guide.md).
+
 ### 1. Install the CLI
 
 Install the pre-built binary using the official installer script:

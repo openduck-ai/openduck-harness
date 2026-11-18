@@ -145,6 +145,8 @@ CLI 可执行文件为 `openduck`（旧版别名 `goose` 和 `duck` 仍可使用
 
 ## 🚀 快速开始
 
+> 🤖 **AI Agent 与无头自动化环境**：请参阅非交互式、带校验步骤的 [AI Agent 安装与配置执行手册](documentation/docs/guides/agent-setup-guide.zh-CN.md)。
+
 ### 1. 安装 CLI
 
 使用官方安装脚本安装预编译二进制文件：
